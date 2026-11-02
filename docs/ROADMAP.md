@@ -1,12 +1,15 @@
 # TikTools Cloud — Roadmap
 
-A new independent backend consuming `better-auth-rs` as a library. Statuses are **planned**, not implemented.
+A new independent backend consuming `better-auth-rs` as a library. Checked items describe work completed and locally verified in this repository. Unchecked items include unfinished integration, production validation, and milestone exit criteria. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for evidence and limitations.
 
 ## M0 — Repository and dependency audit (P0)
-- [ ] Create `nglmercer/TikTools-cloud`, Rust Axum workspace, MIT/Apache license decision, CI, Docker Compose PostgreSQL, `.env.example`.
-- [ ] Pin `nglmercer/better-auth-rs` to a reviewed Git SHA and lockfile; document feature flags and MSRV.
-- [ ] Build a small Better Auth integration spike: migrations, HTTP auth routes, `SessionService` extractor, Google fixture callback and logout.
-- [ ] Verify existing JWKS policy, native callback restrictions, session cookies/revocation, and migration compatibility against the pinned Better Auth revision; report only proven gaps upstream.
+- [x] Create the Rust Axum workspace, choose MIT licensing, and add CI configuration, PostgreSQL Compose configuration, and `.env.example`.
+- [ ] Create and configure the `nglmercer/TikTools-cloud` remote repository and validate CI and Compose in their target environments.
+- [x] Pin `nglmercer/better-auth-rs` to a reviewed Git SHA and lockfile; record feature flags and declared MSRV.
+- [ ] Test the declared minimum Rust versions.
+- [x] Build a small Better Auth integration spike: migrations, HTTP auth routes, `SessionService` extractor, Google fixture callback and logout.
+- [x] Exercise mock OAuth, session cookies/revocation, native callback restrictions, and fresh migrations against the pinned Better Auth revision.
+- [ ] Verify live JWKS behavior and migration upgrades; report proven gaps upstream.
 **Exit:** local auth integration compiles and passes mock OAuth + session tests.
 
 ## M1 — Identity and security (P0)
@@ -19,19 +22,24 @@ A new independent backend consuming `better-auth-rs` as a library. Statuses are 
 ## M2 — Official signed registry (P0)
 - [ ] Set official domain/base URL and pin root public keys in TikTools Desktop.
 - [ ] Create offline root keys, delegated index/publisher keys and safe key rotation/revocation procedure.
-- [ ] Generate and serve registry v1 static snapshots using existing TikTools registry CLI/crates.
+- [x] Generate and validate private initial registry v1 candidates with the pinned TikTools writer and client; stage versioned files and export them for inspection.
+- [ ] Generate updates to an existing registry and serve promoted snapshots.
 - [ ] Publish official plugins through CI and validate with TikTools Desktop.
 **Exit:** anonymous install/update and offline signature verification work with CDN only.
 
 ## M3 — Publisher API and moderation (P1)
-- [ ] Publisher namespace ownership/memberships, key enrollment, upload URLs, signed package checks.
-- [ ] Immutable releases, staged moderation, publish/yank/advisory/revocation, audit history.
+- [x] Implement publisher namespace requests, memberships, version-bound upload reservations, and signed package checks with local integration coverage.
+- [ ] Enable key enrollment and approval after session-bound step-up is available and verified; implement ownership transfer.
+- [x] Implement release submission, independent moderation, audited publication requests, and private artifact preparation.
+- [ ] Implement public publication, yanks, advisories, and registry revocation propagation.
 - [ ] Registry snapshot promotion and rollback; rate limits, quotas, malicious package/URL protections.
 **Exit:** an authorized third-party publisher publishes a valid signed plugin without server-side access to root keys.
 
 ## M4 — Optional sync (P1)
-- [ ] Schema-versioned allowlisted records, incremental cursor feed, revisions, tombstones.
-- [ ] Client opt-in sync and multi-device conflicts with offline operation retained.
+- [x] Implement experimental schema-versioned plugin-selection records, incremental cursor feed, revisions, and tombstones.
+- [ ] Complete the full sync schema and production abuse controls.
+- [x] Implement and locally test an opt-in sync client library with conflict handling and offline persistence.
+- [ ] Integrate sync into TikTools Desktop and verify the full multi-device offline workflow.
 - [ ] Account export/deletion and sensitive data exclusion.
 **Exit:** deterministic two-device E2E for edits, conflicts, offline resumption and deletion.
 
@@ -49,7 +57,7 @@ A new independent backend consuming `better-auth-rs` as a library. Statuses are 
 - [x] Upstream code exposes automatic bounded JWKS refresh for Google.
 - [x] Upstream code documents native loopback redirect support and Axum `AuthUser` / `NativeAuthUser`.
 - [x] Upstream code documents database-validated revocation, optional token retention and OAuth state replay protections.
-- [ ] Cloud integration verified against a locked upstream SHA.
+- [x] Cloud integration tested against a locked upstream SHA using local OAuth and PostgreSQL fixtures.
 - [ ] Live PostgreSQL, desktop callback, staging proxy and independent security testing pass.
 
 ## Principles
