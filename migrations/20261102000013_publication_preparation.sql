@@ -1,0 +1,11 @@
+ALTER TABLE cloud_publication_jobs DROP CONSTRAINT cloud_publication_jobs_status_check;
+ALTER TABLE cloud_publication_jobs ADD COLUMN lease_id UUID;
+ALTER TABLE cloud_publication_jobs ADD COLUMN lease_expires_at TIMESTAMPTZ;
+ALTER TABLE cloud_publication_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3);
+ALTER TABLE cloud_publication_jobs ADD COLUMN result_class TEXT CHECK (result_class IN ('prepared','authorization_changed','invalid_package','antivirus_alert','temporary_failure'));
+ALTER TABLE cloud_publication_jobs ADD COLUMN prepared_key TEXT;
+ALTER TABLE cloud_publication_jobs ADD COLUMN prepared_version_id TEXT;
+ALTER TABLE cloud_publication_jobs ADD CONSTRAINT cloud_publication_job_status CHECK (status IN ('queued','running','prepared','blocked','rejected','failed'));
+ALTER TABLE cloud_publication_jobs ADD CONSTRAINT cloud_publication_job_lease CHECK ((status='running' AND lease_id IS NOT NULL AND lease_expires_at IS NOT NULL) OR (status<>'running' AND lease_id IS NULL AND lease_expires_at IS NULL));
+ALTER TABLE cloud_publication_jobs ADD CONSTRAINT cloud_publication_job_prepared CHECK ((status='prepared' AND prepared_key IS NOT NULL AND prepared_version_id IS NOT NULL AND prepared_version_id <> '' AND prepared_version_id <> 'null') OR (status<>'prepared' AND prepared_key IS NULL AND prepared_version_id IS NULL));
+CREATE INDEX cloud_publication_jobs_claim_idx ON cloud_publication_jobs (created_at,id) WHERE status IN ('queued','running');

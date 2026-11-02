@@ -1,0 +1,16 @@
+[package]
+name = "cloud-verifier"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+
+[dependencies]
+tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tempfile = "3"
+thiserror = "2"
+zip = { version = "9.1.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serde_json = "1"

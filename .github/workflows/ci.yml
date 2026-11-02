@@ -1,0 +1,64 @@
+name: Rust
+on: [push, pull_request]
+env:
+  CARGO_BUILD_JOBS: 2
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cloud
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: cloud_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloud -d cloud_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: node --test scripts/test-desktop-login.cjs
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo test -p cloud-client --all-features --locked
+      - run: cargo test --workspace --locked -- --ignored --test-threads=1
+        env:
+          CLOUD_TEST_DATABASE_URL: postgres://cloud:test-only@localhost:5432/cloud_test
+  registry-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nglmercer/TikTools-app
+          ref: 983a375c5b702681a791061ca863cea9c542528d
+          path: tiktools-upstream
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify upstream registry client and signing CLI
+        working-directory: tiktools-upstream
+        run: |
+          cargo test --locked -p tiktools-plugin-registry signed_registry_round_trip_with_search_download_and_cache
+          cargo test --locked -p tiktools-plugin-registry tampered_documents_and_unknown_roots_are_rejected
+          cargo test --locked -p tiktools-plugin-devkit scaffold_pack_sign_and_publish_to_a_static_registry
+      - name: Build disposable registry fixture
+        run: scripts/build-registry-fixture.sh tiktools-upstream "$RUNNER_TEMP/registry-fixture"
+      - name: Verify generated fixture with pinned TikTools client
+        run: scripts/verify-registry-fixture.sh tiktools-upstream "$RUNNER_TEMP/registry-fixture" "$RUNNER_TEMP/registry-fixture.root-pin.json"
+      - name: Verify fixture with Cloud package verifier
+        run: cargo run --locked -p cloud-verifier --example verify_fixture -- "$RUNNER_TEMP/registry-fixture"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disposable-signed-registry-fixture
+          path: |
+            ${{ runner.temp }}/registry-fixture
+            ${{ runner.temp }}/registry-fixture.root-pin.json
+          if-no-files-found: error
+          retention-days: 7

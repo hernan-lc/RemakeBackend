@@ -1,0 +1,10 @@
+ALTER TABLE cloud_verification_jobs DROP CONSTRAINT cloud_verification_jobs_status_check;
+ALTER TABLE cloud_verification_jobs ADD COLUMN lease_id UUID;
+ALTER TABLE cloud_verification_jobs ADD COLUMN lease_expires_at TIMESTAMPTZ;
+ALTER TABLE cloud_verification_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3);
+ALTER TABLE cloud_verification_jobs ADD COLUMN result_class TEXT CHECK (result_class IN ('integrity_passed','invalid_package','key_not_authorized','temporary_failure'));
+ALTER TABLE cloud_verification_jobs ADD CONSTRAINT cloud_verification_job_status CHECK (status IN ('queued','running','integrity_passed','rejected','failed'));
+ALTER TABLE cloud_verification_jobs ADD CONSTRAINT cloud_verification_job_lease CHECK ((status='running' AND lease_id IS NOT NULL AND lease_expires_at IS NOT NULL) OR (status<>'running' AND lease_id IS NULL AND lease_expires_at IS NULL));
+ALTER TABLE cloud_plugin_releases DROP CONSTRAINT cloud_plugin_releases_status_check;
+ALTER TABLE cloud_plugin_releases ADD CONSTRAINT cloud_plugin_release_status CHECK (status IN ('awaiting_verification','integrity_passed','rejected'));
+CREATE INDEX cloud_verification_jobs_claim_idx ON cloud_verification_jobs (created_at) WHERE release_id IS NOT NULL AND status IN ('queued','running');

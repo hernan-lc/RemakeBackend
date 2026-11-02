@@ -1,0 +1,35 @@
+[package]
+name = "cloud-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+
+[dependencies]
+cloud-storage = { path = "../cloud-storage" }
+cloud-verifier = { path = "../cloud-verifier" }
+cloud-snapshot = { path = "../cloud-snapshot" }
+tempfile = "3"
+base64 = "0.22"
+sha2 = "0.10"
+tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+axum = "0.8"
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c", default-features = false, features = ["axum", "sqlx"] }
+better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "io-util", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+cloud-client = { path = "../cloud-client" }
+jsonwebtoken = "9"
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c", default-features = false, features = ["axum", "sqlx", "test-utils"] }
+tower = { version = "0.5", features = ["util"] }
