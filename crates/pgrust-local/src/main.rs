@@ -420,7 +420,15 @@ fn up() -> Result<(), String> {
     let stderr = output
         .try_clone()
         .map_err(|e| format!("failed to dup log: {e}"))?;
-    let child = Command::new(bin_dir()?.join("postgres"))
+    // pgrust's recommended max_stack_depth requires a larger process stack
+    // limit than the usual 8 MiB shell default. Only change it in the child.
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -s 65520 || { echo 'Cannot raise stack limit to 65520 KiB; check the hard stack limit' >&2; exit 1; }; exec \"$@\"",
+            "pgrust-local",
+        ])
+        .arg(bin_dir()?.join("postgres"))
         .args([
             "-D",
             &data_dir().to_string_lossy(),
@@ -443,17 +451,17 @@ fn up() -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("failed to start postgres: {e}"))?;
     let pid = child.id();
-    // Detach: forget the handle so the server outlives this command; the pid
-    // file plus binary-path verification owns lifecycle from here.
-    std::mem::forget(child);
     fs::write(home_dir().join("pgrust.pid"), pid.to_string())
         .map_err(|e| format!("failed to write pidfile: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        if !pid_alive(pid) {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("failed to check pgrust startup: {e}"))?
+        {
             let _ = fs::remove_file(home_dir().join("pgrust.pid"));
             return Err(format!(
-                "pgrust exited during startup; inspect {}",
+                "pgrust exited during startup ({status}); inspect {}",
                 log.display()
             ));
         }

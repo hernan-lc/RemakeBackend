@@ -24,6 +24,8 @@ You need Git, the Rust toolchain specified by the submodule, a C/C++ build
 chain, pkg-config, RE2 development files, and `psql` on PATH. Cargo may download
 source dependencies on the first build. No Docker or prebuilt pgrust download
 is required. See the submodule README for platform-specific build prerequisites.
+The launcher raises the server process's stack limit to 65520 KiB as required
+by pgrust; the shell's hard stack limit must allow at least that much.
 
 `cargo run -p pgrust-local -- install` builds the source; `up` builds it if
 needed and starts the server; `status` reports its state; `down` stops it while
