@@ -66,9 +66,20 @@ cargo run -p cloud-api
   `credentials: 'include'`; no tokens in `localStorage`/`sessionStorage`.
 - `src/views/` — `/login`, `/auth/callback`, `/app/*` (dashboard,
   publishers, moderation, audit, portal, account), `/403`, `/logout`.
+  Layout is responsive: the nav rail is icon-only below `md`, full labels
+  from `md` up; tables scroll horizontally inside cards on small screens.
+- `src/components/icons/` — reusable SVG icon library (`AppIcon` +
+  `icons.ts` registry; add a path there, use it by name anywhere).
+- `src/components/ui/` — shared components: `AppButton` (variants, icons,
+  `to`/`href`), `AppCard`, `AppBadge`, `AppInput`, `AppSelect`,
+  `PageHeader`, `StatCard`, `EmptyState`, `ThemeToggle`.
 - `src/i18n/` — Spanish/English strings (`en.ts`, `es.ts`).
-- Pinia holds client-only UI state (locale, toasts). Server state (session,
-  admin data) lives in TanStack Query and is invalidated on sign-out.
+- Pinia holds client-only UI state (locale, theme, sidebar, toasts).
+  Theme (`light`/`dark`, `ThemeToggle` in the header) is class-based
+  (`<html class="dark">`, persisted in `localStorage`, follows the OS
+  setting by default) and applied pre-paint to avoid a flash. Server state
+  (session, admin data) lives in TanStack Query and is invalidated on
+  sign-out.
 
 Signing-key enrollment is intentionally rendered **disabled**: key approval
 needs session-bound step-up the backend does not offer yet, and this UI

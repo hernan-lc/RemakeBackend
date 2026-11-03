@@ -1,7 +1,7 @@
 <template>
-  <main class="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
-    <div v-if="checking" role="status" class="text-slate-600">{{ t('states.loading') }}</div>
-    <div v-else role="alert" class="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+  <main class="flex min-h-screen w-full items-center justify-center bg-slate-100 px-4 dark:bg-slate-950">
+    <div v-if="checking" role="status" class="text-slate-600 dark:text-slate-400">{{ t('states.loading') }}</div>
+    <div v-else role="alert" class="w-full max-w-md rounded-lg border border-red-200 bg-white p-4 text-sm text-red-800 dark:border-red-900 dark:bg-slate-900 dark:text-red-200">
       {{ t('auth.callbackError') }}
       <RouterLink to="/login" class="mt-2 block font-medium underline">{{ t('auth.signIn') }}</RouterLink>
     </div>

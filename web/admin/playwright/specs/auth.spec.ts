@@ -15,7 +15,9 @@ test('cross-origin POST without session is rejected, not redirected to login loo
   request,
 }) => {
   const response = await request.post('/api/v1/admin/overview')
-  expect([401, 403]).toContain(response.status())
+  // Rejected without a session: 401/403 from auth, or 405 because the
+  // route is GET-only. Any non-2xx without a login-loop redirect is fine.
+  expect([401, 403, 405]).toContain(response.status())
   await page.goto('/app/audit')
   await expect(page).toHaveURL(/\/login/)
 })

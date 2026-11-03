@@ -4,7 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f1f5f9" media="(prefers-color-scheme: light)" />
     <title>TikTools Cloud Admin</title>
+    <script>
+      try {
+        var saved = localStorage.getItem('tiktools-admin-theme');
+        var dark = saved === 'dark' || (saved !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.classList.add('dark');
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+      } catch (e) { /* storage unavailable: defaults apply */ }
+    </script>
+    <style>
+      html { background-color: #f1f5f9; }
+      html.dark { background-color: #020617; }
+    </style>
   </head>
   <body>
     <div id="app"></div>

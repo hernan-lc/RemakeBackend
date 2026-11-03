@@ -1,9 +1,42 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `.dark` on <html> enables all `dark:` variants. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
 body {
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible keyboard focus everywhere. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* Thin, theme-aware scrollbars for nav rails and table wrappers. */
+:where(.scroll-thin) {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 163 184 / 0.6) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

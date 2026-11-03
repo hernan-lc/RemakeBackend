@@ -1,7 +1,7 @@
 import { en } from './en'
 
 export const es: typeof en = {
-  app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión' },
+  app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
   auth: {
     signIn: 'Iniciar sesión',
     signInGoogle: 'Iniciar sesión con Google',
@@ -14,7 +14,7 @@ export const es: typeof en = {
     signOutDone: 'Sesión cerrada. Los datos de sesión en caché fueron eliminados.',
     anonymous: 'Sin sesión',
   },
-  states: { loading: 'Cargando…', empty: 'Nada aquí todavía.', retry: 'Reintentar', next: 'Página siguiente', back: 'Atrás', confirm: 'Confirmar', cancel: 'Cancelar', close: 'Cerrar' },
+  states: { loading: 'Cargando…', empty: 'Nada aquí todavía.', retry: 'Reintentar', refresh: 'Actualizar', next: 'Página siguiente', back: 'Atrás', confirm: 'Confirmar', cancel: 'Cancelar', close: 'Cerrar' },
   errors: {
     title: 'Algo salió mal',
     forbidden: 'No tienes acceso. Pide a un administrador Cloud el rol adecuado.',

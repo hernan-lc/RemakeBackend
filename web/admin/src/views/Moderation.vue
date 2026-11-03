@@ -1,68 +1,85 @@
 <template>
   <div class="flex flex-col gap-4">
-    <h1 class="text-xl font-bold">{{ t('moderation.title') }}</h1>
-    <p class="text-sm text-slate-600">{{ t('moderation.conflictNote') }}</p>
+    <PageHeader :title="t('moderation.title')" :description="t('moderation.conflictNote')" icon="moderation">
+      <template #actions>
+        <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
+      </template>
+    </PageHeader>
     <StateBlock :loading="isPending" :error="!!error" :detail="errorDetail" :retry="true" @retry="refetch">
       <template v-if="forbidden">
-        <div role="alert" class="rounded border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+        <div role="alert" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          <AppIcon name="alert" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
           {{ t('errors.notAdmin') }}
         </div>
       </template>
       <ul v-else class="flex flex-col gap-3">
-        <li v-for="c in items" :key="c.id" class="rounded border border-slate-200 bg-white p-4">
-          <div class="flex flex-wrap items-baseline gap-x-3">
-            <span class="font-mono text-sm font-semibold">{{ c.namespace }}/{{ c.pluginId }}@{{ c.version }}</span>
-            <span class="text-xs text-slate-500">{{ c.target }} · {{ (c.size / 1024).toFixed(1) }} KiB</span>
-            <span v-if="c.yanked" class="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">yanked</span>
-            <span v-if="c.advisory" class="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">{{ c.advisory.severity }}</span>
-          </div>
-          <p class="mt-1 break-all font-mono text-xs text-slate-500">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
-          <div class="mt-3 flex flex-wrap gap-2">
-            <button type="button" class="rounded border border-slate-300 px-3 py-1 text-sm font-medium hover:bg-slate-50" @click="inspect(c.id)">
-              {{ t('moderation.inspect') }}
-            </button>
-            <button type="button" :disabled="c.yanked" class="rounded bg-slate-900 px-3 py-1 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40" @click="askDecide(c.id, 'approve')">
-              {{ t('moderation.approve') }}
-            </button>
-            <button type="button" :disabled="c.yanked" class="rounded border border-slate-300 px-3 py-1 text-sm font-medium hover:bg-slate-50 disabled:opacity-40" @click="askDecide(c.id, 'reject')">
-              {{ t('moderation.reject') }}
-            </button>
-            <button type="button" :disabled="c.yanked" class="rounded border border-red-300 px-3 py-1 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-40" @click="askYank(c.id)">
-              {{ t('moderation.yank') }}
-            </button>
-            <button type="button" class="rounded border border-slate-300 px-3 py-1 text-sm font-medium hover:bg-slate-50" @click="openAdvisory(c.id)">
-              {{ t('moderation.advisory') }}
-            </button>
-          </div>
-          <p v-if="links[c.id]" class="mt-2 break-all text-xs">
-            {{ t('moderation.inspectionReady') }}
-            <a :href="links[c.id]" class="font-medium text-slate-900 underline" target="_blank" rel="noreferrer noopener">{{ links[c.id] }}</a>
-          </p>
-          <form v-if="advisoryFor === c.id" class="mt-3 flex flex-col gap-2 rounded border border-slate-200 p-3" @submit.prevent="saveAdvisory(c.id)">
-            <label class="text-sm">{{ t('moderation.severity') }}
-              <select v-model="adv.severity" class="ml-2 rounded border border-slate-300 px-2 py-1">
-                <option>low</option><option>moderate</option><option>high</option><option>critical</option>
-              </select>
-            </label>
-            <label class="text-sm">{{ t('moderation.message') }}
-              <input v-model="adv.message" required maxlength="1024" class="ml-2 w-full max-w-md rounded border border-slate-300 px-2 py-1" />
-            </label>
-            <label class="text-sm">{{ t('moderation.url') }}
-              <input v-model="adv.url" type="url" class="ml-2 w-full max-w-md rounded border border-slate-300 px-2 py-1" />
-            </label>
-            <div class="flex gap-2">
-              <button type="submit" class="rounded bg-slate-900 px-3 py-1 text-sm font-medium text-white">{{ t('states.confirm') }}</button>
-              <button type="button" class="rounded border border-slate-300 px-3 py-1 text-sm" @click="advisoryFor = null">{{ t('states.cancel') }}</button>
+        <li v-for="c in items" :key="c.id">
+          <AppCard :label="`${c.namespace}/${c.pluginId}@${c.version}`">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span class="break-all font-mono text-sm font-semibold">{{ c.namespace }}/{{ c.pluginId }}@{{ c.version }}</span>
+              <AppBadge v-if="c.yanked" tone="danger" icon="ban">yanked</AppBadge>
+              <AppBadge v-if="c.advisory" tone="warn" icon="flag">{{ c.advisory.severity }}</AppBadge>
             </div>
-          </form>
+            <p class="mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+              {{ c.target }} · {{ (c.size / 1024).toFixed(1) }} KiB
+            </p>
+            <p class="mt-1 break-all font-mono text-xs text-slate-500 dark:text-slate-400">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <AppButton size="sm" variant="secondary" icon="eye" @click="inspect(c.id)">
+                {{ t('moderation.inspect') }}
+              </AppButton>
+              <AppButton size="sm" variant="primary" icon="check" :disabled="c.yanked" @click="askDecide(c.id, 'approve')">
+                {{ t('moderation.approve') }}
+              </AppButton>
+              <AppButton size="sm" variant="secondary" icon="close" :disabled="c.yanked" @click="askDecide(c.id, 'reject')">
+                {{ t('moderation.reject') }}
+              </AppButton>
+              <AppButton size="sm" variant="danger" icon="ban" :disabled="c.yanked" @click="askYank(c.id)">
+                {{ t('moderation.yank') }}
+              </AppButton>
+              <AppButton size="sm" variant="ghost" icon="flag" @click="openAdvisory(c.id)">
+                {{ t('moderation.advisory') }}
+              </AppButton>
+            </div>
+            <p v-if="links[c.id]" class="mt-2 break-all text-xs text-slate-600 dark:text-slate-400">
+              {{ t('moderation.inspectionReady') }}
+              <a :href="links[c.id]" class="font-medium text-slate-900 underline dark:text-white" target="_blank" rel="noreferrer noopener">
+                {{ links[c.id] }}
+                <AppIcon name="external" :size="12" class="inline" aria-hidden="true" />
+              </a>
+            </p>
+            <form v-if="advisoryFor === c.id" class="mt-3 flex flex-col gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700" @submit.prevent="saveAdvisory(c.id)">
+              <AppSelect v-model="adv.severity" :label="t('moderation.severity')">
+                <option>low</option><option>moderate</option><option>high</option><option>critical</option>
+              </AppSelect>
+              <AppInput v-model="adv.message" :label="t('moderation.message')" required :maxlength="1024" icon="flag" />
+              <AppInput v-model="adv.url" :label="t('moderation.url')" type="url" icon="external" placeholder="https://" />
+              <div class="flex flex-wrap gap-2">
+                <AppButton type="submit" size="sm" variant="primary" icon="check">{{ t('states.confirm') }}</AppButton>
+                <AppButton type="button" size="sm" variant="secondary" @click="advisoryFor = null">{{ t('states.cancel') }}</AppButton>
+              </div>
+            </form>
+          </AppCard>
         </li>
       </ul>
-      <p v-if="!forbidden && items.length === 0" class="mt-3 text-sm text-slate-500">{{ t('states.empty') }}</p>
-      <button v-if="data?.nextCursor" type="button" class="mt-3 rounded border border-slate-300 px-3 py-1.5 text-sm font-medium hover:bg-slate-50" @click="after = data.nextCursor ?? undefined">
-        {{ t('states.next') }}
-      </button>
+      <EmptyState v-if="!forbidden && items.length === 0" :title="t('states.empty')" icon="moderation" />
+      <div v-if="data?.nextCursor" class="mt-3 flex justify-center">
+        <AppButton variant="secondary" icon="chevronDown" @click="after = data.nextCursor ?? undefined">
+          {{ t('states.next') }}
+        </AppButton>
+      </div>
     </StateBlock>
-    <ConfirmDialog :open="confirmOpen" :title="confirmTitle" :body="confirmBody" :busy="busy" @confirm="doConfirm" @cancel="confirmOpen = false" />
+    <ConfirmDialog
+      :danger="confirmDanger"
+      :open="confirmOpen"
+      :title="confirmTitle"
+      :body="confirmBody"
+      :busy="busy"
+      :prompt-label="yankArmed ? t('moderation.yankReason') : undefined"
+      v-model:prompt-value="yankReason"
+      @confirm="doConfirm"
+      @cancel="closeConfirm"
+    />
   </div>
 </template>
 
@@ -74,6 +91,14 @@ import { ApiError, api } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import StateBlock from '../components/StateBlock.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import AppIcon from '../components/icons/AppIcon.vue'
+import AppBadge from '../components/ui/AppBadge.vue'
+import AppButton from '../components/ui/AppButton.vue'
+import AppCard from '../components/ui/AppCard.vue'
+import AppInput from '../components/ui/AppInput.vue'
+import AppSelect from '../components/ui/AppSelect.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import PageHeader from '../components/ui/PageHeader.vue'
 
 const { t } = useI18n()
 const ui = useUiStore()
@@ -94,7 +119,10 @@ const links = reactive<Record<string, string>>({})
 const confirmOpen = ref(false)
 const confirmTitle = ref('')
 const confirmBody = ref('')
+const confirmDanger = ref(true)
 const busy = ref(false)
+const yankArmed = ref(false)
+const yankReason = ref('')
 let confirmAction: (() => Promise<void>) | null = null
 const advisoryFor = ref<string | null>(null)
 const adv = reactive({ severity: 'high', message: '', url: '' })
@@ -112,6 +140,9 @@ async function inspect(id: string) {
 function askDecide(id: string, decision: 'approve' | 'reject') {
   decideChoice.id = id
   decideChoice.decision = decision
+  yankArmed.value = false
+  yankReason.value = ''
+  confirmDanger.value = decision === 'reject'
   confirmTitle.value = decision === 'approve' ? t('moderation.approve') : t('moderation.reject')
   confirmBody.value = t('moderation.decideConfirm')
   confirmAction = async () => {
@@ -122,15 +153,22 @@ function askDecide(id: string, decision: 'approve' | 'reject') {
 }
 
 function askYank(id: string) {
-  const reason = window.prompt(t('moderation.yankReason'))
-  if (!reason) return
+  yankArmed.value = true
+  yankReason.value = ''
+  confirmDanger.value = true
   confirmTitle.value = t('moderation.yank')
   confirmBody.value = t('moderation.yankConfirm')
   confirmAction = async () => {
-    await api.yankRelease(id, reason)
+    await api.yankRelease(id, yankReason.value.trim())
     ui.toast(t('moderation.yanked'), 'ok')
   }
   confirmOpen.value = true
+}
+
+function closeConfirm() {
+  confirmOpen.value = false
+  yankArmed.value = false
+  yankReason.value = ''
 }
 
 function openAdvisory(id: string) {
@@ -156,13 +194,13 @@ async function doConfirm() {
   busy.value = true
   try {
     await confirmAction()
-    confirmOpen.value = false
+    closeConfirm()
     await client.invalidateQueries({ queryKey: ['moderation'] })
     await client.invalidateQueries({ queryKey: ['admin'] })
     await refetch()
   } catch (e) {
     ui.toast(t('errors.actionFailed'), 'err')
-    if (e instanceof ApiError && (e.status === 403 || e.status === 409)) confirmOpen.value = false
+    if (e instanceof ApiError && (e.status === 403 || e.status === 409)) closeConfirm()
   } finally {
     busy.value = false
   }

@@ -28,9 +28,28 @@ const queryClient = new QueryClient({
   },
 })
 
+// Apply the saved theme before first paint to avoid a light/dark flash.
+try {
+  const saved = localStorage.getItem('tiktools-admin-theme')
+  const dark =
+    saved === 'dark' || (saved !== 'light' && window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+  document.documentElement.classList.toggle('dark', dark)
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+} catch {
+  // Storage unavailable: Pinia store applies the system theme on mount.
+}
+
 const app = createApp(App)
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
 app.use(router)
 app.use(i18n)
 app.use(VueQueryPlugin, { queryClient })
+
+// Sync Pinia theme/locale with the pre-paint <html> state.
+import { useUiStore } from './stores/ui'
+const ui = useUiStore(pinia)
+ui.initTheme()
+i18n.global.locale.value = ui.locale
+
 app.mount('#app')

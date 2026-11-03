@@ -1,5 +1,5 @@
 export const en = {
-  app: { title: 'Cloud Admin', dashboard: 'Dashboard', publishers: 'Publishers', moderation: 'Moderation', audit: 'Audit', portal: 'My publishers', account: 'Account', logout: 'Sign out' },
+  app: { title: 'Cloud Admin', dashboard: 'Dashboard', publishers: 'Publishers', moderation: 'Moderation', audit: 'Audit', portal: 'My publishers', account: 'Account', logout: 'Sign out', menu: 'Menu', toggleTheme: 'Toggle color theme', themeLight: 'Switch to light theme', themeDark: 'Switch to dark theme', collapseNav: 'Collapse navigation', expandNav: 'Expand navigation' },
   auth: {
     signIn: 'Sign in',
     signInGoogle: 'Sign in with Google',
@@ -12,7 +12,7 @@ export const en = {
     signOutDone: 'Signed out. Cached session data was cleared.',
     anonymous: 'Not signed in',
   },
-  states: { loading: 'Loading…', empty: 'Nothing here yet.', retry: 'Retry', next: 'Next page', back: 'Back', confirm: 'Confirm', cancel: 'Cancel', close: 'Close' },
+  states: { loading: 'Loading…', empty: 'Nothing here yet.', retry: 'Retry', refresh: 'Refresh', next: 'Next page', back: 'Back', confirm: 'Confirm', cancel: 'Cancel', close: 'Close' },
   errors: {
     title: 'Something went wrong',
     forbidden: 'You do not have access. Ask a Cloud admin for the right role.',
