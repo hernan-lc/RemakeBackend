@@ -26,6 +26,13 @@ pub struct Submission {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AdvisoryView {
+    severity: String,
+    message: String,
+    url: Option<String>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Release {
     id: Uuid,
     publisher_id: Uuid,
@@ -35,6 +42,9 @@ pub struct Release {
     version: String,
     target: String,
     status: String,
+    yanked: bool,
+    yank_reason: Option<String>,
+    advisory: Option<AdvisoryView>,
 }
 fn release(row: sqlx::postgres::PgRow) -> Release {
     Release {
@@ -46,7 +56,34 @@ fn release(row: sqlx::postgres::PgRow) -> Release {
         version: row.get("version"),
         target: row.get("target"),
         status: row.get("status"),
+        yanked: false,
+        yank_reason: None,
+        advisory: None,
     }
+}
+async fn revocation(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<(bool, Option<String>, Option<AdvisoryView>), StatusCode> {
+    let yank: Option<String> =
+        sqlx::query_scalar("SELECT reason FROM cloud_release_yanks WHERE release_id=$1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db)?;
+    let advisory: Option<AdvisoryView> = sqlx::query(
+        "SELECT severity,message,url FROM cloud_release_advisories WHERE release_id=$1",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db)?
+    .map(|row: sqlx::postgres::PgRow| AdvisoryView {
+        severity: row.get("severity"),
+        message: row.get("message"),
+        url: row.get("url"),
+    });
+    Ok((yank.is_some(), yank, advisory))
 }
 const FIELDS: &str = "id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status";
 async fn authorize(
@@ -117,7 +154,11 @@ pub async fn submit(
         .await
         .map_err(db)?
     {
-        let old = release(row);
+        let mut old = release(row);
+        let (yanked, yank_reason, advisory) = revocation(&mut tx, old.id).await?;
+        old.yanked = yanked;
+        old.yank_reason = yank_reason;
+        old.advisory = advisory;
         if old.publisher_key_id != input.publisher_key_id
             || old.plugin_id != input.plugin_id
             || old.version != input.version
@@ -179,6 +220,9 @@ pub async fn submit(
             version: input.version,
             target: input.target,
             status: "awaiting_verification".into(),
+            yanked: false,
+            yank_reason: None,
+            advisory: None,
         }),
     ))
 }
@@ -195,8 +239,12 @@ pub async fn get(
         .await
         .map_err(db)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let result = release(row);
+    let mut result = release(row);
     authorize(&mut tx, result.publisher_id, &user.user.id, false).await?;
+    let (yanked, yank_reason, advisory) = revocation(&mut tx, result.id).await?;
+    result.yanked = yanked;
+    result.yank_reason = yank_reason;
+    result.advisory = advisory;
     tx.commit().await.map_err(db)?;
     Ok(Json(result))
 }
@@ -206,6 +254,9 @@ pub async fn get(
 pub struct Review {
     decision: String,
     reason_code: String,
+    yanked: bool,
+    yank_reason: Option<String>,
+    advisory: Option<AdvisoryView>,
 }
 pub async fn review(
     AuthUser(user): AuthUser,
@@ -228,9 +279,13 @@ pub async fn review(
             .await
             .map_err(db)?
             .ok_or(StatusCode::NOT_FOUND)?;
+    let (yanked, yank_reason, advisory) = revocation(&mut tx, id).await?;
     let result = Review {
         decision: row.get("decision"),
         reason_code: row.get("reason_code"),
+        yanked,
+        yank_reason,
+        advisory,
     };
     tx.commit().await.map_err(db)?;
     Ok(Json(result))

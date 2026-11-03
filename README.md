@@ -1,8 +1,8 @@
 # TikTools Cloud
 
-Early foundation for the optional TikTools cloud backend. See [specification](docs/SPECS.md), [plan](docs/PLAN.md), and [roadmap](docs/ROADMAP.md). This is not production-ready; publisher signing-key approval, registry publication, complete sync, desktop integration, and release gates remain outstanding.
+Early foundation for the optional TikTools cloud backend. See [specification](docs/SPECS.md), [plan](docs/PLAN.md), and [roadmap](docs/ROADMAP.md). This is not production-ready; publisher signing-key approval, registry publication, complete sync, desktop integration, and release gates remain outstanding. The per-surface status and limits are listed in the [feature matrix](docs/FEATURE-MATRIX.md).
 
-The workspace declares Rust 1.95 or newer (required by the pinned TikTools package crates) and requires PostgreSQL; that minimum has not yet been tested. Better Auth is pinned to `c6940517155ff9a123221789b1efc89ef48cb19c`, with only `axum` and `sqlx` features; provider token retention is not enabled. Google credentials are optional and must be set together. Google JWKS is loaded at startup using the library's refresh policy. Production setup and independent security review remain necessary.
+The workspace declares Rust 1.95 or newer (required by the pinned TikTools package crates) and requires PostgreSQL. The minimums are verified with `cargo +1.95.0 check --workspace --locked` and `cargo +1.89.0 check -p cloud-client --all-features --locked`; CI repeats both checks. Better Auth is pinned to `c6940517155ff9a123221789b1efc89ef48cb19c`, with only `axum` and `sqlx` features; provider token retention is not enabled. Google credentials are optional and must be set together. Google JWKS is loaded at startup using the library's refresh policy. Production setup and independent security review remain necessary.
 
 For local development, start `docker compose up -d`, create a private `.env` based on `.env.example`, export its variables in your shell, and run `cargo run -p cloud-api -- migrate` followed by `cargo run -p cloud-api`. Migrations are explicit and never run on server startup. The command applies Better Auth migrations followed by versioned SQLx Cloud migrations. `GET /health/live` checks the process, `/health/ready` checks database access, Cloud migration versions and checksums, and required auth and Cloud columns, and `/api/v1/me` requires a Better Auth session cookie. Authenticated users can request a pending namespace with `POST /api/v1/publishers` and list their own requests with `GET /api/v1/publishers`; a pending request grants no publishing or signing authority. Auth routes are mounted at `/api/auth/*`. The native handoff backend is experimental and is not yet connected to Desktop.
 
@@ -32,6 +32,6 @@ The experimental S3 quarantine upload API is documented in [object storage](docs
 
 Publisher key enrollment and independent approval are described in [publisher keys](docs/PUBLISHER-KEYS.md).
 
-Independent review decisions are described in [moderation](docs/MODERATION.md); publication remains unimplemented.
+Independent review decisions, release yanks, and security advisories are described in [moderation](docs/MODERATION.md); publication remains unimplemented.
 
-The standalone [snapshot candidate builder](docs/REGISTRY-OPERATIONS.md#private-candidate-builder) uses the pinned registry protocol. An initial-candidate worker stages private file versions; deployment remains unimplemented.
+The standalone [snapshot candidate builder](docs/REGISTRY-OPERATIONS.md#private-candidate-builder) uses the pinned registry protocol. An initial-candidate worker stages private file versions, and an operator command records audited promotion-readiness decisions; deployment remains unimplemented.

@@ -34,7 +34,9 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [x] Implement recipient-accepted, expiring publisher ownership transfer with audit events.
 - [ ] Enable key enrollment and approval after session-bound step-up is available and verified.
 - [x] Implement release submission, independent moderation, audited publication requests, and private artifact preparation.
-- [ ] Implement public publication, yanks, advisories, and registry revocation propagation.
+- [x] Model moderator-recorded release yanks and security advisories, enforce them across publication, preparation, approval, candidacy, and verification, and surface them in release, review, and queue reads.
+- [ ] Implement public publication and serve yanks, advisories, and revocation state to registry clients.
+- [x] Record audited promotion-readiness (`verified`/`blocked`) decisions for private candidates without deploying.
 - [ ] Registry snapshot promotion and rollback; rate limits, quotas, malicious package/URL protections.
 **Exit:** an authorized third-party publisher publishes a valid signed plugin without server-side access to root keys.
 

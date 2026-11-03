@@ -8,6 +8,7 @@ use axum::{
 use better_auth::axum_integration::AuthUser;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Row, Transaction};
+use tiktools_plugin_registry::AdvisorySeverity;
 use uuid::Uuid;
 
 fn db(_: sqlx::Error) -> StatusCode {
@@ -33,6 +34,13 @@ pub struct Page {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AdvisoryView {
+    severity: String,
+    message: String,
+    url: Option<String>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Candidate {
     id: Uuid,
     publisher_id: Uuid,
@@ -44,6 +52,9 @@ pub struct Candidate {
     size: i64,
     key_id: String,
     key_fingerprint: String,
+    yanked: bool,
+    yank_reason: Option<String>,
+    advisory: Option<AdvisoryView>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,7 +70,7 @@ pub async fn queue(
     let mut tx = state.pool.begin().await.map_err(db)?;
     reviewer(&mut tx, &user.user.id).await?;
     // Exclude conflicts of interest and records whose verification or authorization is no longer valid.
-    let rows=sqlx::query("SELECT r.id,r.publisher_id,p.namespace,r.plugin_id,r.version,r.target,u.expected_sha256,u.expected_size,k.key_id,k.fingerprint FROM cloud_plugin_releases r JOIN cloud_publishers p ON p.id=r.publisher_id JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_publisher_keys k ON k.id=r.publisher_key_id AND k.publisher_id=r.publisher_id JOIN cloud_verification_jobs j ON j.upload_id=u.id AND j.release_id=r.id WHERE r.status='antivirus_passed' AND j.status='antivirus_passed' AND j.result_class='antivirus_passed' AND p.status='approved' AND k.status='approved' AND r.requested_by<>$1 AND u.requested_by<>$1 AND k.requested_by<>$1 AND NOT EXISTS (SELECT 1 FROM cloud_publisher_memberships m WHERE m.publisher_id=r.publisher_id AND m.user_id=$1) AND ($2::uuid IS NULL OR r.id>$2) ORDER BY r.id LIMIT 51")
+    let rows=sqlx::query("SELECT r.id,r.publisher_id,p.namespace,r.plugin_id,r.version,r.target,u.expected_sha256,u.expected_size,k.key_id,k.fingerprint,y.reason AS yank_reason,a.severity AS advisory_severity,a.message AS advisory_message,a.url AS advisory_url FROM cloud_plugin_releases r JOIN cloud_publishers p ON p.id=r.publisher_id JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_publisher_keys k ON k.id=r.publisher_key_id AND k.publisher_id=r.publisher_id JOIN cloud_verification_jobs j ON j.upload_id=u.id AND j.release_id=r.id LEFT JOIN cloud_release_yanks y ON y.release_id=r.id LEFT JOIN cloud_release_advisories a ON a.release_id=r.id WHERE r.status='antivirus_passed' AND j.status='antivirus_passed' AND j.result_class='antivirus_passed' AND p.status='approved' AND k.status='approved' AND r.requested_by<>$1 AND u.requested_by<>$1 AND k.requested_by<>$1 AND NOT EXISTS (SELECT 1 FROM cloud_publisher_memberships m WHERE m.publisher_id=r.publisher_id AND m.user_id=$1) AND ($2::uuid IS NULL OR r.id>$2) ORDER BY r.id LIMIT 51")
         .bind(&user.user.id).bind(page.after).fetch_all(&mut *tx).await.map_err(db)?;
     let more = rows.len() > 50;
     let items: Vec<_> = rows
@@ -76,6 +87,15 @@ pub async fn queue(
             size: r.get("expected_size"),
             key_id: r.get("key_id"),
             key_fingerprint: r.get("fingerprint"),
+            yank_reason: r.get("yank_reason"),
+            yanked: r.get::<Option<String>, _>("yank_reason").is_some(),
+            advisory: r
+                .get::<Option<String>, _>("advisory_severity")
+                .map(|severity| AdvisoryView {
+                    severity,
+                    message: r.get("advisory_message"),
+                    url: r.get("advisory_url"),
+                }),
         })
         .collect();
     let next_cursor = if more {
@@ -156,6 +176,15 @@ pub async fn decide(
     {
         return Err(StatusCode::FORBIDDEN);
     }
+    let yanked: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_release_yanks WHERE release_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+    if yanked {
+        return Err(StatusCode::CONFLICT);
+    }
     let previous=sqlx::query("SELECT actor_user_id,decision,reason_code FROM cloud_moderation_events WHERE release_id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(previous) = previous {
         if previous.get::<String, _>("actor_user_id") == user.user.id
@@ -198,6 +227,52 @@ pub async fn decide(
 }
 
 // Never derive Debug: the returned URL is a bearer capability.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Yank {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdvisoryInput {
+    severity: String,
+    message: String,
+    url: Option<String>,
+}
+
+/// Mirrors the pinned registry writer's advisory rules so Cloud never stores a
+/// value the snapshot builder would reject as invalid inventory.
+pub(crate) fn valid_advisory(
+    severity: &str,
+    message: &str,
+    url: Option<&str>,
+) -> Result<(AdvisorySeverity, String), StatusCode> {
+    let severity = match severity {
+        "low" => AdvisorySeverity::Low,
+        "moderate" => AdvisorySeverity::Moderate,
+        "high" => AdvisorySeverity::High,
+        "critical" => AdvisorySeverity::Critical,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let message = message.trim();
+    if message.is_empty() || message.len() > 1024 || message.chars().any(|c| c.is_control()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(url) = url {
+        let parsed = url::Url::parse(url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        if parsed.scheme() != "https"
+            || parsed.host().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    Ok((severity, message.to_owned()))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Inspection {
@@ -240,11 +315,18 @@ async fn inspection_metadata(
     {
         return Err(StatusCode::FORBIDDEN);
     }
+    let yanked: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_release_yanks WHERE release_id=$1)")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
     if publisher_status != "approved"
         || key_status != "approved"
         || row.get::<String, _>("release_status") != "antivirus_passed"
         || row.get::<String, _>("job_status") != "antivirus_passed"
         || row.get::<Option<String>, _>("result_class").as_deref() != Some("antivirus_passed")
+        || yanked
     {
         return Err(StatusCode::CONFLICT);
     }
@@ -286,4 +368,197 @@ pub async fn inspection(
         url: signed.url,
         expires_in: ttl.as_secs(),
     }))
+}
+
+/// Permanently yank a release. A yank never deletes the release or its history;
+/// it blocks publication requests, preparation, approval, and candidacy.
+pub async fn yank(
+    AuthUser(user): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<Yank>,
+) -> Result<StatusCode, StatusCode> {
+    let reason = input.reason.trim().to_owned();
+    if reason.is_empty() || reason.len() > 1024 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    crate::uploads::limit(&state, &user.user.id, "moderation-yank").await?;
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    reviewer(&mut tx, &user.user.id).await?;
+    let row = sqlx::query(
+        "SELECT publisher_id,publisher_key_id,upload_id,requested_by FROM cloud_plugin_releases WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let publisher: Uuid = row.get("publisher_id");
+    let key: Uuid = row.get("publisher_key_id");
+    let upload: Uuid = row.get("upload_id");
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2)",
+    )
+    .bind(publisher)
+    .bind(&user.user.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    sqlx::query("SELECT id FROM cloud_publishers WHERE id=$1 FOR UPDATE")
+        .bind(publisher)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query("SELECT id FROM cloud_publisher_keys WHERE id=$1 AND publisher_id=$2 FOR UPDATE")
+        .bind(key)
+        .bind(publisher)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+    let (key_requester, upload_requester): (String, String) = sqlx::query_as(
+        "SELECT k.requested_by,u.requested_by FROM cloud_publisher_keys k JOIN cloud_upload_sessions u ON u.id=$2 AND u.publisher_id=$3 WHERE k.id=$1 AND k.publisher_id=$3",
+    )
+    .bind(key)
+    .bind(upload)
+    .bind(publisher)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
+    if row.get::<String, _>("requested_by") == user.user.id
+        || key_requester == user.user.id
+        || upload_requester == user.user.id
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let yanked: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_release_yanks WHERE release_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+    if yanked {
+        return Err(StatusCode::CONFLICT);
+    }
+    sqlx::query("INSERT INTO cloud_release_yanks (release_id,yanked_by,reason) VALUES ($1,$2,$3)")
+        .bind(id)
+        .bind(&user.user.id)
+        .bind(&reason)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query("INSERT INTO cloud_audit_events (id,actor_user_id,publisher_id,subject_id,action) VALUES ($1,$2,$3,$4,'release.yanked')")
+        .bind(Uuid::new_v4()).bind(&user.user.id).bind(publisher).bind(id).execute(&mut *tx).await.map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Record or replace the security advisory for a release. Advisories inform;
+/// they do not block the pipeline the way yanks do.
+pub async fn advisory(
+    AuthUser(user): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AdvisoryInput>,
+) -> Result<StatusCode, StatusCode> {
+    let (_, message) = valid_advisory(&input.severity, &input.message, input.url.as_deref())?;
+    crate::uploads::limit(&state, &user.user.id, "moderation-advisory").await?;
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    reviewer(&mut tx, &user.user.id).await?;
+    let row = sqlx::query(
+        "SELECT publisher_id,publisher_key_id,upload_id,requested_by FROM cloud_plugin_releases WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let publisher: Uuid = row.get("publisher_id");
+    let key: Uuid = row.get("publisher_key_id");
+    let upload: Uuid = row.get("upload_id");
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2)",
+    )
+    .bind(publisher)
+    .bind(&user.user.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let (key_requester, upload_requester): (String, String) = sqlx::query_as(
+        "SELECT k.requested_by,u.requested_by FROM cloud_publisher_keys k JOIN cloud_upload_sessions u ON u.id=$2 AND u.publisher_id=$3 WHERE k.id=$1 AND k.publisher_id=$3",
+    )
+    .bind(key)
+    .bind(upload)
+    .bind(publisher)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
+    if row.get::<String, _>("requested_by") == user.user.id
+        || key_requester == user.user.id
+        || upload_requester == user.user.id
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    sqlx::query(
+        "INSERT INTO cloud_release_advisories (release_id,severity,message,url,created_by) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (release_id) DO UPDATE SET severity=EXCLUDED.severity,message=EXCLUDED.message,url=EXCLUDED.url,created_by=EXCLUDED.created_by,created_at=now()",
+    )
+    .bind(id)
+    .bind(&input.severity)
+    .bind(&message)
+    .bind(input.url.as_deref())
+    .bind(&user.user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    sqlx::query("INSERT INTO cloud_audit_events (id,actor_user_id,publisher_id,subject_id,action) VALUES ($1,$2,$3,$4,'release.advisory_recorded')")
+        .bind(Uuid::new_v4()).bind(&user.user.id).bind(publisher).bind(id).execute(&mut *tx).await.map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_advisory;
+    use axum::http::StatusCode;
+    use tiktools_plugin_registry::AdvisorySeverity;
+
+    #[test]
+    fn advisory_validation_mirrors_registry_writer_rules() {
+        assert_eq!(
+            valid_advisory("low", "use 2.x", None).unwrap(),
+            (AdvisorySeverity::Low, "use 2.x".to_owned())
+        );
+        assert_eq!(
+            valid_advisory("moderate", "  use 2.x  ", None).unwrap(),
+            (AdvisorySeverity::Moderate, "use 2.x".to_owned())
+        );
+        assert_eq!(
+            valid_advisory("high", "use 2.x", Some("https://example.test/a")).unwrap(),
+            (AdvisorySeverity::High, "use 2.x".to_owned())
+        );
+        assert_eq!(
+            valid_advisory("critical", "upgrade now", None).unwrap(),
+            (AdvisorySeverity::Critical, "upgrade now".to_owned())
+        );
+        for bad in [
+            valid_advisory("medium", "use 2.x", None),
+            valid_advisory("HIGH", "use 2.x", None),
+            valid_advisory("", "use 2.x", None),
+            valid_advisory("high", "", None),
+            valid_advisory("high", "   ", None),
+            valid_advisory("high", &"x".repeat(1025), None),
+            valid_advisory("high", "use\x072.x", None),
+            valid_advisory("high", "use 2.x", Some("http://example.test/a")),
+            valid_advisory("high", "use 2.x", Some("https://example.test/a#frag")),
+            valid_advisory("high", "use 2.x", Some("https://user@example.test/a")),
+            valid_advisory("high", "use 2.x", Some("not a url")),
+        ] {
+            assert_eq!(bad, Err(StatusCode::BAD_REQUEST));
+        }
+    }
 }

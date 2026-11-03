@@ -1521,6 +1521,67 @@ async fn desktop_handoff_is_pkce_bound_single_use_and_loopback_only() {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn desktop_redeem_rate_limit_keys_trusted_client_ip() {
+    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&database_url, false).await;
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app_with_proxies(
+        ctx,
+        pool,
+        auth,
+        None,
+        vec!["127.0.0.1/32".parse::<ipnet::IpNet>().unwrap()],
+    );
+    async fn attempt(app: &Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/native/handoff/redeem")
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ));
+        if let Some(xff) = forwarded_for {
+            req = req.header("x-forwarded-for", xff);
+        }
+        let req = req
+            .body(Body::from(
+                json!({"code":"not-a-code","redirectUri":"http://127.0.0.1:9/cb","codeVerifier":"x"})
+                    .to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+    // Behind a trusted proxy each client IP gets its own redemption bucket.
+    for _ in 0..60 {
+        assert_ne!(
+            attempt(&app, "127.0.0.1:50000", Some("203.0.113.7")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        attempt(&app, "127.0.0.1:50000", Some("203.0.113.7")).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_ne!(
+        attempt(&app, "127.0.0.1:50000", Some("203.0.113.8")).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Behind an untrusted peer the boundary strips forwarded headers, so all
+    // clients share the socket-peer bucket and a spoofed header changes nothing.
+    for _ in 0..60 {
+        assert_ne!(
+            attempt(&app, "10.9.9.9:50000", Some("203.0.113.7")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        attempt(&app, "10.9.9.9:50000", Some("203.0.113.99")).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn readiness_refuses_missing_or_incompatible_schema() {
     let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
     let (ctx, pool) = context(&database_url, false).await;
@@ -1855,6 +1916,911 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
         .execute(&control)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn migration_upgrade_preserves_data_through_revocation_tables() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use std::borrow::Cow;
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let control = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("drill_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&control)
+        .await
+        .unwrap();
+    let mut schema_url = Url::parse(&url).unwrap();
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let schema_url = schema_url.to_string();
+    let adapter = Arc::new(SqlxDbAdapter::postgres(&schema_url).await.unwrap());
+    let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            ..Default::default()
+        },
+        adapter.clone(),
+        Some(secondary.clone()),
+        vec![],
+    )
+    .unwrap();
+    adapter
+        .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
+        .await
+        .unwrap();
+    secondary.migrate().await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&schema_url)
+        .await
+        .unwrap();
+    let migrations = |last: i64| sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            readiness::MIGRATOR
+                .iter()
+                .filter(|m| m.version <= last)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: false,
+        locking: false,
+        no_tx: false,
+    };
+    migrations(20261102000016).run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx).unwrap();
+    let mut users = Vec::new();
+    for _ in 0..2 {
+        users.push(
+            service
+                .sign_up(
+                    SignUpInput {
+                        email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                        name: "Drill".into(),
+                        password: "test password with enough characters".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap()
+                .user
+                .id,
+        );
+    }
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,'drill','approved')",
+    )
+    .bind(publisher)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&users[0]).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_account_roles (user_id,role) VALUES ($1,'admin')")
+        .bind(&users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let key_row = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,'kk','cGtleQ',$3,'approved',$4)").bind(key_row).bind(publisher).bind("f".repeat(64)).bind(&users[0]).execute(&pool).await.unwrap();
+    let upload = uuid::Uuid::new_v4();
+    let release = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_upload_sessions (id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at,version_id) VALUES ($1,$2,$3,$4,5,$5,'quarantine/drill','quarantined',now(),'version')").bind(upload).bind(publisher).bind(&users[0]).bind(format!("drill{}", upload.simple())).bind("a".repeat(64)).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_plugin_releases (id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) VALUES ($1,$2,$3,$4,'drill.plugin','1.0.0','any','review_approved',$5)").bind(release).bind(publisher).bind(upload).bind(key_row).bind(&users[0]).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_verification_jobs (upload_id,release_id,status,attempts,result_class) VALUES ($1,$2,'antivirus_passed',1,'antivirus_passed')").bind(upload).bind(release).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_moderation_events (id,release_id,actor_user_id,decision,reason_code) VALUES ($1,$2,$3,'approve','policy_reviewed')").bind(uuid::Uuid::new_v4()).bind(release).bind(&users[1]).execute(&pool).await.unwrap();
+    let job = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publication_jobs (id,release_id,requested_by,status) VALUES ($1,$2,$3,'queued')").bind(job).bind(release).bind(&users[1]).execute(&pool).await.unwrap();
+    let candidate = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_snapshot_candidates (id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES ($1,'candidate',$2,$3,1,1)").bind(candidate).bind("b".repeat(64)).bind("c".repeat(64)).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_snapshot_candidate_files (candidate_id,path,sha256,size,object_key,version_id) VALUES ($1,'root.json',$2,1,'drill-object','v1')").bind(candidate).bind("d".repeat(64)).execute(&pool).await.unwrap();
+    // Migrations 17 and 18 add tables without backfills or new guards.
+    migrations(20261102000017).run(&pool).await.unwrap();
+    // A check recorded before migration 19 carries no inventory hash; the
+    // upgrade must backfill it from the referenced candidate.
+    let legacy_check = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_snapshot_promotion_checks (id,candidate_id,decision,operator,reason) VALUES ($1,$2,'verified','drill','pre-upgrade')").bind(legacy_check).bind(candidate).execute(&pool).await.unwrap();
+    migrations(20261102000019).run(&pool).await.unwrap();
+    let backfilled: String = sqlx::query_scalar(
+        "SELECT inventory_sha256 FROM cloud_snapshot_promotion_checks WHERE id=$1",
+    )
+    .bind(legacy_check)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        backfilled,
+        "c".repeat(64),
+        "upgrade backfills the check inventory"
+    );
+    for (table, expected) in [
+        ("cloud_publishers", 1),
+        ("cloud_publisher_memberships", 1),
+        ("cloud_account_roles", 1),
+        ("cloud_publisher_keys", 1),
+        ("cloud_upload_sessions", 1),
+        ("cloud_plugin_releases", 1),
+        ("cloud_verification_jobs", 1),
+        ("cloud_moderation_events", 1),
+        ("cloud_publication_jobs", 1),
+        ("cloud_snapshot_candidates", 1),
+        ("cloud_snapshot_candidate_files", 1),
+        // Only the legacy pre-upgrade check exists at this point; the
+        // decision recorded below brings the total to two.
+        ("cloud_snapshot_promotion_checks", 1),
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, expected, "upgrade must preserve {table}");
+    }
+    // The new tables reference the preserved rows.
+    sqlx::query(
+        "INSERT INTO cloud_release_yanks (release_id,yanked_by,reason) VALUES ($1,$2,'drill')",
+    )
+    .bind(release)
+    .bind(&users[1])
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_release_advisories (release_id,severity,message,url,created_by) VALUES ($1,'high','drill',NULL,$2)").bind(release).bind(&users[1]).execute(&pool).await.unwrap();
+    snapshot_promotion::record_decision(&pool, candidate, "blocked", "drill", "upgrade drill")
+        .await
+        .unwrap();
+    let checks: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_snapshot_promotion_checks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(checks, 2, "legacy check plus the new decision");
+    for table in ["cloud_release_yanks", "cloud_release_advisories"] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "missing row in {table}");
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE action='snapshot.candidate_verification_blocked'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "missing promotion-check audit event");
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&control)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let control = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("promotion_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&control)
+        .await
+        .unwrap();
+    let mut schema_url = Url::parse(&url).unwrap();
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let schema_url = schema_url.to_string();
+    let adapter = Arc::new(SqlxDbAdapter::postgres(&schema_url).await.unwrap());
+    let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            ..Default::default()
+        },
+        adapter.clone(),
+        Some(secondary.clone()),
+        vec![],
+    )
+    .unwrap();
+    adapter
+        .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
+        .await
+        .unwrap();
+    secondary.migrate().await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&schema_url)
+        .await
+        .unwrap();
+    readiness::MIGRATOR.run(&pool).await.unwrap();
+    let candidate = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cloud_snapshot_candidates(id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES($1,'candidate',$2,$3,1,7)",
+    )
+    .bind(candidate)
+    .bind("a".repeat(64))
+    .bind("b".repeat(64))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let verified = snapshot_promotion::record_decision(
+        &pool,
+        candidate,
+        "verified",
+        "test-op",
+        "point-in-time verification passed; not deployed",
+    )
+    .await
+    .unwrap();
+    let row: (String, String, String, String) = sqlx::query_as(
+        "SELECT decision,operator,reason,inventory_sha256 FROM cloud_snapshot_promotion_checks WHERE id=$1",
+    )
+    .bind(verified)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "verified");
+    assert_eq!(row.1, "test-op");
+    assert_eq!(
+        row.3,
+        "b".repeat(64),
+        "decision pins the candidate inventory"
+    );
+    let audit: (String, String) = sqlx::query_as(
+        "SELECT actor_user_id,action FROM cloud_audit_events WHERE subject_id=$1 AND action='snapshot.candidate_verified'",
+    )
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.0, "operator:test-op");
+    assert_eq!(audit.1, "snapshot.candidate_verified");
+    let blocked = snapshot_promotion::record_decision(
+        &pool,
+        candidate,
+        "blocked",
+        "test-op",
+        "verification failed: candidate changed during verification",
+    )
+    .await
+    .unwrap();
+    assert_ne!(verified, blocked);
+    let checks = snapshot_promotion::list_checks(&pool, candidate)
+        .await
+        .unwrap();
+    assert_eq!(checks.len(), 2, "verified and blocked decisions are listed");
+    let decisions: Vec<&str> = checks.iter().map(|c| c.decision.as_str()).collect();
+    assert!(decisions.contains(&"verified") && decisions.contains(&"blocked"));
+    for check in &checks {
+        assert_eq!(check.candidate_id, candidate);
+        assert_eq!(check.inventory_sha256, "b".repeat(64));
+        assert!(!check.created_at.is_empty());
+    }
+    assert!(
+        snapshot_promotion::list_checks(&pool, uuid::Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_empty(),
+        "unknown candidates list no decisions"
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='snapshot.candidate_verification_blocked'",
+    )
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    assert!(
+        snapshot_promotion::record_decision(&pool, candidate, "deployed", "test-op", "x",)
+            .await
+            .is_err(),
+        "only verified or blocked decisions are recorded"
+    );
+    assert!(
+        snapshot_promotion::record_decision(&pool, candidate, "verified", "bad operator!", "x",)
+            .await
+            .is_err(),
+        "operator labels are constrained"
+    );
+    assert!(
+        snapshot_promotion::record_decision(&pool, candidate, "verified", "test-op", "",)
+            .await
+            .is_err(),
+        "empty reasons are rejected"
+    );
+    assert!(
+        snapshot_promotion::record_decision(
+            &pool,
+            uuid::Uuid::new_v4(),
+            "verified",
+            "test-op",
+            "x",
+        )
+        .await
+        .is_err(),
+        "unknown candidates are rejected"
+    );
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&control)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use tiktools_plugin_package::{KeyId, SigningKey};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let control = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("yankcap_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&control)
+        .await
+        .unwrap();
+    let mut schema_url = Url::parse(&url).unwrap();
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let schema_url = schema_url.to_string();
+    let adapter = Arc::new(SqlxDbAdapter::postgres(&schema_url).await.unwrap());
+    let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            ..Default::default()
+        },
+        adapter.clone(),
+        Some(secondary.clone()),
+        vec![],
+    )
+    .unwrap();
+    adapter
+        .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
+        .await
+        .unwrap();
+    secondary.migrate().await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&schema_url)
+        .await
+        .unwrap();
+    readiness::MIGRATOR.run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx).unwrap();
+    let mut users = Vec::new();
+    for _ in 0..2 {
+        users.push(
+            service
+                .sign_up(
+                    SignUpInput {
+                        email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                        name: "Yank Cap".into(),
+                        password: "test password with enough characters".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap()
+                .user
+                .id,
+        );
+    }
+    sqlx::query("INSERT INTO cloud_account_roles (user_id,role) VALUES ($1,'admin')")
+        .bind(&users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,'yankcap','approved')",
+    )
+    .bind(publisher)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&users[0]).execute(&pool).await.unwrap();
+    let key = SigningKey::generate(
+        KeyId::parse(&format!("key-{}", uuid::Uuid::new_v4().simple())).unwrap(),
+        None,
+    )
+    .unwrap()
+    .public_key();
+    let key_row = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,$3,$4,$5,'approved',$6)").bind(key_row).bind(publisher).bind(key.key_id.as_str()).bind(&key.public_key).bind(key.fingerprint().unwrap().to_string()).bind(&users[0]).execute(&pool).await.unwrap();
+    let upload = uuid::Uuid::new_v4();
+    let release = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_upload_sessions (id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at,version_id) VALUES ($1,$2,$3,$4,5,$5,'quarantine/yankcap','quarantined',now(),'version')").bind(upload).bind(publisher).bind(&users[0]).bind(format!("yankcap{}", upload.simple())).bind("a".repeat(64)).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_plugin_releases (id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) VALUES ($1,$2,$3,$4,'yankcap.plugin','1.0.0','any','review_approved',$5)").bind(release).bind(publisher).bind(upload).bind(key_row).bind(&users[0]).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_verification_jobs (upload_id,release_id,status,attempts,result_class) VALUES ($1,$2,'antivirus_passed',1,'antivirus_passed')").bind(upload).bind(release).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_moderation_events (id,release_id,actor_user_id,decision,reason_code) VALUES ($1,$2,$3,'approve','policy_reviewed')").bind(uuid::Uuid::new_v4()).bind(release).bind(&users[1]).execute(&pool).await.unwrap();
+    let job = uuid::Uuid::new_v4();
+    let prepared_version = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO cloud_publication_jobs (id,release_id,requested_by,status,result_class,prepared_key,prepared_version_id) VALUES ($1,$2,$3,'prepared','prepared',$4,$5)").bind(job).bind(release).bind(&users[1]).bind(format!("prepared/{publisher}/{}", uuid::Uuid::new_v4())).bind(&prepared_version).execute(&pool).await.unwrap();
+    let items = {
+        let mut conn = pool.acquire().await.unwrap();
+        snapshot_worker::capture(&mut conn).await.unwrap()
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].advisory, None);
+    sqlx::query("INSERT INTO cloud_release_advisories (release_id,severity,message,url,created_by) VALUES ($1,'high','upgrade now','https://example.test/a',$2)").bind(release).bind(&users[1]).execute(&pool).await.unwrap();
+    let items = {
+        let mut conn = pool.acquire().await.unwrap();
+        snapshot_worker::capture(&mut conn).await.unwrap()
+    };
+    let advisory = items[0].advisory.as_ref().expect("advisory is captured");
+    assert_eq!(advisory.severity, "high");
+    assert_eq!(advisory.message, "upgrade now");
+    assert_eq!(advisory.url.as_deref(), Some("https://example.test/a"));
+    assert_eq!(
+        items[0]
+            .advisory
+            .as_ref()
+            .unwrap()
+            .registry()
+            .unwrap()
+            .severity,
+        tiktools_plugin_registry::AdvisorySeverity::High
+    );
+    sqlx::query(
+        "INSERT INTO cloud_release_yanks (release_id,yanked_by,reason) VALUES ($1,$2,'malware')",
+    )
+    .bind(release)
+    .bind(&users[1])
+    .execute(&pool)
+    .await
+    .unwrap();
+    let blocked = {
+        let mut conn = pool.acquire().await.unwrap();
+        snapshot_worker::capture(&mut conn).await.is_err()
+    };
+    assert!(
+        blocked,
+        "a yanked release blocks candidacy instead of being silently omitted"
+    );
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&control)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn release_yanks_and_advisories_are_moderated_and_block_publication() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut users = Vec::new();
+    for _ in 0..4 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        users.push((
+            result.user.id,
+            format!("{}={}", result.cookie.name, result.cookie.value),
+        ));
+    }
+    for user in [&users[1].0, &users[2].0] {
+        admin::change_role(&pool, true, user, "moderator", "test")
+            .await
+            .unwrap();
+    }
+    let publisher = uuid::Uuid::new_v4();
+    let namespace = format!("yank{}", publisher.simple());
+    sqlx::query("INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,$2,'approved')")
+        .bind(publisher)
+        .bind(&namespace)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&users[0].0).execute(&pool).await.unwrap();
+    let key_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,'kk','cGtleQ',$3,'approved',$4)").bind(key_id).bind(publisher).bind("f".repeat(64)).bind(&users[0].0).execute(&pool).await.unwrap();
+    async fn release(
+        pool: &PgPool,
+        publisher: uuid::Uuid,
+        key: uuid::Uuid,
+        namespace: &str,
+        requester: &str,
+        version: &str,
+        status: &str,
+    ) -> uuid::Uuid {
+        let upload = uuid::Uuid::new_v4();
+        let id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO cloud_upload_sessions (id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at,version_id) VALUES ($1,$2,$3,$4,5,$5,$6,'quarantined',now(),'version')").bind(upload).bind(publisher).bind(requester).bind(format!("yank{upload}")).bind("a".repeat(64)).bind(format!("quarantine/{publisher}/{upload}")).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO cloud_plugin_releases (id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) VALUES ($1,$2,$3,$4,$5,$6,'any',$7,$8)").bind(id).bind(publisher).bind(upload).bind(key).bind(format!("{namespace}.plugin")).bind(version).bind(status).bind(requester).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO cloud_verification_jobs (upload_id,release_id,status,attempts,result_class) VALUES ($1,$2,'antivirus_passed',1,'antivirus_passed')").bind(upload).bind(id).execute(pool).await.unwrap();
+        id
+    }
+    let approved = release(
+        &pool,
+        publisher,
+        key_id,
+        &namespace,
+        &users[0].0,
+        "1.0.0",
+        "review_approved",
+    )
+    .await;
+    sqlx::query("INSERT INTO cloud_moderation_events (id,release_id,actor_user_id,decision,reason_code) VALUES ($1,$2,$3,'approve','policy_reviewed')").bind(uuid::Uuid::new_v4()).bind(approved).bind(&users[1].0).execute(&pool).await.unwrap();
+    let pending = release(
+        &pool,
+        publisher,
+        key_id,
+        &namespace,
+        &users[0].0,
+        "2.0.0",
+        "antivirus_passed",
+    )
+    .await;
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    async fn post_json(
+        app: &Router,
+        path: &str,
+        cookie: Option<&str>,
+        origin: Option<&str>,
+        body: serde_json::Value,
+    ) -> StatusCode {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
+        }
+        if let Some(origin) = origin {
+            req = req.header(header::ORIGIN, origin);
+        }
+        let req = req
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+    let yank_path = format!("/api/v1/moderation/releases/{approved}/yank");
+    let yank_body = || serde_json::json!({"reason": "malware found in 1.0.0"});
+    assert_eq!(
+        post_json(&app, &yank_path, None, Some(ORIGIN), yank_body()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[3].1),
+            Some(ORIGIN),
+            yank_body()
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[0].1),
+            Some(ORIGIN),
+            yank_body()
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[1].1),
+            Some("https://evil.test"),
+            yank_body()
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[1].1),
+            Some(ORIGIN),
+            serde_json::json!({"reason": ""})
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[1].1),
+            Some(ORIGIN),
+            yank_body()
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &yank_path,
+            Some(&users[1].1),
+            Some(ORIGIN),
+            yank_body()
+        )
+        .await,
+        StatusCode::CONFLICT
+    );
+    let missing = format!("/api/v1/moderation/releases/{}/yank", uuid::Uuid::new_v4());
+    assert_eq!(
+        post_json(&app, &missing, Some(&users[1].1), Some(ORIGIN), yank_body()).await,
+        StatusCode::NOT_FOUND
+    );
+    let advisory_path = format!("/api/v1/moderation/releases/{approved}/advisory");
+    let advisory_body = |severity: &str, message: &str, url: Option<&str>| {
+        let mut value = serde_json::json!({"severity": severity, "message": message});
+        if let Some(url) = url {
+            value["url"] = serde_json::json!(url);
+        }
+        value
+    };
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            advisory_body("medium", "use 2.x", None)
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            advisory_body("high", "use 2.x", Some("http://example.test/a"))
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            advisory_body("high", "use\x072.x", None)
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[0].1),
+            Some(ORIGIN),
+            advisory_body("high", "use 2.x", None)
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            advisory_body("high", "use 2.x", Some("https://example.test/a"))
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &advisory_path,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            advisory_body("critical", "upgrade now", None)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    let row: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT severity,message,url FROM cloud_release_advisories WHERE release_id=$1",
+    )
+    .bind(approved)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "critical");
+    assert_eq!(row.1, "upgrade now");
+    assert_eq!(row.2, None);
+    let yank_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='release.yanked'",
+    )
+    .bind(approved)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(yank_count, 1);
+    let advisory_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='release.advisory_recorded'",
+    )
+    .bind(approved)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(advisory_count, 2);
+    // Publishers see the yank and advisory on the release and its review.
+    let release_path = format!("/api/v1/plugins/releases/{approved}");
+    let response = request(&app, "GET", &release_path, Some(&users[0].1), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["yanked"], true);
+    assert_eq!(body["yankReason"], "malware found in 1.0.0");
+    assert_eq!(body["advisory"]["severity"], "critical");
+    assert_eq!(body["advisory"]["message"], "upgrade now");
+    assert!(body["advisory"].get("url").is_none_or(|u| u.is_null()));
+    let review_path = format!("/api/v1/plugins/releases/{approved}/review");
+    let response = request(&app, "GET", &review_path, Some(&users[0].1), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let review: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(review["yanked"], true);
+    assert_eq!(review["advisory"]["severity"], "critical");
+    // A yanked release cannot enter or re-enter the publication queue.
+    let publish_path = format!("/api/v1/plugins/releases/{approved}/publish");
+    assert_eq!(
+        request(&app, "POST", &publish_path, Some(&users[2].1), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    // A yanked release cannot be approved after the fact.
+    let pending_yank = format!("/api/v1/moderation/releases/{pending}/yank");
+    assert_eq!(
+        post_json(
+            &app,
+            &pending_yank,
+            Some(&users[1].1),
+            Some(ORIGIN),
+            yank_body()
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    let pending_decision = format!("/api/v1/moderation/releases/{pending}/decision");
+    assert_eq!(
+        post_json(
+            &app,
+            &pending_decision,
+            Some(&users[2].1),
+            Some(ORIGIN),
+            serde_json::json!({"decision": "approve", "reasonCode": "policy_reviewed"})
+        )
+        .await,
+        StatusCode::CONFLICT
+    );
+    // Inspection URLs are refused for yanked releases, like every other
+    // pipeline action.
+    let inspect_path = format!("/api/v1/moderation/releases/{pending}/inspection");
+    assert_eq!(
+        request(&app, "POST", &inspect_path, Some(&users[2].1), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    // Moderator authorship of yanks and advisories shows up in account export.
+    let export = request(&app, "GET", "/api/v1/me/export", Some(&users[1].1), None).await;
+    assert_eq!(export.status(), StatusCode::OK);
+    let exported: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(export.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(exported["yanksRecorded"].as_array().unwrap().len(), 2);
+    assert!(exported["advisoriesRecorded"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let advisor_export = request(&app, "GET", "/api/v1/me/export", Some(&users[2].1), None).await;
+    assert_eq!(advisor_export.status(), StatusCode::OK);
+    let advisor_data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(advisor_export.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(advisor_data["yanksRecorded"].as_array().unwrap().is_empty());
+    assert_eq!(
+        advisor_data["advisoriesRecorded"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        advisor_data["advisoriesRecorded"][0]["severity"],
+        "critical"
+    );
+    let owner_export = request(&app, "GET", "/api/v1/me/export", Some(&users[0].1), None).await;
+    assert_eq!(owner_export.status(), StatusCode::OK);
+    let owner_data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(owner_export.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(owner_data["yanksRecorded"].as_array().unwrap().is_empty());
+    assert!(owner_data["advisoriesRecorded"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Reviewers see the yank in the moderation queue; the release stays listed.
+    let queue_response = request(
+        &app,
+        "GET",
+        "/api/v1/moderation/releases",
+        Some(&users[2].1),
+        None,
+    )
+    .await;
+    assert_eq!(queue_response.status(), StatusCode::OK);
+    let queue: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(queue_response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let pending_item = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == pending.to_string())
+        .expect("yanked pending release is still listed");
+    assert_eq!(pending_item["yanked"], true);
+    assert_eq!(pending_item["yankReason"], "malware found in 1.0.0");
 }
 
 #[tokio::test]

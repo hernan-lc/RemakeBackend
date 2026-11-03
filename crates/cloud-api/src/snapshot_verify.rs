@@ -117,14 +117,15 @@ pub(crate) fn check_contents(
         for release in &doc.releases {
             let version = tiktools_plugin_api::manifest::parse_version(&release.version)
                 .ok_or("invalid version")?;
-            if release.yanked
-                || release.advisory.is_some()
-                || release.channel
-                    != if version.pre.is_empty() {
-                        "stable"
-                    } else {
-                        "beta"
-                    }
+            if release.yanked {
+                return Err("candidate release is yanked".into());
+            }
+            if release.channel
+                != if version.pre.is_empty() {
+                    "stable"
+                } else {
+                    "beta"
+                }
             {
                 return Err("unexpected release policy".into());
             }
@@ -133,6 +134,14 @@ pub(crate) fn check_contents(
                 let (item, key) = expected
                     .get(&identity)
                     .ok_or("unexpected indexed artifact")?;
+                let expected_advisory = item
+                    .advisory
+                    .as_ref()
+                    .map(snapshot_worker::AdvisoryRecord::registry)
+                    .transpose()?;
+                if release.advisory != expected_advisory {
+                    return Err("candidate advisory does not match inventory".into());
+                }
                 if !observed.insert(identity)
                     || doc.publisher.as_deref() != Some(&item.namespace)
                     || artifact.sha256.as_hex() != item.sha256

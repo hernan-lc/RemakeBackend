@@ -14,6 +14,7 @@ use std::{
 };
 use tiktools_plugin_api::manifest::parse_version;
 use tiktools_plugin_package::{KeyId, KeyRole, PublicKey, Sha256Digest, SigningKey, TrustedKey};
+use tiktools_plugin_registry::{Advisory, AdvisorySeverity};
 use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -80,6 +81,29 @@ pub(crate) struct Item {
     public_key: String,
     requester: String,
     revisions: Vec<String>,
+    pub(crate) advisory: Option<AdvisoryRecord>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct AdvisoryRecord {
+    pub(crate) severity: String,
+    pub(crate) message: String,
+    pub(crate) url: Option<String>,
+}
+impl AdvisoryRecord {
+    pub(crate) fn registry(&self) -> Result<Advisory> {
+        let severity = match self.severity.as_str() {
+            "low" => AdvisorySeverity::Low,
+            "moderate" => AdvisorySeverity::Moderate,
+            "high" => AdvisorySeverity::High,
+            "critical" => AdvisorySeverity::Critical,
+            _ => return Err("unknown advisory severity".into()),
+        };
+        Ok(Advisory {
+            severity,
+            message: self.message.clone(),
+            url: self.url.clone(),
+        })
+    }
 }
 impl Item {
     pub(crate) fn approved(&self) -> Result<TrustedKey> {
@@ -94,7 +118,7 @@ impl Item {
 // One SQL statement takes a point-in-time view and includes every prepared job.
 // Never filter invalid prepared jobs away: any invalid row blocks the candidate.
 pub(crate) async fn capture(conn: &mut PgConnection) -> Result<Vec<Item>> {
-    let rows=sqlx::query("SELECT q.id AS job,q.prepared_key,q.prepared_version_id,q.requested_by AS requester,r.publisher_id,r.plugin_id,r.version,r.target,p.namespace,u.expected_sha256,u.expected_size,k.key_id,k.public_key,k.fingerprint,q.xmin::text AS qrev,r.xmin::text AS rrev,p.xmin::text AS prev,u.xmin::text AS urev,k.xmin::text AS krev,v.xmin::text AS vrev,m.xmin::text AS mrev,COALESCE((SELECT string_agg(a.role||':'||a.xmin::text,',' ORDER BY a.role) FROM cloud_account_roles a WHERE a.user_id=q.requested_by AND a.role IN ('admin','moderator')),'') AS roles,COALESCE(q.result_class='prepared' AND p.status='approved' AND k.status='approved' AND r.status='review_approved' AND u.status='quarantined' AND v.status='antivirus_passed' AND v.result_class='antivirus_passed' AND m.decision='approve' AND q.requested_by<>r.requested_by AND q.requested_by<>u.requested_by AND q.requested_by<>k.requested_by AND EXISTS(SELECT 1 FROM cloud_account_roles a WHERE a.user_id=q.requested_by AND a.role IN ('admin','moderator')) AND NOT EXISTS(SELECT 1 FROM cloud_publisher_memberships x WHERE x.publisher_id=r.publisher_id AND x.user_id=q.requested_by),false) AS authorized FROM cloud_publication_jobs q JOIN cloud_plugin_releases r ON r.id=q.release_id JOIN cloud_publishers p ON p.id=r.publisher_id JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_publisher_keys k ON k.id=r.publisher_key_id AND k.publisher_id=r.publisher_id LEFT JOIN cloud_verification_jobs v ON v.upload_id=u.id AND v.release_id=r.id LEFT JOIN cloud_moderation_events m ON m.release_id=r.id WHERE q.status='prepared' ORDER BY q.id LIMIT 10001").fetch_all(&mut *conn).await?;
+    let rows=sqlx::query("SELECT q.id AS job,q.prepared_key,q.prepared_version_id,q.requested_by AS requester,r.publisher_id,r.plugin_id,r.version,r.target,p.namespace,u.expected_sha256,u.expected_size,k.key_id,k.public_key,k.fingerprint,a.severity AS advisory_severity,a.message AS advisory_message,a.url AS advisory_url,q.xmin::text AS qrev,r.xmin::text AS rrev,p.xmin::text AS prev,u.xmin::text AS urev,k.xmin::text AS krev,v.xmin::text AS vrev,m.xmin::text AS mrev,COALESCE(a.xmin::text,'') AS arev,COALESCE((SELECT string_agg(a.role||':'||a.xmin::text,',' ORDER BY a.role) FROM cloud_account_roles a WHERE a.user_id=q.requested_by AND a.role IN ('admin','moderator')),'') AS roles,COALESCE(q.result_class='prepared' AND p.status='approved' AND k.status='approved' AND r.status='review_approved' AND u.status='quarantined' AND v.status='antivirus_passed' AND v.result_class='antivirus_passed' AND m.decision='approve' AND y.release_id IS NULL AND q.requested_by<>r.requested_by AND q.requested_by<>u.requested_by AND q.requested_by<>k.requested_by AND EXISTS(SELECT 1 FROM cloud_account_roles a WHERE a.user_id=q.requested_by AND a.role IN ('admin','moderator')) AND NOT EXISTS(SELECT 1 FROM cloud_publisher_memberships x WHERE x.publisher_id=r.publisher_id AND x.user_id=q.requested_by),false) AS authorized FROM cloud_publication_jobs q JOIN cloud_plugin_releases r ON r.id=q.release_id JOIN cloud_publishers p ON p.id=r.publisher_id JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_publisher_keys k ON k.id=r.publisher_key_id AND k.publisher_id=r.publisher_id LEFT JOIN cloud_verification_jobs v ON v.upload_id=u.id AND v.release_id=r.id LEFT JOIN cloud_moderation_events m ON m.release_id=r.id LEFT JOIN cloud_release_yanks y ON y.release_id=r.id LEFT JOIN cloud_release_advisories a ON a.release_id=r.id WHERE q.status='prepared' ORDER BY q.id LIMIT 10001").fetch_all(&mut *conn).await?;
     if rows.len() > 10_000 {
         return Err("snapshot inventory exceeds limit".into());
     }
@@ -118,11 +142,21 @@ pub(crate) async fn capture(conn: &mut PgConnection) -> Result<Vec<Item>> {
             return Err("invalid prepared version".into());
         }
         let revisions = [
-            "qrev", "rrev", "prev", "urev", "krev", "vrev", "mrev", "roles",
+            "qrev", "rrev", "prev", "urev", "krev", "vrev", "mrev", "arev", "roles",
         ]
         .into_iter()
         .map(|n| r.try_get::<String, _>(n))
         .collect::<std::result::Result<Vec<_>, _>>()?;
+        let advisory = match r.try_get::<Option<String>, _>("advisory_severity")? {
+            Some(severity) => Some(AdvisoryRecord {
+                severity,
+                message: r
+                    .try_get::<Option<String>, _>("advisory_message")?
+                    .ok_or("advisory without message")?,
+                url: r.try_get::<Option<String>, _>("advisory_url")?,
+            }),
+            None => None,
+        };
         let item = Item {
             job: r.get("job"),
             publisher,
@@ -138,6 +172,7 @@ pub(crate) async fn capture(conn: &mut PgConnection) -> Result<Vec<Item>> {
             public_key: r.get("public_key"),
             requester: r.get("requester"),
             revisions,
+            advisory,
         };
         if item.approved()?.key.fingerprint()?.as_hex() != r.get::<String, _>("fingerprint") {
             return Err("publisher fingerprint mismatch".into());
@@ -247,7 +282,12 @@ pub async fn build(
                     "beta"
                 },
                 yanked: false,
-                advisory: None,
+                advisory: item
+                    .advisory
+                    .as_ref()
+                    .map(AdvisoryRecord::registry)
+                    .transpose()
+                    .map_err(|_| "invalid advisory record")?,
             });
         }
         cloud_snapshot::build(&seed, &root, inputs.index, &releases)
@@ -255,8 +295,10 @@ pub async fn build(
     })
     .await
     .map_err(|_| "candidate build task failed")??;
-    // No yanks, advisories, or prior published inventory are modeled yet; this is
-    // an initial private candidate only. Publication must not consume it as-is.
+    // No prior published inventory is modeled yet; this is an initial private
+    // candidate only. Yanked releases block the candidate; recorded advisories
+    // are carried into the registry documents. Deployment must not consume
+    // the candidate as-is.
     if current(pool).await? != inventory {
         return Err("snapshot inventory changed during build".into());
     }
@@ -327,5 +369,31 @@ mod tests {
         let link = dir.path().join("link");
         symlink(&key, &link).unwrap();
         assert!(read_file(&link, true, 32).is_err());
+    }
+    #[test]
+    fn advisory_records_map_to_registry_advisories() {
+        use tiktools_plugin_registry::AdvisorySeverity;
+        for (severity, expected) in [
+            ("low", AdvisorySeverity::Low),
+            ("moderate", AdvisorySeverity::Moderate),
+            ("high", AdvisorySeverity::High),
+            ("critical", AdvisorySeverity::Critical),
+        ] {
+            let record = AdvisoryRecord {
+                severity: severity.into(),
+                message: "upgrade now".into(),
+                url: Some("https://example.test/a".into()),
+            };
+            let advisory = record.registry().unwrap();
+            assert_eq!(advisory.severity, expected);
+            assert_eq!(advisory.message, "upgrade now");
+            assert_eq!(advisory.url.as_deref(), Some("https://example.test/a"));
+        }
+        let unknown = AdvisoryRecord {
+            severity: "unknown".into(),
+            message: "x".into(),
+            url: None,
+        };
+        assert!(unknown.registry().is_err());
     }
 }

@@ -23,15 +23,40 @@ a trusted Origin, and one of these JSON bodies:
 - `{"decision":"reject","reasonCode":"malware"}`
 - `{"decision":"reject","reasonCode":"other"}`
 
+Publisher members see the revocation state on their own releases: `GET /api/v1/plugins/releases/{releaseUuid}` and `GET /api/v1/plugins/releases/{releaseUuid}/review` report `yanked`, `yankReason`, and the recorded `advisory` (`severity`, `message`, `url`) alongside the existing fields, and the moderation queue marks each candidate the same way.
+
+An independent reviewer can permanently yank a release with
+`POST /api/v1/moderation/releases/{releaseUuid}/yank` and a JSON
+`{"reason": "..."}` body. A yank never deletes the release or its history, cannot
+be undone, and blocks publication requests, preparation, approval, and snapshot
+candidacy; the pipeline refuses a yanked release instead of silently omitting
+it. The same authentication, conflict-of-interest, and serialization rules as
+decisions apply, a repeated yank conflicts, and each yank writes a
+`release.yanked` audit event.
+
+An independent reviewer can record a security advisory with
+`POST /api/v1/moderation/releases/{releaseUuid}/advisory` and a JSON body such as
+`{"severity":"high","message":"...","url":"https://..."}`. Severity is one of
+`low`, `moderate`, `high`, or `critical`; the message must be non-blank, untainted
+by control characters, and at most 1024 characters; the optional URL must be an
+`https` URL without credentials or fragment, matching the registry writer's own
+rules. Posting again replaces the advisory and records another
+`release.advisory_recorded` audit event. Advisories inform rather than block:
+the snapshot builder carries the recorded advisory into the candidate's registry
+documents, and the candidate verifier rejects documents whose advisory differs
+from the recorded one.
+
 The decision, actor, reason code and audit event are recorded transactionally. One
 decision is allowed per release; an identical retry by the same reviewer is
-idempotent and a competing or changed decision conflicts. Publisher members can read
+idempotent and a competing or changed decision conflicts. A decision on a yanked
+release is refused. Publisher members can read
 the decision and reason code at `GET /api/v1/plugins/releases/{releaseUuid}/review`;
 reviewer identity is omitted. The reviewer must perform an independent policy review before asserting
 `policy_reviewed`. To obtain the candidate archive, an eligible reviewer can send
 `POST /api/v1/moderation/releases/{releaseUuid}/inspection`. It returns a 60-second
 bearer URL bound to the captured object version. The service rechecks reviewer,
-publisher, key and verification authorization after contacting storage, and audits
+publisher, key and verification authorization after contacting storage, refuses
+yanked releases outright, and audits
 each returned capability. The signed object response requests attachment disposition,
 `application/octet-stream` and `Cache-Control: no-store`. A URL already returned cannot
 be individually revoked before expiry, so protect it from logs and disclosure.
@@ -49,6 +74,9 @@ recheck the review, publisher, key and artifact against current policy, and must
 produce and atomically deploy a signed snapshot. A moderator can enqueue a publication request, but processing, an appeal, and a
 review-reversal flow are not implemented; see [registry operations](REGISTRY-OPERATIONS.md). The account-role bootstrap is also not yet
 production-hardened.
+
+Migration `20261102000018_release_yanks_advisories.sql` adds the yank and advisory
+tables; one yank and one advisory exist per release at most.
 
 Migration `20261102000011_moderation.sql` adds the decision table and release states.
 Run the explicit migration before deploying the API. Back up the database and stop

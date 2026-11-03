@@ -100,6 +100,8 @@ async fn export_inner(
     let publication_requests = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT p.namespace,r.plugin_id,r.version,j.status,j.created_at::text AS created_at FROM cloud_publication_jobs j JOIN cloud_plugin_releases r ON r.id=j.release_id JOIN cloud_publishers p ON p.id=r.publisher_id WHERE j.requested_by=$1 ORDER BY j.created_at,j.id LIMIT 1001) x", user_id).await?;
     let ownership_transfers = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT p.namespace,t.offered_by=$1 AS outgoing,t.created_at::text AS created_at,t.expires_at::text AS expires_at FROM cloud_publisher_transfers t JOIN cloud_publishers p ON p.id=t.publisher_id WHERE t.offered_by=$1 OR t.recipient=$1 ORDER BY t.created_at,t.id LIMIT 1001) x", user_id).await?;
     let audit_events = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT e.action,e.publisher_id,e.created_at::text AS created_at FROM cloud_audit_events e WHERE e.actor_user_id=$1 ORDER BY e.created_at,e.id LIMIT 1001) x", user_id).await?;
+    let yanks_recorded = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT p.namespace,r.plugin_id,r.version,y.reason,y.created_at::text AS created_at FROM cloud_release_yanks y JOIN cloud_plugin_releases r ON r.id=y.release_id JOIN cloud_publishers p ON p.id=r.publisher_id WHERE y.yanked_by=$1 ORDER BY y.created_at,y.release_id LIMIT 1001) x", user_id).await?;
+    let advisories_recorded = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT p.namespace,r.plugin_id,r.version,a.severity,a.message,a.url,a.created_at::text AS created_at FROM cloud_release_advisories a JOIN cloud_plugin_releases r ON r.id=a.release_id JOIN cloud_publishers p ON p.id=r.publisher_id WHERE a.created_by=$1 ORDER BY a.created_at,a.release_id LIMIT 1001) x", user_id).await?;
     let sync_records = bounded_rows(&mut tx, "SELECT to_jsonb(x) FROM (SELECT collection,key,revision,deleted,value FROM cloud_sync_records WHERE user_id=$1 ORDER BY collection,key LIMIT 1001) x", user_id).await?;
     let cursor: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT cursor FROM cloud_sync_cursors WHERE user_id=$1),0)",
@@ -135,6 +137,8 @@ async fn export_inner(
         "publicationRequests": publication_requests,
         "ownershipTransfers": ownership_transfers,
         "auditEventsByActor": audit_events,
+        "yanksRecorded": yanks_recorded,
+        "advisoriesRecorded": advisories_recorded,
         "sync": {"cursor": cursor, "records": sync_records}
     });
     tx.commit()

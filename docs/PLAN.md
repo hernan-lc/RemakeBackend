@@ -2,6 +2,54 @@
 
 Start from a **new repository**, not a PR targeting `better-auth-rs` or `TikTools-app`. `better-auth-rs` remains a Git-pinned library. Work in focused branches, open reviewable draft PRs, and do not claim tests passed without executing them.
 
+## Progress
+
+The PRs below remain the work breakdown; their status as implemented in this
+repository is tracked here, with evidence in [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md)
+and exit criteria in [ROADMAP.md](ROADMAP.md). All work is unreleased: publisher
+signing-key approval, registry publication, complete sync, desktop integration,
+and release gates remain outstanding.
+
+- PR 1 (scaffold and auth spike): implemented — Axum API, layered config,
+  tracing, health checks, SQLx/PostgreSQL, explicit Better Auth migrations,
+  session-protected `/api/v1/me`, mock OAuth fixture, Compose setup, and CI.
+- PR 2 (Google OAuth and native handshake): partially implemented — JWKS refresh
+  policy, loopback PKCE handoff with single-use redemption, replay/nonce/audience
+  refusal tests, CSRF rejection, trusted-proxy header boundaries, per-client
+  redemption rate limits, and an opt-in live Google JWKS smoke test. Remaining:
+  real Google end-to-end, process restart and native Desktop client integration.
+- PR 3 (official registry): partially implemented — pinned registry protocol and
+  CLI fixture with CI checks, private initial-candidate builder with yank and
+  advisory support, candidate export and point-in-time verification, and an
+  audited, listable promotion-readiness ledger. Remaining: official domain and root keys,
+  KMS/HSM signing, snapshot promotion and deployment, CDN and rollback, and
+  Desktop validation.
+- PR 4 (publishers and RBAC): largely implemented — namespaces, memberships with
+  audited role changes, recipient-accepted ownership transfer, member departure,
+  Cloud roles with admin approval flow, and key proof-of-possession with
+  independent approval implemented but closed pending session-bound step-up.
+  Remaining: step-up-gated key enrollment and production hardening.
+- PR 5 (upload, review, publication): partially implemented — constrained upload
+  reservations, integrity and antivirus verification with a simulated and a
+  real-daemon ClamAV path, independent moderation with inspection URLs,
+  moderator-recorded yanks and severity-graded advisories enforced across
+  publication requests, preparation, approval, candidacy, verification, and
+  inspection and surfaced in read APIs, plus audited publication requests with a fenced
+  preparation worker. Remaining: public publication, serving yanks and
+  advisories to clients, and atomic snapshot promotion and deployment.
+- PR 6 (profile sync): partially implemented — revisioned plugin-selection
+  records with tombstones and a changes feed, write throttling and read/export
+  limits, an opt-in client library with conflict handling and offline
+  persistence, account-scoped export, and deletion preparation. Remaining: full
+  schema, Desktop integration with the multi-device offline workflow, and
+  complete export/deletion.
+- PR 7 (production hardening): partially implemented — readiness gates with
+  migration checksums, rate limits, abuse controls, proxy boundaries,
+  migration upgrade and `pg_dump`/`pg_restore` drills, audited operator
+  commands, and a scoped per-surface feature matrix. Remaining: load and
+  security testing, staged deployment and recovery rehearsals, SLOs and
+  incident documentation, and independent review.
+
 ## PR 1 — Service scaffold and auth integration spike
 Branch: `feat/cloud-foundation`
 - Create Axum API, layered config validation, tracing/redacted logs, health checks, SQLx/PostgreSQL, migrations and local compose setup.

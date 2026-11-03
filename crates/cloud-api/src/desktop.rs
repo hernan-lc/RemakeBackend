@@ -2,7 +2,7 @@
 use crate::AppState;
 use axum::{
     extract::{ConnectInfo, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use better_auth::{
@@ -103,15 +103,39 @@ pub async fn issue(
     Ok(Json(IssueOutput { callback_url }))
 }
 
+/// Rate-limit identity for redemption. The socket peer is authoritative: forwarded
+/// headers are only present when the proxy boundary kept them, which happens
+/// solely for peers inside `TRUSTED_PROXY_CIDRS` (untrusted peers have them
+/// stripped). A parseable client IP then keys the limit per client instead of
+/// per proxy; anything else falls back to the socket peer. Deployment must
+/// still configure the edge proxy to overwrite forwarded headers and independently
+/// verify edge rate limiting.
+pub(crate) fn rate_limit_identity(headers: &HeaderMap, peer: SocketAddr) -> String {
+    // Only the leftmost forwarded entry names the edge-observed client; entries
+    // to its right are appended by downstream hops.
+    let first_forwarded = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|list| list.split(',').next())
+        .map(str::trim);
+    let real_ip = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    let forwarded = [first_forwarded, real_ip]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| candidate.parse::<std::net::IpAddr>().ok());
+    forwarded.unwrap_or_else(|| peer.ip()).to_string()
+}
+
 pub async fn redeem(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<RedeemInput>,
 ) -> Result<Json<RedeemOutput>, StatusCode> {
-    // The socket peer is authoritative. Forwarded headers are deliberately ignored.
-    // Behind a reverse proxy all requests share its limit unless deployment provides
-    // an independently verified rate-limiting layer at the edge.
-    limit(&state, "redeem", &peer.ip().to_string(), 60).await?;
+    limit(&state, "redeem", &rate_limit_identity(&headers, peer), 60).await?;
     if input.code.len() > 128 || input.redirect_uri.len() > 2048 || input.code_verifier.len() > 128
     {
         return Err(StatusCode::BAD_REQUEST);
@@ -131,4 +155,48 @@ pub async fn redeem(
         session_token: session.session_token,
         expires_at: session.session.expires_at,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_limit_identity;
+    use axum::http::HeaderMap;
+    use std::net::SocketAddr;
+
+    fn peer() -> SocketAddr {
+        "127.0.0.1:43210".parse().unwrap()
+    }
+
+    #[test]
+    fn redeem_limit_identity_prefers_forwarded_client_ip() {
+        let headers = HeaderMap::new();
+        assert_eq!(rate_limit_identity(&headers, peer()), "127.0.0.1");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.7".parse().unwrap());
+        assert_eq!(rate_limit_identity(&headers, peer()), "203.0.113.7");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.7, 198.51.100.9".parse().unwrap(),
+        );
+        assert_eq!(rate_limit_identity(&headers, peer()), "203.0.113.7");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "2001:db8::1".parse().unwrap());
+        assert_eq!(rate_limit_identity(&headers, peer()), "2001:db8::1");
+        // Spoofed or malformed values fall back to the socket peer.
+        for value in ["", "not-an-ip", "203.0.113.7:1234", "unknown"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", value.parse().unwrap());
+            assert_eq!(rate_limit_identity(&headers, peer()), "127.0.0.1");
+        }
+        // Only the leftmost entry counts; a garbage first entry falls through
+        // to X-Real-IP, then to the socket peer.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "unknown, 203.0.113.7".parse().unwrap());
+        headers.insert("x-real-ip", "198.51.100.9".parse().unwrap());
+        assert_eq!(rate_limit_identity(&headers, peer()), "198.51.100.9");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "unknown, 203.0.113.7".parse().unwrap());
+        assert_eq!(rate_limit_identity(&headers, peer()), "127.0.0.1");
+    }
 }

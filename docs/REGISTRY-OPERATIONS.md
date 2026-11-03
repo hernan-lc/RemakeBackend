@@ -35,7 +35,7 @@ Run one preparation job in an isolated, resource-limited process with
 `cargo run --locked -p cloud-api -- prepare-publication-once`, using the same database,
 versioned quarantine storage and `CLAMAV_ADDR` settings as the verification worker.
 It rechecks the requester's role and conflicts, publisher, key, review and verification
-state; fetches the captured object version; repeats package verification and scanning;
+state, and that the release has not been yanked; fetches the captured object version; repeats package verification and scanning;
 then writes a fresh private `prepared/{publisherUuid}/{leaseUuid}` object with a
 conditional PUT. It reads back the exact returned version and checks its size and
 SHA-256 before recording `prepared`. It rechecks authorization and the input metadata
@@ -118,9 +118,10 @@ and loopback `CLAMAV_ADDR` settings. Protect the signing host and key; productio
 KMS/HSM integration is not implemented.
 
 This command accepts only a seed with no index, package or catalog tree and zero
-catalog pages. Cloud does not yet model an existing published inventory, yanks or
-advisories, so it must not be used to update an existing public registry. It assigns
-channels from versions and supplies no yanks or advisories. The database comparisons
+catalog pages. Cloud does not yet model an existing published inventory, so it must
+not be used to update an existing public registry. It assigns channels from versions,
+carries moderator-recorded advisories into the registry documents, and refuses to
+build when any prepared release is yanked. The database comparisons
 are point-in-time checks; they do not freeze future changes or make a candidate safe
 to deploy. A future promotion process must recheck the entire inventory, current
 authorization, trust, scanner policy and all stored object versions after construction
@@ -168,7 +169,8 @@ signing key is needed. The command reconstructs the stored
 versions in a temporary private directory, validates their hashes and registry
 signatures, compares release links and the recorded inventory with current Cloud
 authorization, checks every indexed artifact and catalog entry against that inventory, validates
-release metadata and channel tags against signed packages,
+release metadata and channel tags against signed packages, rejects yanked releases
+and registry documents whose advisory differs from the recorded one,
 compares current root-signed delegations and registry policy with the seed, rejects
 revoked release digests, reverifies package signatures, rescans each exact package,
 rechecks file hashes and
@@ -178,13 +180,50 @@ scanner failure, or digest mismatch fails verification.
 A successful result is a point-in-time inspection, not approval to publish. It depends on the operator supplying the current policy seed; it cannot detect rollback
 to an older valid seed or prevent changes
 after the check. The inventory comparison applies only to initial candidates without
-prior releases, yanks, or advisories. Promotion must independently establish these properties and
+prior releases. Promotion must independently establish these properties and
 fence authorization changes atomically. Storage and scanner production behavior,
 review procedures, and promotion remain unverified.
 
 For an initial candidate, all target variants of the latest release must carry the
 same displayed package metadata. The verifier rejects divergent variants instead
 of relying on the writer’s order-dependent choice.
+
+## Recording promotion-readiness decisions
+
+An operator can run the point-in-time verifier and record its outcome with
+`cargo run --locked -p cloud-api -- check-promotion-readiness CANDIDATE_UUID OPERATOR`.
+It uses the same database, private object storage, `SNAPSHOT_SEED_DIR`,
+`SNAPSHOT_ROOT_PIN_FILE`, `SNAPSHOT_INDEX_PUBLIC_KEY_FILE`, and loopback
+`CLAMAV_ADDR` settings as `verify-candidate`, then records a `verified` or
+`blocked` row in `cloud_snapshot_promotion_checks` with an audited
+`snapshot.candidate_verified` or `snapshot.candidate_verification_blocked`
+event. Each row pins the candidate's inventory hash at record time, so a later
+reader can tell exactly which inventory was verified or blocked. Candidate rows
+are never modified after creation, so the pinned hash is the inventory the
+verifier checked; only the live registry state can move on afterward, which the
+future promotion process must recheck. Operators can
+review the recorded history with
+`cargo run --locked -p cloud-api -- list-promotion-checks CANDIDATE_UUID`,
+which prints the decisions as JSON, oldest first; unknown candidates list no
+decisions. The operator label is self-supplied and must be correlated with
+separately authenticated operator logs. A `blocked` outcome still records the
+decision and exits nonzero with the failure reason.
+
+A recorded decision is **not a promotion and not an approval to deploy**. It
+only retains the decision history the design requires ("retain previous
+immutable snapshots and record their hashes and approvals") so a future
+promotion process can consult it before rechecking the entire inventory,
+current authorization, trust material, scanner policy, and every stored object
+version atomically. The command performs no deployment, changes no release
+status, and cannot detect rollback to an older valid seed or changes made
+after the check.
+
+Migration `20261102000017_snapshot_promotion_checks.sql` adds the decision
+table, and migration `20261102000019_promotion_check_inventory.sql` adds the
+pinned inventory hash with a backfill from the referenced candidates. Stop candidate builders before
+rollback and preserve promotion-check
+rows with their candidate metadata; dropping the table loses decision history.
+Rollback has not been rehearsed.
 
 ## Recovering transient preparation failures
 

@@ -58,6 +58,12 @@ pub async fn request(
     {
         return Err(StatusCode::FORBIDDEN);
     }
+    let yanked: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_release_yanks WHERE release_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     if publisher_status != "approved"
         || key_status != "approved"
         || row.get::<String, _>("upload_status") != "quarantined"
@@ -65,6 +71,7 @@ pub async fn request(
         || row.get::<String, _>("verification_status") != "antivirus_passed"
         || row.get::<Option<String>, _>("result_class").as_deref() != Some("antivirus_passed")
         || row.get::<Option<String>, _>("decision").as_deref() != Some("approve")
+        || yanked
     {
         return Err(StatusCode::CONFLICT);
     }

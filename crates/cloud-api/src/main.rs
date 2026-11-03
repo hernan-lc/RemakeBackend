@@ -12,6 +12,7 @@ mod recovery;
 mod releases;
 mod scanner;
 mod snapshot_export;
+mod snapshot_promotion;
 mod snapshot_verify;
 mod snapshot_worker;
 mod sync;
@@ -158,6 +159,71 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracing::info!(candidate_id=%id, "private candidate checks passed; not approved for deployment");
             return Ok(());
         }
+        if command == "list-promotion-checks" {
+            let id = uuid::Uuid::parse_str(candidate)?;
+            let pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&config.database_url)
+                .await?;
+            let checks = snapshot_promotion::list_checks(&pool, id).await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&checks).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+    }
+    if let [command, candidate, operator] = args.as_slice() {
+        if command == "check-promotion-readiness" {
+            let id = uuid::Uuid::parse_str(candidate)?;
+            let store = cloud_storage::QuarantineStore::new(
+                config
+                    .object_storage
+                    .ok_or("object storage must be configured")?,
+            )?;
+            let pool = PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&config.database_url)
+                .await?;
+            let root: tiktools_plugin_package::TrustedKey =
+                serde_json::from_slice(&snapshot_worker::read_file(
+                    std::path::Path::new(&std::env::var("SNAPSHOT_ROOT_PIN_FILE")?),
+                    false,
+                    16384,
+                )?)?;
+            let index: tiktools_plugin_package::PublicKey =
+                serde_json::from_slice(&snapshot_worker::read_file(
+                    std::path::Path::new(&std::env::var("SNAPSHOT_INDEX_PUBLIC_KEY_FILE")?),
+                    false,
+                    16384,
+                )?)?;
+            let scanner = scanner::ClamAv::new(
+                config
+                    .clamav_addr
+                    .ok_or("CLAMAV_ADDR must be configured for verification")?,
+            );
+            let seed = std::path::PathBuf::from(std::env::var("SNAPSHOT_SEED_DIR")?);
+            let outcome =
+                snapshot_verify::verify(&pool, &store, &scanner, &seed, id, &root, &index).await;
+            let (decision, reason) = match &outcome {
+                Ok(()) => (
+                    "verified",
+                    "point-in-time verification passed; not deployed".to_owned(),
+                ),
+                Err(e) => {
+                    let mut reason = format!("verification failed: {e}");
+                    reason.truncate(1024);
+                    ("blocked", reason)
+                }
+            };
+            let check =
+                snapshot_promotion::record_decision(&pool, id, decision, operator, &reason).await?;
+            tracing::info!(candidate_id=%id, check_id=%check, decision, "promotion readiness recorded; not deployed");
+            if outcome.is_err() {
+                return Err(reason.into());
+            }
+            return Ok(());
+        }
     }
     if let [command, job, operator] = args.as_slice() {
         let kind = match command.as_str() {
@@ -240,7 +306,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
+        return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
     let mut auth = AuthRouter::new(context.clone())?;
     if let Some((id, secret)) = config.google {
@@ -376,6 +442,18 @@ fn app_inner(
         .route(
             "/api/v1/moderation/releases/{id}/decision",
             axum::routing::post(moderation::decide)
+                .layer(axum::extract::DefaultBodyLimit::max(2048))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/moderation/releases/{id}/yank",
+            axum::routing::post(moderation::yank)
+                .layer(axum::extract::DefaultBodyLimit::max(2048))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/moderation/releases/{id}/advisory",
+            axum::routing::post(moderation::advisory)
                 .layer(axum::extract::DefaultBodyLimit::max(2048))
                 .layer(axum::middleware::map_response(sync::no_store)),
         )

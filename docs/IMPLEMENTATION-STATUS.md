@@ -22,9 +22,9 @@ Sync foundation: an experimental plugin-selection-only schema has per-user recor
 
 Native transport foundation: `/api/v1/native/me` and native sync routes use Better Auth `NativeAuthUser` to accept bearer sessions without ambient cookies; browser sync remains cookie-only. PostgreSQL tests verified a native write, forged bearer rejection, separation of cookie and bearer routes, and bearer invalidation after account deletion. The backend now exposes a Better Auth single-use PKCE handoff; no Desktop UI, keychain integration, or actual Desktop client is yet wired.
 
-Desktop handoff verification: local PostgreSQL and a Better Auth loopback receiver exercised CSRF and redirect refusal, wrong state, PKCE, single-use redemption, expiration and rate limiting. The socket peer IP is used for redemption limits; proxy deployment, real-browser testing, Google sign-in, real keychain use and independent security review remain outstanding. See DESKTOP-AUTH.md.
+Desktop handoff verification: local PostgreSQL and a Better Auth loopback receiver exercised CSRF and redirect refusal, wrong state, PKCE, single-use redemption, expiration and rate limiting. Redemption limits key per trusted client IP behind allowlisted proxies and fall back to the socket peer IP otherwise, with unit and PostgreSQL integration coverage for per-IP buckets and header stripping on untrusted peers; proxy deployment, real-browser testing, Google sign-in, real keychain use and independent security review remain outstanding. See DESKTOP-AUTH.md.
 
-Proxy boundary: forwarded, X-Forwarded-* and X-Real-IP headers are stripped unless the TCP peer belongs to an explicitly configured `TRUSTED_PROXY_CIDRS` network. Better Auth trusts forwarded host/protocol/client-IP headers only when the allowlist is nonempty. Configuration rejects invalid CIDRs and default routes. Local unit coverage verifies that absent/untrusted peers are stripped and allowlisted peers retain the headers; production firewall and proxy sanitization remain deployment checks.
+Proxy boundary: forwarded, X-Forwarded-* and X-Real-IP headers are stripped unless the TCP peer belongs to an explicitly configured `TRUSTED_PROXY_CIDRS` network. Better Auth trusts forwarded host/protocol/client-IP headers only when the allowlist is nonempty. Desktop handoff redemption additionally keys its rate limit by the retained client IP, falling back to the socket peer. Configuration rejects invalid CIDRs and default routes. Local unit coverage verifies that absent/untrusted peers are stripped and allowlisted peers retain the headers; production firewall and proxy sanitization remain deployment checks.
 
 Readiness verification: the PostgreSQL integration test checks missing, failed, changed and unknown Cloud migration records, absent auth/Cloud columns, and a closed pool. Liveness stays available. Readiness also checks required table privileges, but it does not verify column types, indexes, constraints, external services or successful application behavior; older binaries report unready when the database has newer Cloud migrations.
 
@@ -46,11 +46,11 @@ Publisher signing-key lifecycle: challenge-based proof of possession, independen
 
 Release submission and integrity worker: an authenticated request binds a quarantined upload to namespace-scoped metadata and an approved publisher key. A one-shot worker claims it with a fenced lease, downloads the recorded object version, verifies digest and package integrity, and rechecks key authorization before recording the result. ClamAV scanning is connected; the full worker is tested with a simulated scanner, and the adapter has a separate real-daemon smoke test; moderation decisions are implemented, but an isolated reviewer environment and publication remain absent, and the process sandbox and real storage still require validation. See RELEASE-VERIFICATION.md.
 
-Moderation: reviewers with a Cloud admin or moderator role can list eligible, antivirus-passed releases and record one independent, audited decision. Approval rechecks publisher and key status; conflicts of interest and competing decisions are refused. Reviewers can request short-lived version-bound inspection URLs; the service does not provide an isolated review environment, appeal or reversal, and does not publish an artifact. See MODERATION.md.
+Moderation: reviewers with a Cloud admin or moderator role can list eligible, antivirus-passed releases and record one independent, audited decision. Approval rechecks publisher and key status; conflicts of interest, competing decisions, and decisions on yanked releases are refused. Reviewers can request short-lived version-bound inspection URLs, refused once a release is yanked; the service does not provide an isolated review environment, appeal or reversal, and does not publish an artifact. Independent reviewers can also permanently yank a release, which blocks publication requests, preparation, approval, and snapshot candidacy, and can record or replace a severity-graded security advisory, which the snapshot builder carries into candidate registry documents for the verifier to recheck. All yank, advisory, decision, and inspection actions are audited, and the release, review, and moderation-queue read APIs expose the yank and advisory state. See MODERATION.md.
 
-Publication request: an independent moderator or admin can queue a reviewed release after rechecking publisher, key, antivirus and review state. A one-shot preparer now reverifies, rescans, and stores a read-back-verified private object version with fenced leases. The response still reports end-to-end publication as unavailable. An initial-only candidate worker now signs and stages private files, but no public release or deployment worker exists yet; see REGISTRY-OPERATIONS.md.
+Publication request: an independent moderator or admin can queue a reviewed release after rechecking publisher, key, antivirus and review state and refusing yanked releases. A one-shot preparer now reverifies, rescans, and stores a read-back-verified private object version with fenced leases. The response still reports end-to-end publication as unavailable. An initial-only candidate worker now signs and stages private files, but no public release or deployment worker exists yet; see REGISTRY-OPERATIONS.md.
 
-Snapshot candidate builder: the standalone `cloud-snapshot` library checks independently pinned and root-signed trust material, verifies an explicitly supplied release inventory, and uses the pinned TikTools writer to produce and recheck a private signed candidate. A real TikTools client verified the local candidate in tests. An initial-candidate worker now reads every prepared job, checks its current authorization, rescans and builds a candidate, and records privately staged file versions after inventory rechecks. It does not handle an existing published inventory, guarantee later authorization, or deploy. See REGISTRY-OPERATIONS.md.
+Snapshot candidate builder: the standalone `cloud-snapshot` library checks independently pinned and root-signed trust material, verifies an explicitly supplied release inventory, and uses the pinned TikTools writer to produce and recheck a private signed candidate. A real TikTools client verified the local candidate in tests. An initial-candidate worker now reads every prepared job, checks its current authorization, rescans and builds a candidate, and records privately staged file versions after inventory rechecks. A yanked release fails the authorization check and blocks the candidate; recorded advisories are carried into the registry documents. It does not handle an existing published inventory, guarantee later authorization, or deploy. See REGISTRY-OPERATIONS.md.
 
 Initial candidate worker: an operator command connects prepared jobs to the signed candidate builder, stores versioned private files and records an inventory digest. It is restricted to an empty initial seed, uses point-in-time checks, and has no promotion or cleanup. Simulated-storage tests cover authorization changes and corrupt read-back; real storage, scanner, KMS and deployment remain unverified.
 
@@ -64,6 +64,16 @@ supplied signed policy and rejects revoked digests. It reverifies package
 signatures and rescans candidate artifacts, but does not authorize promotion;
 changes can occur after it returns. Scanner integration is tested with a simulated
 service, not a production ClamAV deployment. See REGISTRY-OPERATIONS.md.
+
+Promotion readiness: an operator command runs the point-in-time candidate
+verifier and records a `verified` or `blocked` decision with the operator
+label, reason, the candidate's pinned inventory hash, and an audited event. A second operator command lists the recorded decisions for a candidate as JSON. Recording a decision performs no
+deployment, changes no release status, and is not approval to deploy; a future
+promotion process must still recheck inventory, authorization, trust, scanner
+policy, and stored versions atomically. A PostgreSQL integration test covers
+verified and blocked decisions, the audit events, and rejection of invalid
+decisions, operator labels, reasons, and unknown candidates. See
+REGISTRY-OPERATIONS.md.
 
 Real ClamAV adapter smoke test: ClamAV 1.4.6 in a disposable local container,
 with an isolated custom signature database, returned clean and detected results over
@@ -102,18 +112,18 @@ blockers. Better Auth still requires its own account-deletion reauthentication;
 social-only reauthentication, a user-facing deletion flow and audit retention policy
 remain unfinished. A bounded Cloud account export now covers profile, roles,
 memberships, user-requested publisher metadata, authored moderation/publication/audit
-activity and current validated sync records. It excludes credentials, tokens, signed
+activity including recorded yanks and advisories, and current validated sync records.
+It excludes credentials, tokens, signed
 URLs, object keys and version IDs; it is not a full identity-provider or backup export.
 The PostgreSQL 18
 integration test passed with cross-origin refusal, successful self-revocation,
 audit verification and final-admin protection coverage.
 
-Regression verification: the locked workspace unit tests, all-feature workspace
-Clippy, all-feature Cloud client tests, and desktop-login JavaScript tests passed in
-the previously recorded local regression. The complete ignored PostgreSQL suite
-then passed separately: all 20 integration tests on a fresh PostgreSQL 18 database.
-The optional real-ClamAV test was not enabled in that combined run; its separate
-custom-signature smoke test is described above. CI itself was not run here.
+Regression verification: `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, the workspace unit suites, all-feature Cloud client tests, desktop-login JavaScript tests, and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --locked --no-deps` all pass, as do the minimum-compiler gates (`cargo +1.95.0 check --workspace --locked`, `cargo +1.89.0 check -p cloud-client --all-features --locked`). The complete ignored PostgreSQL suite passes 26/26 on a fresh disposable PostgreSQL 18 database, covering candidate build/export/verification, promotion decisions and listing, yanks and advisories with pipeline enforcement and read-API visibility, migration upgrades with data preservation, per-IP redemption limiting, and the opt-in live Google JWKS smoke test. The optional real-ClamAV test runs separately; its custom-signature smoke test is described above. CI itself was not run here.
+A separate live smoke test ran the documented flow end to end on a fresh disposable
+PostgreSQL 18 database: `cloud-api -- migrate` applied all 19 Cloud migrations,
+and the serving binary returned 200 for liveness and readiness and 401 for
+anonymous `/api/v1/me`.
 
 Sync write throttling: browser and native writes share a 120-per-minute account
 limit backed by Better Auth secondary storage. A PostgreSQL integration test checks
@@ -137,7 +147,11 @@ concurrent repeat requests, auditing and renewed worker fencing.
 Migration and restore drill: a PostgreSQL 18 integration test applied Cloud
 migrations through `20261102000014`, inserted existing memberships, and verified
 that the next migrations reject orphan memberships and duplicate owners before
-succeeding after correction. A separate disposable `pg_dump`/`pg_restore` drill
+succeeding after correction. A second drill upgrades a populated database from
+migration 16 to 19, verifies publishers, memberships, roles, keys, uploads,
+releases, verification, moderation, publication, and candidate rows all survive,
+checks the backfilled promotion-check inventory hashes, and exercises the new
+yank, advisory, and promotion-check tables against the preserved rows. A separate disposable `pg_dump`/`pg_restore` drill
 restored a test database with the same user, publisher, membership, audit and
 migration counts and retained the owner-deletion foreign-key guard. This is a local
 database-only drill; production-sized recovery, object versions, secrets, backup

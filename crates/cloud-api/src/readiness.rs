@@ -179,6 +179,21 @@ async fn check(state: &AppState) -> bool {
             ][..],
         ),
         (
+            "cloud_release_yanks",
+            &["release_id", "yanked_by", "reason", "created_at"][..],
+        ),
+        (
+            "cloud_release_advisories",
+            &[
+                "release_id",
+                "severity",
+                "message",
+                "url",
+                "created_by",
+                "created_at",
+            ][..],
+        ),
+        (
             "cloud_snapshot_candidate_files",
             &[
                 "candidate_id",
@@ -187,6 +202,18 @@ async fn check(state: &AppState) -> bool {
                 "size",
                 "object_key",
                 "version_id",
+            ][..],
+        ),
+        (
+            "cloud_snapshot_promotion_checks",
+            &[
+                "id",
+                "candidate_id",
+                "inventory_sha256",
+                "decision",
+                "operator",
+                "reason",
+                "created_at",
             ][..],
         ),
         (
