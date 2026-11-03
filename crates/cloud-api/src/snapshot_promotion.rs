@@ -7,6 +7,7 @@
 //! recheck the entire inventory, current authorization, trust material,
 //! scanner policy, and every stored object version atomically before any
 //! deployment.
+use crate::snapshot_export::{self, Manifest};
 use sqlx::PgPool;
 use std::error::Error;
 use uuid::Uuid;
@@ -18,6 +19,7 @@ pub struct PromotionCheck {
     pub id: Uuid,
     pub candidate_id: Uuid,
     pub inventory_sha256: String,
+    pub manifest_sha256: Option<String>,
     pub decision: String,
     pub operator: String,
     pub reason: String,
@@ -30,7 +32,7 @@ pub struct PromotionCheck {
 pub async fn list_checks(pool: &PgPool, candidate_id: Uuid) -> Result<Vec<PromotionCheck>> {
     use sqlx::Row;
     let rows = sqlx::query(
-        "SELECT id,candidate_id,inventory_sha256,decision,operator,reason,to_char(created_at,'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at FROM cloud_snapshot_promotion_checks WHERE candidate_id=$1 ORDER BY created_at,id",
+        "SELECT id,candidate_id,inventory_sha256,manifest_sha256,decision,operator,reason,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at FROM cloud_snapshot_promotion_checks WHERE candidate_id=$1 ORDER BY cloud_snapshot_promotion_checks.created_at,id",
     )
     .bind(candidate_id)
     .fetch_all(pool)
@@ -41,6 +43,7 @@ pub async fn list_checks(pool: &PgPool, candidate_id: Uuid) -> Result<Vec<Promot
             id: row.try_get("id")?,
             candidate_id: row.try_get("candidate_id")?,
             inventory_sha256: row.try_get("inventory_sha256")?,
+            manifest_sha256: row.try_get("manifest_sha256")?,
             decision: row.try_get("decision")?,
             operator: row.try_get("operator")?,
             reason: row.try_get("reason")?,
@@ -60,10 +63,9 @@ fn valid_operator(operator: &str) -> bool {
 
 /// Record an audited promotion-readiness decision for a private candidate.
 ///
-/// `decision` must be `verified` or `blocked`. The check pins the candidate's
-/// current inventory hash, so a later reader can tell exactly which inventory
-/// was verified or blocked. `reason` is a short human-readable summary (for
-/// example the verifier outcome); it is stored verbatim up to 1024 characters.
+/// This entry point records a blocked result. Verified results require
+/// `record_verified` and the manifest returned by the verifier. `reason` is a
+/// short human-readable summary stored verbatim up to 1024 bytes.
 /// Returns the new check row id.
 pub async fn record_decision(
     pool: &PgPool,
@@ -71,6 +73,39 @@ pub async fn record_decision(
     decision: &str,
     operator: &str,
     reason: &str,
+) -> Result<Uuid> {
+    if decision != "blocked" {
+        return Err("verified decisions require a verified inventory hash".into());
+    }
+    record_decision_inner(pool, candidate_id, decision, operator, reason, None).await
+}
+
+/// Record success only if the candidate manifest is unchanged since verification.
+pub(crate) async fn record_verified(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    manifest: &Manifest,
+    operator: &str,
+    reason: &str,
+) -> Result<Uuid> {
+    record_decision_inner(
+        pool,
+        candidate_id,
+        "verified",
+        operator,
+        reason,
+        Some(manifest),
+    )
+    .await
+}
+
+async fn record_decision_inner(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    decision: &str,
+    operator: &str,
+    reason: &str,
+    expected_manifest: Option<&Manifest>,
 ) -> Result<Uuid> {
     if decision != "verified" && decision != "blocked" {
         return Err("decision must be verified or blocked".into());
@@ -82,21 +117,42 @@ pub async fn record_decision(
         return Err("reason must be between 1 and 1024 characters".into());
     }
     let mut tx = pool.begin().await?;
-    let inventory: Option<String> =
-        sqlx::query_scalar("SELECT inventory_sha256 FROM cloud_snapshot_candidates WHERE id=$1")
-            .bind(candidate_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let inventory: Option<String> = sqlx::query_scalar(
+        "SELECT inventory_sha256 FROM cloud_snapshot_candidates WHERE id=$1 FOR UPDATE",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some(inventory) = inventory else {
         return Err("candidate not found".into());
     };
+    let manifest_hash = if let Some(expected) = expected_manifest {
+        // The parent lock prevents new referenced rows while the file locks fence updates/deletes.
+        sqlx::query(
+            "SELECT path FROM cloud_snapshot_candidate_files WHERE candidate_id=$1 FOR SHARE",
+        )
+        .bind(candidate_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let current = snapshot_export::manifest(&mut tx, candidate_id).await?;
+        if current != *expected || current.inventory != inventory {
+            return Err("candidate manifest changed after verification".into());
+        }
+        Some(
+            tiktools_plugin_package::Sha256Digest::of_bytes(&serde_json::to_vec(expected)?)
+                .to_string(),
+        )
+    } else {
+        None
+    };
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO cloud_snapshot_promotion_checks(id,candidate_id,inventory_sha256,decision,operator,reason) VALUES($1,$2,$3,$4,$5,$6)",
+        "INSERT INTO cloud_snapshot_promotion_checks(id,candidate_id,inventory_sha256,manifest_sha256,decision,operator,reason) VALUES($1,$2,$3,$4,$5,$6,$7)",
     )
     .bind(id)
     .bind(candidate_id)
     .bind(&inventory)
+    .bind(&manifest_hash)
     .bind(decision)
     .bind(operator)
     .bind(reason)

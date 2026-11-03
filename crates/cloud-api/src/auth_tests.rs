@@ -14,6 +14,52 @@ use url::Url;
 
 const ORIGIN: &str = "https://cloud.example.test";
 
+#[test]
+fn readiness_reason_truncation_preserves_utf8() {
+    let mut reason = format!("{}é", "x".repeat(1023));
+    super::truncate_utf8(&mut reason, 1024);
+    assert_eq!(reason.len(), 1023);
+    assert!(reason.chars().all(|c| c == 'x'));
+    let mut short = "é".to_owned();
+    super::truncate_utf8(&mut short, 1024);
+    assert_eq!(short, "é");
+}
+
+#[test]
+fn better_auth_resolves_forwarded_ip_only_when_proxy_trust_is_enabled() {
+    let make_context = |enabled| {
+        AuthContext::builder(AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            advanced: super::proxy_auth_options(enabled),
+            ..Default::default()
+        })
+        .build()
+        .unwrap()
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.8".parse().unwrap());
+    let request = better_auth::context::RequestMetadata::new(
+        axum::http::Method::GET,
+        "/".parse().unwrap(),
+        headers,
+    );
+    assert_eq!(
+        make_context(false)
+            .resolve_request(&request)
+            .unwrap()
+            .client_ip,
+        None
+    );
+    assert_eq!(
+        make_context(true)
+            .resolve_request(&request)
+            .unwrap()
+            .client_ip,
+        Some("203.0.113.8".parse().unwrap())
+    );
+}
+
 #[tokio::test]
 async fn forwarded_headers_require_an_allowlisted_proxy_peer() {
     let app = Router::new()
@@ -51,12 +97,205 @@ async fn forwarded_headers_require_an_allowlisted_proxy_peer() {
         ))
         .body(Body::empty())
         .unwrap();
-    let response = app.oneshot(trusted).await.unwrap();
+    let response = app.clone().oneshot(trusted).await.unwrap();
     assert_eq!(
         axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap(),
         "203.0.113.8"
+    );
+    let spoofed = Request::builder()
+        .uri("/")
+        .header("x-forwarded-for", "203.0.113.99")
+        .extension(axum::extract::connect_info::ConnectInfo(
+            "192.0.2.4:43210".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(spoofed).await.unwrap();
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "192.0.2.4"
+    );
+    let ambiguous = Request::builder()
+        .uri("/")
+        .header("x-forwarded-for", "203.0.113.8, 192.0.2.99")
+        .extension(axum::extract::connect_info::ConnectInfo(
+            "127.0.0.1:43210".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(ambiguous).await.unwrap();
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "127.0.0.1"
+    );
+}
+
+#[tokio::test]
+async fn auth_sign_in_limiter_uses_peer_and_account_budgets() {
+    use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            advanced: super::proxy_auth_options(true),
+            ..Default::default()
+        },
+        Arc::new(MemoryDb::default()),
+        Some(Arc::new(MemorySecondaryStorage::default())),
+        vec![],
+    )
+    .unwrap();
+    let app = auth_routes(super::configured_auth_router(ctx).unwrap()).layer(
+        axum::middleware::from_fn_with_state(Vec::<ipnet::IpNet>::new(), super::proxy_boundary),
+    );
+    async fn attempt(app: &Router, peer: &str, email: &str) -> StatusCode {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/sign-in/email")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "203.0.113.99")
+            .extension(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::from(
+                json!({"email":email,"password":"incorrect password"}).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(request).await.unwrap().status()
+    }
+    for _ in 0..10 {
+        assert_eq!(
+            attempt(&app, "192.0.2.1:1234", "victim@example.test").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        attempt(&app, "192.0.2.1:1234", "other@example.test").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        attempt(&app, "192.0.2.2:1234", "victim@example.test").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        attempt(&app, "192.0.2.3:1234", "other@example.test").await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn social_get_limiter_uses_sanitized_peer_and_fails_closed() {
+    use better_auth::rate_limit::RateLimiter;
+    use better_auth_core::adapter::memory::MemorySecondaryStorage;
+    let limiter = Some(RateLimiter::new(
+        Arc::new(MemorySecondaryStorage::default()),
+        "test-social-get",
+    ));
+    let app = Router::new()
+        .route(
+            "/api/auth/sign-in/social/{provider}",
+            get(|| async { StatusCode::OK }),
+        )
+        .route(
+            "/api/auth/callback/{provider}",
+            get(|| async { StatusCode::OK }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            super::limit_oauth_get,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Vec::<ipnet::IpNet>::new(),
+            super::proxy_boundary,
+        ));
+    let attempt = |peer: Option<&str>| {
+        let mut builder = Request::builder()
+            .uri("/api/auth/sign-in/social/fixture")
+            .header("x-forwarded-for", "203.0.113.99");
+        if let Some(peer) = peer {
+            builder = builder.extension(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ));
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    assert_eq!(
+        app.clone().oneshot(attempt(None)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for _ in 0..10 {
+        assert_eq!(
+            app.clone()
+                .oneshot(attempt(Some("192.0.2.1:1234")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(attempt(Some("192.0.2.1:1234")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        app.clone()
+            .oneshot(attempt(Some("192.0.2.2:1234")))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let callback = || {
+        Request::builder()
+            .uri("/api/auth/callback/fixture?code=invalid&state=invalid")
+            .extension(axum::extract::ConnectInfo(
+                "192.0.2.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap()
+    };
+    for _ in 0..60 {
+        assert_eq!(
+            app.clone().oneshot(callback()).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        app.oneshot(callback()).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let unavailable = Router::new()
+        .route(
+            "/api/auth/sign-in/social/{provider}",
+            get(|| async { StatusCode::OK }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            None::<RateLimiter>,
+            super::limit_oauth_get,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Vec::<ipnet::IpNet>::new(),
+            super::proxy_boundary,
+        ));
+    assert_eq!(
+        unavailable
+            .oneshot(attempt(Some("192.0.2.3:1234")))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
     );
 }
 
@@ -194,6 +433,206 @@ async fn begin(app: &Router, provider: &str) -> String {
         .unwrap()
         .1
         .to_string()
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn social_get_rate_limit_applies_to_real_auth_router() {
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (existing, pool) = context(&url, false).await;
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            advanced: super::proxy_auth_options(true),
+            ..Default::default()
+        },
+        existing.adapter.clone(),
+        existing.secondary_storage.clone(),
+        vec![],
+    )
+    .unwrap();
+    let (base, fixture_handle) = fixture().await;
+    let auth = super::configured_auth_router(ctx.clone())
+        .unwrap()
+        .with_social_providers(vec![provider(&base, "fixture", "verified")])
+        .unwrap();
+    let second_auth = super::configured_auth_router(ctx.clone())
+        .unwrap()
+        .with_social_providers(vec![provider(&base, "fixture", "verified")])
+        .unwrap();
+    let app = app_with_proxies(ctx.clone(), pool.clone(), auth, None, Vec::new());
+    let second_app = app_with_proxies(ctx, pool, second_auth, None, Vec::new());
+    let attempt = |peer: &str| {
+        Request::builder()
+            .uri("/api/auth/sign-in/social/fixture")
+            .header("x-forwarded-for", "203.0.113.99")
+            .extension(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let mut callback_state = None;
+    for i in 0..10 {
+        let instance = if i % 2 == 0 { &app } else { &second_app };
+        let response = instance
+            .clone()
+            .oneshot(attempt("198.18.0.1:1234"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        if callback_state.is_none() {
+            let location =
+                Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+            callback_state = location
+                .query_pairs()
+                .find(|(name, _)| name == "state")
+                .map(|(_, value)| value.into_owned());
+        }
+    }
+    assert_eq!(
+        second_app
+            .clone()
+            .oneshot(attempt("198.18.0.1:1234"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let callback = Request::builder()
+        .uri(format!(
+            "/api/auth/callback/fixture?code=fixture-code&state={}",
+            callback_state.unwrap()
+        ))
+        .extension(axum::extract::ConnectInfo(
+            "198.18.0.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        second_app.clone().oneshot(callback).await.unwrap().status(),
+        StatusCode::FOUND
+    );
+    let invalid_callback = |peer: &str| {
+        Request::builder()
+            .uri("/api/auth/callback/fixture?code=fixture-code&state=invalid")
+            .extension(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap()
+    };
+    for i in 0..59 {
+        let instance = if i % 2 == 0 { &app } else { &second_app };
+        assert_ne!(
+            instance
+                .clone()
+                .oneshot(invalid_callback("198.18.0.1:1234"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        second_app
+            .clone()
+            .oneshot(invalid_callback("198.18.0.1:1234"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_ne!(
+        second_app
+            .clone()
+            .oneshot(invalid_callback("198.18.0.2:1234"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        app.oneshot(attempt("198.18.0.2:1234"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FOUND
+    );
+    fixture_handle.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn oauth_email_collision_requires_both_accounts_verified() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let control = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("link_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&control)
+        .await
+        .unwrap();
+    let mut isolated = Url::parse(&url).unwrap();
+    isolated
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let (ctx, pool) = context(isolated.as_str(), false).await;
+    let local = EmailPasswordService::new(ctx.clone())
+        .unwrap()
+        .sign_up(
+            SignUpInput {
+                email: "cloud-fixture@example.test".into(),
+                name: "Existing user".into(),
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let (base, fixture_handle) = fixture().await;
+    let app = router(ctx, pool.clone(), &base);
+    let state = begin(&app, "fixture").await;
+    let callback = format!("/api/auth/callback/fixture?code=fixture-code&state={state}");
+    assert_eq!(
+        request(&app, "GET", &callback, None, None).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let linked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM account WHERE provider_id='fixture'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked, 0, "unverified local account must not be linked");
+    sqlx::query("UPDATE \"user\" SET email_verified=true WHERE id=$1")
+        .bind(&local.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let state = begin(&app, "fixture").await;
+    let callback = format!("/api/auth/callback/fixture?code=fixture-code&state={state}");
+    assert_eq!(
+        request(&app, "GET", &callback, None, None).await.status(),
+        StatusCode::FOUND
+    );
+    let linked_user: String =
+        sqlx::query_scalar("SELECT user_id FROM account WHERE provider_id='fixture'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked_user, local.user.id);
+    fixture_handle.abort();
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&control)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2041,6 +2480,18 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         "c".repeat(64),
         "upgrade backfills the check inventory"
     );
+    migrations(20261102000020).run(&pool).await.unwrap();
+    let legacy_manifest: Option<String> = sqlx::query_scalar(
+        "SELECT manifest_sha256 FROM cloud_snapshot_promotion_checks WHERE id=$1",
+    )
+    .bind(legacy_check)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        legacy_manifest.is_none(),
+        "legacy checks cannot claim a verified manifest"
+    );
     for (table, expected) in [
         ("cloud_publishers", 1),
         ("cloud_publisher_memberships", 1),
@@ -2117,9 +2568,10 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
         .await
         .unwrap();
     let mut schema_url = Url::parse(&url).unwrap();
-    schema_url
-        .query_pairs_mut()
-        .append_pair("options", &format!("-csearch_path={schema}"));
+    schema_url.query_pairs_mut().append_pair(
+        "options",
+        &format!("-csearch_path={schema} -ctimezone=America/Lima"),
+    );
     let schema_url = schema_url.to_string();
     let adapter = Arc::new(SqlxDbAdapter::postgres(&schema_url).await.unwrap());
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
@@ -2148,7 +2600,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
     readiness::MIGRATOR.run(&pool).await.unwrap();
     let candidate = uuid::Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO cloud_snapshot_candidates(id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES($1,'candidate',$2,$3,1,7)",
+        "INSERT INTO cloud_snapshot_candidates(id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES($1,'candidate',$2,$3,1,5)",
     )
     .bind(candidate)
     .bind("a".repeat(64))
@@ -2156,10 +2608,38 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
     .execute(&pool)
     .await
     .unwrap();
-    let verified = snapshot_promotion::record_decision(
+    for path in [
+        "root.json",
+        "keys.json",
+        "keys.json.sig",
+        "config.json",
+        "config.json.sig",
+    ] {
+        sqlx::query("INSERT INTO cloud_snapshot_candidate_files(candidate_id,path,sha256,size,object_key,version_id) VALUES($1,$2,$3,1,$4,'v1')")
+            .bind(candidate).bind(path).bind("d".repeat(64))
+            .bind(format!("prepared/{candidate}/{}", uuid::Uuid::new_v4()))
+            .execute(&pool).await.unwrap();
+    }
+    let stale_manifest = snapshot_export::current(&pool, candidate).await.unwrap();
+    sqlx::query("UPDATE cloud_snapshot_candidate_files SET sha256=$2 WHERE candidate_id=$1 AND path='root.json'")
+        .bind(candidate).bind("e".repeat(64)).execute(&pool).await.unwrap();
+    assert!(snapshot_promotion::record_verified(
         &pool,
         candidate,
-        "verified",
+        &stale_manifest,
+        "test-op",
+        "stale manifest"
+    )
+    .await
+    .is_err());
+    let manifest = snapshot_export::current(&pool, candidate).await.unwrap();
+    let expected_manifest_sha =
+        tiktools_plugin_package::Sha256Digest::of_bytes(&serde_json::to_vec(&manifest).unwrap())
+            .to_string();
+    let verified = snapshot_promotion::record_verified(
+        &pool,
+        candidate,
+        &manifest,
         "test-op",
         "point-in-time verification passed; not deployed",
     )
@@ -2198,16 +2678,39 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
     .await
     .unwrap();
     assert_ne!(verified, blocked);
+    sqlx::query("UPDATE cloud_snapshot_promotion_checks SET created_at='2026-01-02 03:04:05+00' WHERE id=$1")
+        .bind(verified)
+        .execute(&pool)
+        .await
+        .unwrap();
     let checks = snapshot_promotion::list_checks(&pool, candidate)
         .await
         .unwrap();
     assert_eq!(checks.len(), 2, "verified and blocked decisions are listed");
+    assert_eq!(
+        checks
+            .iter()
+            .find(|check| check.id == verified)
+            .unwrap()
+            .manifest_sha256
+            .as_deref(),
+        Some(expected_manifest_sha.as_str())
+    );
+    assert_eq!(
+        checks
+            .iter()
+            .find(|check| check.id == verified)
+            .unwrap()
+            .created_at,
+        "2026-01-02T03:04:05.000Z"
+    );
     let decisions: Vec<&str> = checks.iter().map(|c| c.decision.as_str()).collect();
     assert!(decisions.contains(&"verified") && decisions.contains(&"blocked"));
     for check in &checks {
         assert_eq!(check.candidate_id, candidate);
         assert_eq!(check.inventory_sha256, "b".repeat(64));
         assert!(!check.created_at.is_empty());
+        assert_eq!(check.manifest_sha256.is_some(), check.id == verified);
     }
     assert!(
         snapshot_promotion::list_checks(&pool, uuid::Uuid::new_v4())
@@ -2228,16 +2731,16 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
         snapshot_promotion::record_decision(&pool, candidate, "deployed", "test-op", "x",)
             .await
             .is_err(),
-        "only verified or blocked decisions are recorded"
+        "unknown decisions are rejected"
     );
     assert!(
-        snapshot_promotion::record_decision(&pool, candidate, "verified", "bad operator!", "x",)
+        snapshot_promotion::record_decision(&pool, candidate, "blocked", "bad operator!", "x",)
             .await
             .is_err(),
         "operator labels are constrained"
     );
     assert!(
-        snapshot_promotion::record_decision(&pool, candidate, "verified", "test-op", "",)
+        snapshot_promotion::record_decision(&pool, candidate, "blocked", "test-op", "",)
             .await
             .is_err(),
         "empty reasons are rejected"
@@ -2246,13 +2749,18 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
         snapshot_promotion::record_decision(
             &pool,
             uuid::Uuid::new_v4(),
-            "verified",
+            "blocked",
             "test-op",
             "x",
         )
         .await
         .is_err(),
         "unknown candidates are rejected"
+    );
+    assert!(
+        snapshot_promotion::record_decision(&pool, candidate, "verified", "test-op", "x")
+            .await
+            .is_err()
     );
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
@@ -3718,6 +4226,11 @@ async fn native_sync_client_preserves_offline_edits_and_conflicts() {
     assert_eq!(snapshot.cursor, 1);
     assert_eq!(snapshot.records.len(), 1);
     assert_eq!(snapshot.records[0].value.as_ref().unwrap().version, "1.0.0");
+    let account_export = device2.export_account().await.unwrap();
+    assert_eq!(account_export.profile.id, user_id);
+    assert_eq!(account_export.sync.schema_version, 1);
+    assert_eq!(account_export.sync.cursor, 1);
+    assert_eq!(account_export.sync.records, snapshot.records);
     let mut unseen = device2.new_state();
     unseen.stage(key.into(), Edit::Delete).unwrap();
     assert!(matches!(
@@ -4155,7 +4668,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
     let auth = AuthRouter::new(ctx.clone()).unwrap();
     let disabled_app = app(ctx.clone(), pool.clone(), auth);
     let auth = AuthRouter::new(ctx.clone()).unwrap();
-    let app = app_inner(ctx, pool.clone(), auth, None, Vec::new(), true);
+    let app = app_inner(ctx, pool.clone(), auth, None, Vec::new(), true, false);
     let base = format!("/api/v1/publishers/{publisher}/keys");
     async fn call(
         app: &Router,

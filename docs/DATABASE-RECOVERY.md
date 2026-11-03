@@ -11,8 +11,9 @@ and advisory tables without backfills or new guards; migration 19 pins the
 candidate inventory hash on each promotion check with a backfill from the
 referenced candidates. The integration test
 `migration_upgrade_preserves_data_through_revocation_tables` upgrades a populated
-database from migration 16 to 19, verifies every existing row survives, checks the
-backfilled inventory hash, and exercises the new tables against the preserved
+database from migration 16 through 20, verifies every existing row survives, checks the
+backfilled inventory hash and confirms that legacy checks have no manifest hash,
+and exercises the new tables against the preserved
 releases and candidates.
 
 A local PostgreSQL 18 drill used a custom-format `pg_dump --no-owner --no-acl` of a

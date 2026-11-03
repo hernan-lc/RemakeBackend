@@ -18,7 +18,8 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [ ] Integrate existing Better Auth Google login end-to-end; connect desktop system-browser/loopback PKCE flow without reproducing OAuth security logic; add GitHub only on demand.
 - [ ] Session resolution, CSRF/CORS, trusted proxies, rate limits, audit trail, key rotation and revocation E2E.
 - [ ] Use existing self-refreshing JWKS and loopback OAuth APIs; verify invalid/expired tokens, callback failure modes, proxy boundaries and desktop handoff end-to-end.
-- [ ] `/me`, account linking constraints, account deletion and secure local token storage guidance.
+- [x] Expose `/me`, locally verify verified-email account-linking constraints, and document secure local token storage.
+- [ ] Complete account deletion and its social-only reauthentication flow.
 **Exit:** repeated negative/replay tests and live callback integration green.
 
 ## M2 — Official signed registry (P0)

@@ -13,19 +13,21 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
 const MARKER: &str = ".cloud-candidate.json";
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct File {
     pub(crate) path: String,
     pub(crate) digest: String,
     size: i64,
     key: String,
     version: String,
+    #[serde(skip)]
     revision: String,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Manifest {
     pub(crate) root: String,
     pub(crate) inventory: String,
+    #[serde(skip)]
     revision: String,
     pub(crate) files: Vec<File>,
 }
@@ -59,7 +61,7 @@ fn valid_path(s: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
-async fn manifest(conn: &mut PgConnection, id: Uuid) -> Result<Manifest> {
+pub(crate) async fn manifest(conn: &mut PgConnection, id: Uuid) -> Result<Manifest> {
     let row=sqlx::query("SELECT status,root_fingerprint,inventory_sha256,file_count,xmin::text AS revision FROM cloud_snapshot_candidates WHERE id=$1").bind(id).fetch_optional(&mut *conn).await?.ok_or("candidate not found")?;
     if row.get::<String, _>("status") != "candidate" {
         return Err("candidate unavailable".into());

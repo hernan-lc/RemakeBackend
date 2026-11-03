@@ -197,11 +197,15 @@ It uses the same database, private object storage, `SNAPSHOT_SEED_DIR`,
 `CLAMAV_ADDR` settings as `verify-candidate`, then records a `verified` or
 `blocked` row in `cloud_snapshot_promotion_checks` with an audited
 `snapshot.candidate_verified` or `snapshot.candidate_verification_blocked`
-event. Each row pins the candidate's inventory hash at record time, so a later
-reader can tell exactly which inventory was verified or blocked. Candidate rows
-are never modified after creation, so the pinned hash is the inventory the
-verifier checked; only the live registry state can move on afterward, which the
-future promotion process must recheck. Operators can
+event. A successful verification returns the candidate manifest it checked; the
+ledger locks the candidate and its file rows, refuses success if the manifest
+changed, and records its SHA-256 alongside the inventory hash. The digest covers
+the root fingerprint, inventory hash, and path-sorted file paths, digests, sizes,
+object keys and version IDs serialized as compact JSON; database row revisions
+are used for the comparison but excluded from the digest. A blocked row records
+the candidate inventory hash at the time of recording, without a manifest hash.
+These checks do not freeze authorization, trust material, or stored files after
+verification, so a future promotion process must recheck them. Operators can
 review the recorded history with
 `cargo run --locked -p cloud-api -- list-promotion-checks CANDIDATE_UUID`,
 which prints the decisions as JSON, oldest first; unknown candidates list no
@@ -219,8 +223,10 @@ status, and cannot detect rollback to an older valid seed or changes made
 after the check.
 
 Migration `20261102000017_snapshot_promotion_checks.sql` adds the decision
-table, and migration `20261102000019_promotion_check_inventory.sql` adds the
-pinned inventory hash with a backfill from the referenced candidates. Stop candidate builders before
+table, migration `20261102000019_promotion_check_inventory.sql` adds the
+pinned inventory hash, and migration `20261102000020_promotion_manifest_hash.sql`
+adds a nullable manifest hash. Older checks remain null because their exact file
+manifest cannot be reconstructed as evidence. Stop candidate builders before
 rollback and preserve promotion-check
 rows with their candidate metadata; dropping the table loses decision history.
 Rollback has not been rehearsed.

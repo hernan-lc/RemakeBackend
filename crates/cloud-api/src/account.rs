@@ -17,6 +17,8 @@ use sqlx::{Postgres, Row, Transaction};
 use std::time::Duration;
 use uuid::Uuid;
 
+const MAX_ACCOUNT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryPage {
@@ -139,8 +141,12 @@ async fn export_inner(
         "auditEventsByActor": audit_events,
         "yanksRecorded": yanks_recorded,
         "advisoriesRecorded": advisories_recorded,
-        "sync": {"cursor": cursor, "records": sync_records}
+        "sync": {"schemaVersion": 1, "cursor": cursor, "records": sync_records}
     });
+    let encoded = serde_json::to_vec(&result).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if encoded.len() > MAX_ACCOUNT_EXPORT_BYTES {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     tx.commit()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

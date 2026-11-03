@@ -210,6 +210,7 @@ async fn check(state: &AppState) -> bool {
                 "id",
                 "candidate_id",
                 "inventory_sha256",
+                "manifest_sha256",
                 "decision",
                 "operator",
                 "reason",

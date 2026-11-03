@@ -49,6 +49,34 @@ struct AppState {
     object_storage: Option<cloud_storage::QuarantineStore>,
     key_enrollment_enabled: bool,
 }
+
+fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
+    better_auth_core::options::AdvancedOptions {
+        trusted_proxy_headers: enabled,
+        trusted_ip_headers: if enabled {
+            vec!["x-forwarded-for".to_owned()]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn configured_auth_router(context: AuthContext) -> better_auth_core::error::Result<AuthRouter> {
+    let storage = context.secondary_storage.clone().ok_or_else(|| {
+        better_auth_core::error::AuthError::InvalidConfiguration(
+            "auth rate limiting requires secondary storage".into(),
+        )
+    })?;
+    let policy = better_auth::rate_limit::RateLimitPolicy::new(
+        "auth",
+        10,
+        std::time::Duration::from_secs(60),
+    )?;
+    Ok(AuthRouter::new(context)?.with_sign_in_rate_limit(
+        better_auth::rate_limit::RateLimiter::new(storage, "cloud:auth"),
+        policy,
+    ))
+}
 impl FromRef<AppState> for AuthContext {
     fn from_ref(state: &AppState) -> Self {
         state.auth.clone()
@@ -84,6 +112,16 @@ async fn native_logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() > max_bytes {
+        let mut end = max_bytes;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt()
@@ -101,10 +139,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             secret: config.auth_secret,
             base_url: Some(BaseUrl::Static(config.origin.clone())),
             trusted_origins: vec![config.origin],
-            advanced: better_auth_core::options::AdvancedOptions {
-                trusted_proxy_headers: !config.trusted_proxy_cidrs.is_empty(),
-                ..Default::default()
-            },
+            // The boundary below replaces untrusted forwarded IPs with the socket peer.
+            advanced: proxy_auth_options(true),
             ..AuthOptions::default()
         },
         adapter.clone(),
@@ -206,18 +242,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let outcome =
                 snapshot_verify::verify(&pool, &store, &scanner, &seed, id, &root, &index).await;
             let (decision, reason) = match &outcome {
-                Ok(()) => (
+                Ok(_) => (
                     "verified",
                     "point-in-time verification passed; not deployed".to_owned(),
                 ),
                 Err(e) => {
                     let mut reason = format!("verification failed: {e}");
-                    reason.truncate(1024);
+                    truncate_utf8(&mut reason, 1024);
                     ("blocked", reason)
                 }
             };
-            let check =
-                snapshot_promotion::record_decision(&pool, id, decision, operator, &reason).await?;
+            let check = match &outcome {
+                Ok(inventory) => {
+                    snapshot_promotion::record_verified(&pool, id, inventory, operator, &reason)
+                        .await?
+                }
+                Err(_) => {
+                    snapshot_promotion::record_decision(&pool, id, decision, operator, &reason)
+                        .await?
+                }
+            };
             tracing::info!(candidate_id=%id, check_id=%check, decision, "promotion readiness recorded; not deployed");
             if outcome.is_err() {
                 return Err(reason.into());
@@ -308,7 +352,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if !args.is_empty() {
         return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
-    let mut auth = AuthRouter::new(context.clone())?;
+    let mut auth = configured_auth_router(context.clone())?;
     if let Some((id, secret)) = config.google {
         let mut google = HttpOAuthProvider::google_with_jwks(id, secret).await?;
         if config.jwks_policy != JwksRefreshPolicy::default() {
@@ -363,7 +407,15 @@ fn app_with_storage(
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
 ) -> Router {
-    app_inner(context, pool, auth, object_storage, Vec::new(), false)
+    app_inner(
+        context,
+        pool,
+        auth,
+        object_storage,
+        Vec::new(),
+        false,
+        false,
+    )
 }
 
 fn app_with_proxies(
@@ -380,6 +432,7 @@ fn app_with_proxies(
         object_storage,
         trusted_proxy_cidrs,
         false,
+        true,
     )
 }
 
@@ -392,8 +445,13 @@ fn app_inner(
     object_storage: Option<cloud_storage::QuarantineStore>,
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
     key_enrollment_enabled: bool,
+    social_limit_enabled: bool,
 ) -> Router {
-    Router::new()
+    let social_limiter = context
+        .secondary_storage
+        .clone()
+        .map(|storage| better_auth::rate_limit::RateLimiter::new(storage, "cloud:auth-social-get"));
+    let router = Router::new()
         .route("/", get(web::page))
         .route("/desktop/login", get(web::page))
         .route("/desktop/login.js", get(web::script))
@@ -622,11 +680,80 @@ fn app_inner(
             object_storage,
             key_enrollment_enabled,
         })
-        .merge(auth_routes(auth))
-        .layer(axum::middleware::from_fn_with_state(
-            trusted_proxy_cidrs,
-            proxy_boundary,
+        .merge(auth_routes(auth));
+    let router = if social_limit_enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            social_limiter,
+            limit_oauth_get,
         ))
+    } else {
+        router
+    };
+    router.layer(axum::middleware::from_fn_with_state(
+        trusted_proxy_cidrs,
+        proxy_boundary,
+    ))
+}
+
+async fn limit_oauth_get(
+    State(limiter): State<Option<better_auth::rate_limit::RateLimiter>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    let budget = if request.method() != axum::http::Method::GET {
+        None
+    } else if path.starts_with("/api/auth/sign-in/social/") {
+        Some(("social-get", 10))
+    } else if path.starts_with("/api/auth/callback/") {
+        Some(("callback-get", 60))
+    } else {
+        None
+    };
+    if let Some((action, limit)) = budget {
+        let ip = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok());
+        let (Some(limiter), Some(ip)) = (limiter, ip) else {
+            return auth_limit_error(StatusCode::SERVICE_UNAVAILABLE);
+        };
+        let policy = match better_auth::rate_limit::RateLimitPolicy::new(
+            action,
+            limit,
+            std::time::Duration::from_secs(60),
+        ) {
+            Ok(policy) => policy,
+            Err(_) => return auth_limit_error(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        if let Err(error) = limiter.enforce(&policy, &ip.to_string()).await {
+            let status = match error {
+                better_auth_core::error::AuthError::RateLimited { .. } => {
+                    StatusCode::TOO_MANY_REQUESTS
+                }
+                _ => StatusCode::SERVICE_UNAVAILABLE,
+            };
+            return auth_limit_error(status);
+        }
+    }
+    next.run(request).await
+}
+
+fn auth_limit_error(status: StatusCode) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut response = status.into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("60"),
+        );
+    }
+    response
 }
 
 async fn proxy_boundary(
@@ -651,6 +778,28 @@ async fn proxy_boundary(
             "x-real-ip",
         ] {
             request.headers_mut().remove(name);
+        }
+    }
+    if let Some(peer) = peer {
+        let forwarded = if trusted_peer {
+            let values: Vec<_> = request
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .collect();
+            match values.as_slice() {
+                [value] => value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let client = forwarded.unwrap_or(peer).to_string();
+        if let Ok(value) = client.parse() {
+            request.headers_mut().insert("x-forwarded-for", value);
         }
     }
     next.run(request).await

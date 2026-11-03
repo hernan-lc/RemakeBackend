@@ -50,8 +50,9 @@ repeatable-read snapshot and includes the caller's profile, Cloud roles, publish
 memberships, requested public-key metadata, submitted release and upload metadata,
 moderation decisions they recorded, publication requests, outstanding ownership
 transfers, audit events they authored, and current validated sync records including
-tombstones. Each collection is capped at 1,000 rows; larger exports fail with HTTP
-413 rather than silently truncating. The endpoint is limited to 10 requests per
+tombstones. Each collection is capped at 1,000 rows and the encoded response at
+16 MiB; larger exports fail with HTTP 413 rather than silently truncating. The
+native client applies the same response-size cap. The endpoint is limited to 10 requests per
 minute per account and returns `Cache-Control: no-store`.
 
 The export deliberately excludes session tokens, linked-provider credentials,

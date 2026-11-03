@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 const COLLECTION: &str = "plugin-selections";
 const MAX_RESPONSE: usize = 1024 * 1024;
+const MAX_ACCOUNT_EXPORT: usize = 16 * 1024 * 1024;
 const MAX_PAGES: usize = 200;
 
 #[derive(Debug, Error)]
@@ -119,6 +120,8 @@ pub struct AccountExport {
     pub publication_requests: Vec<serde_json::Value>,
     pub ownership_transfers: Vec<serde_json::Value>,
     pub audit_events_by_actor: Vec<serde_json::Value>,
+    pub yanks_recorded: Vec<serde_json::Value>,
+    pub advisories_recorded: Vec<serde_json::Value>,
     pub sync: SyncExport,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +146,8 @@ impl AccountExport {
             &self.publication_requests,
             &self.ownership_transfers,
             &self.audit_events_by_actor,
+            &self.yanks_recorded,
+            &self.advisories_recorded,
         ] {
             if section.len() > 1000 || section.iter().any(|item| !item.is_object()) {
                 return Err(SyncError::Protocol);
@@ -502,7 +507,12 @@ impl Session {
     }
     /// Retrieve and validate a bounded snapshot of this account's Cloud-owned data.
     pub async fn export_account(&self) -> Result<AccountExport, SyncError> {
-        let export: AccountExport = self.get("api/v1/native/me/export", &[]).await?;
+        let response = self
+            .request(reqwest::Method::GET, "api/v1/native/me/export")?
+            .send()
+            .await
+            .map_err(|_| SyncError::Network)?;
+        let export: AccountExport = decode_with_limit(response, MAX_ACCOUNT_EXPORT).await?;
         export.validate(&self.account_id)?;
         Ok(export)
     }
@@ -688,7 +698,14 @@ fn retry_delay(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .filter(|value| (1..=86_400).contains(value))
 }
 
-async fn decode<T: for<'de> Deserialize<'de>>(mut response: Response) -> Result<T, SyncError> {
+async fn decode<T: for<'de> Deserialize<'de>>(response: Response) -> Result<T, SyncError> {
+    decode_with_limit(response, MAX_RESPONSE).await
+}
+
+async fn decode_with_limit<T: for<'de> Deserialize<'de>>(
+    mut response: Response,
+    max_bytes: usize,
+) -> Result<T, SyncError> {
     match response.status() {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => return Err(SyncError::Unauthorized),
         StatusCode::CONFLICT => return Err(SyncError::Conflict),
@@ -703,13 +720,13 @@ async fn decode<T: for<'de> Deserialize<'de>>(mut response: Response) -> Result<
     }
     if response
         .content_length()
-        .is_some_and(|n| n > MAX_RESPONSE as u64)
+        .is_some_and(|n| n > max_bytes as u64)
     {
         return Err(SyncError::Protocol);
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| SyncError::Network)? {
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(SyncError::Protocol);
         }
         body.extend_from_slice(&chunk);
@@ -721,6 +738,38 @@ async fn decode<T: for<'de> Deserialize<'de>>(mut response: Response) -> Result<
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn account_export_response_limit_allows_large_bounded_payloads() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = serde_json::json!({"payload": "x".repeat(MAX_RESPONSE)}).to_string();
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+            }
+        });
+        let url = format!("http://{address}/");
+        let response = reqwest::get(&url).await.unwrap();
+        let value: serde_json::Value = decode_with_limit(response, MAX_ACCOUNT_EXPORT)
+            .await
+            .unwrap();
+        assert_eq!(value["payload"].as_str().unwrap().len(), MAX_RESPONSE);
+        let response = reqwest::get(&url).await.unwrap();
+        assert!(matches!(
+            decode::<serde_json::Value>(response).await,
+            Err(SyncError::Protocol)
+        ));
+        task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn refuses_redirects_before_forwarding_bearer() {
@@ -828,6 +877,8 @@ mod tests {
             "publicationRequests": [],
             "ownershipTransfers": [],
             "auditEventsByActor": [],
+            "yanksRecorded": [],
+            "advisoriesRecorded": [],
             "sync": {"schemaVersion":1,"cursor":0,"records":[]}
         });
         let mut export: AccountExport = serde_json::from_value(raw).unwrap();

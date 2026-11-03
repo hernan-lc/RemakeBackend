@@ -315,7 +315,7 @@ fn check_policy(
     Ok(())
 }
 
-pub async fn verify(
+pub(crate) async fn verify(
     pool: &PgPool,
     store: &QuarantineStore,
     scanner: &ClamAv,
@@ -323,7 +323,7 @@ pub async fn verify(
     id: Uuid,
     root: &TrustedKey,
     index: &PublicKey,
-) -> Result<()> {
+) -> Result<snapshot_export::Manifest> {
     let baseline = policy(seed, root, index)?;
     let initial = inventory(pool, id).await?;
     let manifest = snapshot_export::current(pool, id).await?;
@@ -367,5 +367,5 @@ pub async fn verify(
         return Err("candidate changed during verification".into());
     }
     // Authorization may change immediately after this point; promotion requires a fence.
-    Ok(())
+    Ok(manifest)
 }
