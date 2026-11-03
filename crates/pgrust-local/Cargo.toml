@@ -1,0 +1,11 @@
+[package]
+name = "pgrust-local"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+description = "Optional Docker-free pgrust launcher for local development (stdlib only)"
+
+[[bin]]
+name = "pgrust-local"
+path = "src/main.rs"
