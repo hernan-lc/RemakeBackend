@@ -1,2 +1,5 @@
 /target
 .env
+/web/admin/node_modules
+/web/admin/dist
+*.tsbuildinfo
