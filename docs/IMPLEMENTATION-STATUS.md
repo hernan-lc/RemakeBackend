@@ -209,3 +209,30 @@ expired-URL recovery. `cargo fmt`, `cargo clippy -- -D warnings`,
 `npm test` (38 cases), and `npm run build` passed; new database tests ran
 against a disposable local pgrust database. Real storage, real browser E2E,
 and publication remain unverified here. See PUBLISHER-PORTAL.md.
+
+Registry publication verification on 2026-11-03:
+Persistent generations (`cloud_registry_generations`, `_releases`, `_files`,
+`_promotions`) track published snapshots, immutable versioned artifacts,
+candidate-to-generation mapping, manifest hashes, and promotion/rollback/GC
+history with operator identity. `snapshot_publish::publish` promotes a
+verified candidate to a new generation after rechecking manifest/inventory
+hashes, publisher/key authorization, moderation, yanks, advisories,
+signatures, object versions, digests, and the current root/delegated policy
+under an advisory lock; the active pointer flips atomically and reruns are
+idempotent. `rollback` restores only generations that revalidate against
+current trust and security state and refuses compromised, revoked, yanked, or
+stale targets. `gc` collects staged leftovers, redundant published candidate
+files, and consumed staging originals with a per-run bound. Public routes
+serve the registry without Cloud authentication (`/current` uncached,
+generation files immutable with ETags). New pgrust integration tests
+(`registry_tests`, 10 cases) cover initial and incremental publication,
+concurrency, changed authorization, revoked keys, yanked releases and
+advisories, corrupt and forged artifacts, interrupted-upload resume, atomic
+switching and caches, restart recovery, safe/unsafe rollback, GC, and real
+TikTools registry-client compatibility (refresh, discover, download, offline
+signature verification, install, update, yank removal, wrong-root and
+digest-mismatch rejection). `cargo fmt`, `cargo clippy -D warnings`,
+`cargo test --workspace --locked` (excluding ignored), and the 10 ignored
+database tests on a disposable local pgrust passed; web code is untouched by
+this branch. Real S3/ClamAV, Cloud authentication for operator commands, and
+production trust/deployment remain unverified. See REGISTRY-OPERATIONS.md.
