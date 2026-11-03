@@ -35,7 +35,7 @@ per-resource caps and row locks instead.
 | Surface | Status | Limits |
 |---|---|---|
 | `POST /api/v1/publishers`, `GET /api/v1/publishers`, `GET /api/v1/publishers/{id}/members`, `PUT/DELETE .../members/{user_id}`, transfers, `DELETE .../membership` | Experimental | Pending requests grant no authority; approval is a manual operator step. Ownership transfers by recipient-accepted expiring offer; a non-owner can leave. No transfer notification UI. |
-| `POST .../keys/challenges`, `POST .../keys`, `GET .../keys`, `POST .../keys/{key_id}/revoke` (+ admin list/approve/revoke) | Experimental | Challenge-based proof of possession and revocation work, but enrollment and approval are **disabled** until session-bound step-up is available (social-only users cannot use the password-based second factor). See [PUBLISHER-KEYS.md](PUBLISHER-KEYS.md). |
+| `POST .../keys/challenges`, `POST .../keys`, `GET .../keys`, `POST .../keys/{key_id}/revoke` (+ admin list/approve/revoke) | Experimental | Challenge-based proof of possession and revocation work; enrollment and approval **require a session-bound step-up grant** (fresh password verification, or a fresh Google authentication for social-only users). See [PUBLISHER-KEYS.md](PUBLISHER-KEYS.md). |
 
 ## Upload, review, publication
 

@@ -4,19 +4,27 @@
 import type {
   AuditPage,
   Inspection,
+  KeyChallenge,
   Me,
   ModerationQueue,
   MyPublisher,
   Overview,
+  PublisherKey,
   PublisherMember,
   PublisherReviewPage,
+  StepUpAction,
+  StepUpGrant,
+  StepUpStart,
 } from './types'
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Machine-readable backend error code (`{error}` body), if any. */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -27,7 +35,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
   if (!response.ok) {
-    throw new ApiError(response.status, `${init?.method ?? 'GET'} ${path} -> ${response.status}`)
+    let code: string | undefined
+    try {
+      const data = (await response.json()) as { error?: unknown }
+      if (data && typeof data.error === 'string') code = data.error
+    } catch {
+      // Non-JSON failures carry no code.
+    }
+    throw new ApiError(response.status, `${init?.method ?? 'GET'} ${path} -> ${response.status}`, code)
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
@@ -83,4 +98,35 @@ export const api = {
     }),
   myPublishers: () => request<MyPublisher[]>('/api/v1/publishers'),
   publisherMembers: (id: string) => request<PublisherMember[]>(`/api/v1/publishers/${id}/members`),
+  stepUpPassword: (action: StepUpAction, publisherId: string, keyId: string | null, password: string) =>
+    request<StepUpGrant>('/api/v1/step-up/password', {
+      method: 'POST',
+      body: JSON.stringify({ action, publisherId, keyId, password }),
+    }),
+  stepUpStart: (action: StepUpAction, publisherId: string, keyId: string | null, returnTo: string) =>
+    request<StepUpStart>('/api/v1/step-up/oauth/start', {
+      method: 'POST',
+      body: JSON.stringify({ action, publisherId, keyId, returnTo }),
+    }),
+  publisherKeyChallenge: (publisherId: string, grantId: string) =>
+    request<KeyChallenge>(`/api/v1/publishers/${publisherId}/keys/challenges`, {
+      method: 'POST',
+      body: JSON.stringify({ stepUpGrant: grantId }),
+    }),
+  requestPublisherKey: (
+    publisherId: string,
+    proof: { challengeId: string; keyId: string; publicKey: string; signature: string },
+    grantId: string,
+  ) =>
+    request<PublisherKey>(`/api/v1/publishers/${publisherId}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ ...proof, stepUpGrant: grantId }),
+    }),
+  adminPublisherKeys: (publisherId: string) =>
+    request<PublisherKey[]>(`/api/v1/admin/publishers/${publisherId}/keys`),
+  approvePublisherKey: (publisherId: string, keyId: string, grantId: string) =>
+    request<unknown>(`/api/v1/admin/publishers/${publisherId}/keys/${keyId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ stepUpGrant: grantId }),
+    }),
 }

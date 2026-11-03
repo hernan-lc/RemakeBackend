@@ -89,6 +89,32 @@ export interface MyPublisher {
   role: string
 }
 
+export type StepUpAction = 'publisher.key.enroll' | 'publisher.key.approve'
+
+export interface StepUpGrant {
+  grantId: string
+  expiresIn: number
+}
+
+export interface StepUpStart {
+  authorizationUrl: string
+  expiresIn: number
+}
+
+export interface KeyChallenge {
+  challengeId: string
+  nonce: string
+  expiresIn: number
+}
+
+export interface PublisherKey {
+  id: string
+  keyId: string
+  publicKey: string
+  fingerprint: string
+  status: string
+}
+
 // NOTE: the members endpoint serializes snake_case (no camelCase rename on
 // the backend struct); mirror it exactly rather than transforming.
 export interface PublisherMember {

@@ -367,17 +367,47 @@ async fn context(database_url: &str, cache: bool) -> (AuthContext, PgPool) {
         vec![Arc::new(better_auth::UsernamePlugin)],
     )
     .unwrap();
-    adapter
-        .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
-        .await
-        .unwrap();
-    secondary.migrate().await.unwrap();
+    // The ignored suite shares one database across parallel tests, so a
+    // concurrent first-time setup may be halfway through the same migrations;
+    // retry until they converge instead of failing on a unique violation for
+    // an object the other setup is creating.
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let auth_result = adapter
+            .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
+            .await;
+        let secondary_result = match &auth_result {
+            Ok(()) => secondary.migrate().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if secondary_result.is_ok() {
+            break;
+        }
+        assert!(
+            attempts < 20,
+            "auth migrations did not converge: {}",
+            secondary_result.unwrap_err()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     let pool = PgPoolOptions::new()
         .max_connections(2)
         .connect(database_url)
         .await
         .unwrap();
-    readiness::MIGRATOR.run(&pool).await.unwrap();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match readiness::MIGRATOR.run(&pool).await {
+            Ok(()) => break,
+            Err(e) if attempts < 20 => {
+                let _ = e;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(e) => panic!("cloud migrations did not converge: {e}"),
+        }
+    }
     (ctx, pool)
 }
 
@@ -462,8 +492,8 @@ async fn social_get_rate_limit_applies_to_real_auth_router() {
         .unwrap()
         .with_social_providers(vec![provider(&base, "fixture", "verified")])
         .unwrap();
-    let app = app_with_proxies(ctx.clone(), pool.clone(), auth, None, Vec::new());
-    let second_app = app_with_proxies(ctx, pool, second_auth, None, Vec::new());
+    let app = app_with_proxies(ctx.clone(), pool.clone(), auth, None, Vec::new(), None);
+    let second_app = app_with_proxies(ctx, pool, second_auth, None, Vec::new(), None);
     let attempt = |peer: &str| {
         Request::builder()
             .uri("/api/auth/sign-in/social/fixture")
@@ -2313,6 +2343,7 @@ async fn desktop_redeem_rate_limit_keys_trusted_client_ip() {
         auth,
         None,
         vec!["127.0.0.1/32".parse::<ipnet::IpNet>().unwrap()],
+        None,
     );
     async fn attempt(app: &Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {
         let mut req = Request::builder()
@@ -4998,6 +5029,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         users.push((
             result.user.id,
             format!("{}={}", result.cookie.name, result.cookie.value),
+            "test password with enough characters".to_string(),
         ));
     }
     let publisher = uuid::Uuid::new_v4();
@@ -5015,10 +5047,37 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         .await
         .unwrap();
     let auth = AuthRouter::new(ctx.clone()).unwrap();
-    let disabled_app = app(ctx.clone(), pool.clone(), auth);
-    let auth = AuthRouter::new(ctx.clone()).unwrap();
-    let app = app_inner(ctx, pool.clone(), auth, None, Vec::new(), true, false);
+    let app = app(ctx, pool.clone(), auth);
     let base = format!("/api/v1/publishers/{publisher}/keys");
+    // Password step-up mints an action-scoped grant for the caller's current
+    // session; the cookie passed here selects that session.
+    async fn grant(
+        app: &Router,
+        cookie: &str,
+        action: &str,
+        publisher: &uuid::Uuid,
+        key_id: Option<&str>,
+        password: &str,
+    ) -> uuid::Uuid {
+        let body = serde_json::json!({"action":action,"publisherId":publisher,"keyId":key_id,"password":password});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/step-up/password")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let data: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        uuid::Uuid::parse_str(data["grantId"].as_str().unwrap()).unwrap()
+    }
     async fn call(
         app: &Router,
         method: &str,
@@ -5043,18 +5102,26 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         app.clone().oneshot(req.body(body).unwrap()).await.unwrap()
     }
     let challenge_path = format!("{base}/challenges");
+    // Without a grant the endpoints refuse with a machine-readable
+    // requirement instead of performing any key operation.
+    let forged_grant = uuid::Uuid::new_v4();
+    let forged_body = Some(serde_json::json!({"stepUpGrant": forged_grant}));
+    let forged = call(
+        &app,
+        "POST",
+        &challenge_path,
+        Some(&users[0].1),
+        ORIGIN,
+        forged_body,
+    )
+    .await;
+    assert_eq!(forged.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        call(
-            &disabled_app,
-            "POST",
-            &challenge_path,
-            Some(&users[0].1),
-            ORIGIN,
-            None
-        )
-        .await
-        .status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        forged
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json")
     );
     assert_eq!(
         call(&app, "POST", &challenge_path, None, ORIGIN, None)
@@ -5075,6 +5142,17 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         .status(),
         StatusCode::FORBIDDEN
     );
+    // A viewer with a valid grant is still forbidden: step-up proves
+    // identity, not the publisher role.
+    let viewer_grant = grant(
+        &app,
+        &users[1].1,
+        "publisher.key.enroll",
+        &publisher,
+        None,
+        &users[1].2,
+    )
+    .await;
     assert_eq!(
         call(
             &app,
@@ -5082,7 +5160,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
             &challenge_path,
             Some(&users[1].1),
             ORIGIN,
-            None
+            Some(serde_json::json!({"stepUpGrant": viewer_grant}))
         )
         .await
         .status(),
@@ -5094,13 +5172,22 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
             .status(),
         StatusCode::NOT_FOUND
     );
+    let enroll_grant = grant(
+        &app,
+        &users[0].1,
+        "publisher.key.enroll",
+        &publisher,
+        None,
+        &users[0].2,
+    )
+    .await;
     let response = call(
         &app,
         "POST",
         &challenge_path,
         Some(&users[0].1),
         ORIGIN,
-        None,
+        Some(serde_json::json!({"stepUpGrant": enroll_grant})),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -5125,19 +5212,32 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         public.key_id.as_str(),
         &public.public_key,
     );
-    let proof = json!({"challengeId":challenge_id,"keyId":public.key_id,"publicKey":public.public_key,"signature":STANDARD.encode(key.sign(message.as_bytes()))});
+    let proof = json!({"challengeId":challenge_id,"keyId":public.key_id,"publicKey":public.public_key,"signature":STANDARD.encode(key.sign(message.as_bytes())),"stepUpGrant":enroll_grant});
+    // A caller authenticated in a different session cannot spend this grant.
+    let mut cross_session = proof.clone();
+    cross_session["stepUpGrant"] = json!(
+        grant(
+            &app,
+            &users[1].1,
+            "publisher.key.enroll",
+            &publisher,
+            None,
+            &users[1].2
+        )
+        .await
+    );
     assert_eq!(
         call(
-            &disabled_app,
+            &app,
             "POST",
             &base,
             Some(&users[0].1),
             ORIGIN,
-            Some(proof.clone())
+            Some(cross_session)
         )
         .await
         .status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::FORBIDDEN
     );
     let mut forged = proof.clone();
     forged["signature"] = json!(STANDARD.encode([0u8; 64]));
@@ -5173,47 +5273,136 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
     );
     let admin_base = format!("/api/v1/admin/publishers/{publisher}/keys");
     let approve = format!("{admin_base}/{key_row}/approve");
+    // Approval without a grant fails even for an independent admin.
     assert_eq!(
         call(
-            &disabled_app,
+            &app,
             "POST",
             &approve,
             Some(&users[2].1),
             ORIGIN,
-            None
+            Some(serde_json::json!({"stepUpGrant": uuid::Uuid::new_v4()}))
         )
         .await
         .status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::FORBIDDEN
     );
+    // Re-grant: another suite case deletes all other admin roles to build its
+    // own last-admin scenario, so the role is re-established at the point of use.
+    admin::change_role(&pool, true, &users[2].0, "admin", "test")
+        .await
+        .unwrap();
     assert_eq!(
         call(&app, "GET", &admin_base, Some(&users[2].1), ORIGIN, None)
             .await
             .status(),
         StatusCode::OK
     );
+    // A publisher member cannot approve their own key even with a grant.
+    let self_grant = grant(
+        &app,
+        &users[0].1,
+        "publisher.key.approve",
+        &publisher,
+        Some(key_row),
+        &users[0].2,
+    )
+    .await;
     assert_eq!(
-        call(&app, "POST", &approve, Some(&users[0].1), ORIGIN, None)
-            .await
-            .status(),
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[0].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": self_grant}))
+        )
+        .await
+        .status(),
         StatusCode::FORBIDDEN
     );
+    let viewer_grant = grant(
+        &app,
+        &users[1].1,
+        "publisher.key.approve",
+        &publisher,
+        Some(key_row),
+        &users[1].2,
+    )
+    .await;
     assert_eq!(
-        call(&app, "POST", &approve, Some(&users[1].1), ORIGIN, None)
-            .await
-            .status(),
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[1].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": viewer_grant}))
+        )
+        .await
+        .status(),
         StatusCode::FORBIDDEN
     );
+    admin::change_role(&pool, true, &users[2].0, "admin", "test")
+        .await
+        .unwrap();
+    let approve_grant = grant(
+        &app,
+        &users[2].1,
+        "publisher.key.approve",
+        &publisher,
+        Some(key_row),
+        &users[2].2,
+    )
+    .await;
     assert_eq!(
-        call(&app, "POST", &approve, Some(&users[2].1), ORIGIN, None)
-            .await
-            .status(),
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[2].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": approve_grant}))
+        )
+        .await
+        .status(),
         StatusCode::NO_CONTENT
     );
+    // The key is no longer pending, so even the already-spent grant and a
+    // fresh grant both fail on state before any grant is consumed.
     assert_eq!(
-        call(&app, "POST", &approve, Some(&users[2].1), ORIGIN, None)
-            .await
-            .status(),
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[2].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": approve_grant}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let stale_grant = grant(
+        &app,
+        &users[2].1,
+        "publisher.key.approve",
+        &publisher,
+        Some(key_row),
+        &users[2].2,
+    )
+    .await;
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[2].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": stale_grant}))
+        )
+        .await
+        .status(),
         StatusCode::CONFLICT
     );
     let revoke = format!("{base}/{key_row}/revoke");
@@ -5235,20 +5424,49 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
             .status(),
         StatusCode::NO_CONTENT
     );
+    // A revoked key is no longer pending, with or without a fresh grant.
+    admin::change_role(&pool, true, &users[2].0, "admin", "test")
+        .await
+        .unwrap();
+    let revoked_grant = grant(
+        &app,
+        &users[2].1,
+        "publisher.key.approve",
+        &publisher,
+        Some(key_row),
+        &users[2].2,
+    )
+    .await;
     assert_eq!(
-        call(&app, "POST", &approve, Some(&users[2].1), ORIGIN, None)
-            .await
-            .status(),
+        call(
+            &app,
+            "POST",
+            &approve,
+            Some(&users[2].1),
+            ORIGIN,
+            Some(serde_json::json!({"stepUpGrant": revoked_grant}))
+        )
+        .await
+        .status(),
         StatusCode::CONFLICT
     );
     // A fresh challenge cannot re-enroll revoked key material under a different ID.
+    let reenroll_grant = grant(
+        &app,
+        &users[0].1,
+        "publisher.key.enroll",
+        &publisher,
+        None,
+        &users[0].2,
+    )
+    .await;
     let response = call(
         &app,
         "POST",
         &challenge_path,
         Some(&users[0].1),
         ORIGIN,
-        None,
+        Some(serde_json::json!({"stepUpGrant": reenroll_grant})),
     )
     .await;
     let challenge: serde_json::Value = serde_json::from_slice(
@@ -5266,7 +5484,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
         &alternate_id,
         &public.public_key,
     );
-    let duplicate = json!({"challengeId":fresh,"keyId":alternate_id,"publicKey":public.public_key,"signature":STANDARD.encode(key.sign(message.as_bytes()))});
+    let duplicate = json!({"challengeId":fresh,"keyId":alternate_id,"publicKey":public.public_key,"signature":STANDARD.encode(key.sign(message.as_bytes())),"stepUpGrant":reenroll_grant});
     assert_eq!(
         call(
             &app,

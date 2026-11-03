@@ -15,6 +15,7 @@ mod snapshot_export;
 mod snapshot_promotion;
 mod snapshot_verify;
 mod snapshot_worker;
+mod step_up;
 mod sync;
 mod uploads;
 mod web;
@@ -47,7 +48,9 @@ struct AppState {
     auth: AuthContext,
     pool: PgPool,
     object_storage: Option<cloud_storage::QuarantineStore>,
-    key_enrollment_enabled: bool,
+    /// OAuth material for the step-up flow. `None` when Google sign-in is not
+    /// configured; password step-up still works, Google step-up answers 503.
+    step_up_oauth: Option<step_up::StepUpOAuth>,
 }
 
 fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
@@ -138,7 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         AuthOptions {
             secret: config.auth_secret,
             base_url: Some(BaseUrl::Static(config.origin.clone())),
-            trusted_origins: vec![config.origin],
+            trusted_origins: vec![config.origin.clone()],
             // The boundary below replaces untrusted forwarded IPs with the socket peer.
             advanced: proxy_auth_options(true),
             ..AuthOptions::default()
@@ -355,8 +358,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
     let mut auth = configured_auth_router(context.clone())?;
-    if let Some((id, secret)) = config.google {
-        let mut google = HttpOAuthProvider::google_with_jwks(id, secret).await?;
+    let mut step_up_oauth = None;
+    if let Some((id, secret)) = config.google.clone() {
+        let mut google = HttpOAuthProvider::google_with_jwks(id.clone(), secret.clone()).await?;
         if config.jwks_policy != JwksRefreshPolicy::default() {
             // Changing policy rebuilds the upstream cache. Reload immediately to
             // preserve fail-closed startup rather than starting with an empty cache.
@@ -368,6 +372,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await?;
         }
         auth = auth.with_social_providers(vec![google])?;
+        // Separate step-up material with its own verified JWKS cache. Startup
+        // fails closed when Google's keys are unreachable.
+        step_up_oauth = Some(
+            step_up::StepUpOAuth::google(id, secret, &config.origin)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotConnected, e))?,
+        );
     }
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -383,6 +394,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         auth,
         object_storage,
         config.trusted_proxy_cidrs,
+        step_up_oauth,
     );
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(address = %config.bind, "cloud API listening");
@@ -409,15 +421,7 @@ fn app_with_storage(
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
 ) -> Router {
-    app_inner(
-        context,
-        pool,
-        auth,
-        object_storage,
-        Vec::new(),
-        false,
-        false,
-    )
+    app_inner(context, pool, auth, object_storage, Vec::new(), None, false)
 }
 
 fn app_with_proxies(
@@ -426,6 +430,7 @@ fn app_with_proxies(
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+    step_up_oauth: Option<step_up::StepUpOAuth>,
 ) -> Router {
     app_inner(
         context,
@@ -433,20 +438,21 @@ fn app_with_proxies(
         auth,
         object_storage,
         trusted_proxy_cidrs,
-        false,
+        step_up_oauth,
         true,
     )
 }
 
-// The true value is available only to the test harness; there is no production
-// configuration override until session-bound step-up is implemented.
+// Step-up grants replaced the old disabled-by-default enrollment gate: key
+// enrollment and approval always require a fresh grant, in every
+// configuration. There is no bypass flag.
 fn app_inner(
     context: AuthContext,
     pool: PgPool,
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
-    key_enrollment_enabled: bool,
+    step_up_oauth: Option<step_up::StepUpOAuth>,
     social_limit_enabled: bool,
 ) -> Router {
     let social_limiter = context
@@ -695,11 +701,27 @@ fn app_inner(
             "/api/v1/native/sync/head",
             get(sync::native_head).layer(axum::middleware::map_response(sync::sync_response)),
         )
+        .route(
+            "/api/v1/step-up/password",
+            axum::routing::post(step_up::password)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/step-up/oauth/start",
+            axum::routing::post(step_up::oauth_start)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/step-up/oauth/callback",
+            axum::routing::get(step_up::oauth_callback),
+        )
         .with_state(AppState {
             auth: context,
             pool,
             object_storage,
-            key_enrollment_enabled,
+            step_up_oauth,
         })
         .merge(auth_routes(auth));
     let router = if social_limit_enabled {
@@ -828,3 +850,5 @@ async fn proxy_boundary(
 
 #[cfg(test)]
 mod auth_tests;
+#[cfg(test)]
+mod step_up_tests;

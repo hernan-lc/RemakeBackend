@@ -33,7 +33,7 @@
                   <td class="px-4 py-2.5 font-mono">{{ p.namespace }}</td>
                   <td class="px-4 py-2.5"><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
                   <td class="whitespace-nowrap px-4 py-2.5 text-slate-600 tabular-nums dark:text-slate-400">{{ p.createdAt }}</td>
-                  <td class="px-4 py-2.5 text-right">
+                  <td class="flex flex-col items-end gap-2 px-4 py-2.5 text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
                       size="sm"
@@ -44,6 +44,23 @@
                     >
                       {{ t('dashboard.approve') }}
                     </AppButton>
+                    <AppButton size="sm" variant="ghost" @click="toggleKeys(p.id)">
+                      {{ t('publishers.keys') }}
+                    </AppButton>
+                    <ul v-if="keys[p.id]" class="flex w-full flex-col gap-2 text-left">
+                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 dark:border-slate-700">
+                        <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ k.keyId }}</span>
+                        <AppButton
+                          size="sm"
+                          variant="secondary"
+                          icon="check"
+                          :loading="keyBusyId === k.id"
+                          @click="askApproveKey(p.id, k.id)"
+                        >
+                          {{ t('publishers.approveKey') }}
+                        </AppButton>
+                      </li>
+                    </ul>
                   </td>
                 </tr>
               </tbody>
@@ -59,16 +76,30 @@
       </template>
     </StateBlock>
     <ConfirmDialog :danger="false" :open="confirmOpen" :title="t('dashboard.approve')" :body="t('dashboard.approveConfirm')" :busy="busyId !== null" @confirm="doApprove" @cancel="confirmOpen = false" />
+    <StepUpDialog
+      :open="keyDialogOpen"
+      action="publisher.key.approve"
+      :action-label="t('publishers.approveKey')"
+      :publisher-id="pendingKey?.publisherId ?? ''"
+      :key-id="pendingKey?.keyId ?? null"
+      :return-to="keyReturnTo"
+      @granted="doApproveKey"
+      @cancelled="keyDialogOpen = false"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ApiError, api } from '../api/client'
+import { parseStepUpQuery } from '../api/auth'
 import { useUiStore } from '../stores/ui'
+import type { PublisherKey } from '../api/types'
 import StateBlock from '../components/StateBlock.vue'
+import StepUpDialog from '../components/StepUpDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import AppIcon from '../components/icons/AppIcon.vue'
 import AppBadge from '../components/ui/AppBadge.vue'
@@ -80,6 +111,8 @@ import PageHeader from '../components/ui/PageHeader.vue'
 
 const { t } = useI18n()
 const ui = useUiStore()
+const route = useRoute()
+const router = useRouter()
 const client = useQueryClient()
 const status = ref('pending')
 const cursor = ref<string | undefined>(undefined)
@@ -94,6 +127,23 @@ const forbidden = computed(() => error.value instanceof ApiError && error.value.
 const errorDetail = computed(() =>
   error.value instanceof ApiError && error.value.status !== 403 ? `HTTP ${error.value.status}` : undefined,
 )
+const keys = reactive<Record<string, PublisherKey[]>>({})
+
+function pendingKeys(publisherId: string): PublisherKey[] {
+  return (keys[publisherId] ?? []).filter((k) => k.status === 'pending')
+}
+
+async function toggleKeys(publisherId: string) {
+  if (keys[publisherId]) {
+    delete keys[publisherId]
+    return
+  }
+  try {
+    keys[publisherId] = await api.adminPublisherKeys(publisherId)
+  } catch {
+    ui.toast(t('errors.loadFailed'), 'err')
+  }
+}
 
 function statusTone(s: string): 'success' | 'warn' | 'danger' | 'neutral' {
   if (s === 'approved') return 'success'
@@ -128,4 +178,75 @@ async function doApprove() {
     busyId.value = null
   }
 }
+
+const keyDialogOpen = ref(false)
+const pendingKey = ref<{ publisherId: string; keyId: string } | null>(null)
+const keyBusyId = ref<string | null>(null)
+const keyReturnTo = ref('/app/publishers')
+
+function askApproveKey(publisherId: string, keyId: string) {
+  pendingKey.value = { publisherId, keyId }
+  keyReturnTo.value = `/app/publishers?stepUp=approve&publisher=${publisherId}&key=${keyId}`
+  keyDialogOpen.value = true
+}
+
+async function doApproveKey(grantId: string) {
+  const target = pendingKey.value
+  keyDialogOpen.value = false
+  if (!target) return
+  keyBusyId.value = target.keyId
+  try {
+    await api.approvePublisherKey(target.publisherId, target.keyId, grantId)
+    ui.toast(t('publishers.approvedKeyMsg'), 'ok')
+    pendingKey.value = null
+    delete keys[target.publisherId]
+    await refetch()
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      await router.replace({ path: '/login', query: { next: '/app/publishers' } })
+    } else if (e instanceof ApiError && e.status === 403 && e.code === 'step_up_expired') {
+      keyReturnTo.value = `/app/publishers?stepUp=approve&publisher=${target.publisherId}&key=${target.keyId}`
+      keyDialogOpen.value = true
+      ui.toast(t('stepUp.expired'), 'err')
+    } else {
+      ui.toast(t('errors.actionFailed'), 'err')
+    }
+  } finally {
+    keyBusyId.value = null
+  }
+}
+
+// Google round-trip: the callback redirects here with the one-time grant (or
+// an opaque error) in the query. The grant is consumed into memory and the
+// query is stripped immediately.
+const resumed = ref(false)
+async function resumeFromQuery() {
+  if (resumed.value) return
+  if (route.query['stepUp'] !== 'approve') return
+  const publisherId = route.query['publisher']
+  const keyId = route.query['key']
+  if (typeof publisherId !== 'string' || typeof keyId !== 'string') return
+  resumed.value = true
+  const outcome = parseStepUpQuery(route.query as Record<string, unknown>)
+  const clean = { ...route.query }
+  delete clean['stepUp']
+  delete clean['publisher']
+  delete clean['key']
+  delete clean['stepUpGrant']
+  delete clean['stepUpError']
+  await router.replace({ path: route.path, query: clean })
+  if (outcome && 'grantId' in outcome) {
+    pendingKey.value = { publisherId, keyId }
+    await doApproveKey(outcome.grantId)
+  } else if (outcome && 'error' in outcome) {
+    ui.toast(t('stepUp.failed'), 'err')
+  }
+}
+
+onMounted(() => {
+  void resumeFromQuery()
+})
+watch(items, () => {
+  void resumeFromQuery()
+})
 </script>

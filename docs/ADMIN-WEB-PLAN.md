@@ -37,8 +37,9 @@ TikTools desktop application stays usable offline.
 - Moderation endpoints already exist at `/api/v1/moderation/releases*`.
 - Cloud roles are separate from publisher membership and can currently be
   bootstrapped via `cloud-api grant-role USER_ID admin OPERATOR`.
-- Key enrollment/approval is intentionally disabled pending validated
-  session-bound step-up; **the UI must not bypass or toggle this gate**.
+- Key enrollment/approval requires validated session-bound step-up grants
+  (see STEP-UP-AUTH.md); **the UI must not bypass or toggle this gate** — it
+  reauthenticates through the step-up dialog and spends the granted flow.
 
 ## Proposed small PRs
 
@@ -82,8 +83,8 @@ cannot enumerate or mutate administrative data.
 Branch `feat/admin-moderation-ui`
 
 1. Reuse moderation queue, inspection and decision endpoints, with confirmation
-   and error handling. Render key/step-up restrictions as **disabled**, not as
-   authorization to work around them.
+   and error handling. Gate key actions behind step-up reauthentication,
+   never as authorization to work around the grant requirement.
 2. Provide a separate publisher-scoped view for the existing namespace,
    membership and release APIs. Do not equate publisher owner/admin roles with
    Cloud admin.

@@ -40,9 +40,15 @@ To run each service separately:
 
 ```sh
 cd web/admin
-npm install
+npm ci           # reproducible install from package-lock.json; do not use npm install
 npm run dev      # http://127.0.0.1:5173, /api proxied to the backend
 ```
+
+`npm ci` requires `package.json` and `package-lock.json` to agree and
+installs the exact pinned tree (including dev dependencies needed by
+`typecheck`, `test`, and `build`). Commit lockfile changes only when
+`package.json` intentionally changes. `node_modules/` and `dist/` stay
+untracked via the root `.gitignore`.
 
 Open [http://127.0.0.1:5173/app](http://127.0.0.1:5173/app) in a browser.
 `CLOUD_API_URL` (see `.env.example`) only changes the dev proxy target.

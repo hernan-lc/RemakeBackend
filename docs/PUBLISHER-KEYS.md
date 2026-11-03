@@ -1,6 +1,11 @@
 # Publisher signing keys
 
-**Enrollment and approval are disabled in the normal server.** The specification requires session-bound step-up authentication, which the pinned Better Auth integration does not currently provide for Google users. Challenge, key request, and approval endpoints return 503 until that capability is implemented; there is no configuration bypass. The lifecycle below is exercised only by a test harness. Revocation and authorized listing remain available.
+**Enrollment and approval require session-bound step-up authentication.**
+Challenge issuance validates a `publisher.key.enroll` grant, key registration
+spends it, and approval spends a `publisher.key.approve` grant, each bound to
+the caller's session, action, and target resource with a five-minute lifetime
+(see [STEP-UP-AUTH.md](STEP-UP-AUTH.md)). There is no configuration bypass.
+Revocation and authorized listing remain available without a grant.
 
 Publisher namespaces and signing keys have separate approvals. A namespace owner or
 admin can request a key only while the namespace is approved. Only an independent
@@ -18,19 +23,29 @@ use the formats implemented by the pinned TikTools package library. Key IDs and
 SHA-256 public-key fingerprints are globally unique and remain reserved after
 revocation; use new key material and a new key ID when rotating.
 
-Once step-up integration is implemented, the intended enrollment sequence is:
+The enrollment sequence is:
 
-1. Send `POST /api/v1/publishers/{publisherUuid}/keys/challenges`. The response has
-   `challengeId`, `nonce` and `expiresIn`. Challenges expire after five minutes, are
-   bound to the publisher and requesting account, and are consumed once.
-2. On a trusted local machine with the existing TikTools private key file, run
+1. Verify with `POST /api/v1/step-up/password` (body `{ action:
+   "publisher.key.enroll", publisherId, password }`) or complete the Google
+   step-up flow (`POST /api/v1/step-up/oauth/start`, provider round-trip,
+   callback). Either returns a one-time grant (`grantId`, five minutes,
+   session-bound). The dashboard reauthentication dialog performs this step.
+2. Send `POST /api/v1/publishers/{publisherUuid}/keys/challenges` with body
+   `{ stepUpGrant }`. The response has `challengeId`, `nonce` and
+   `expiresIn`. Challenges expire after five minutes, are bound to the
+   publisher and requesting account, and are consumed once. The grant is
+   validated but not spent.
+3. On a trusted local machine with the existing TikTools private key file, run
    `cargo run --locked -p cloud-api --example sign_publisher_key -- KEY_FILE PUBLISHER_UUID CHALLENGE_UUID NONCE`.
    The command prints a JSON request containing the public key and signature; it does
    not transmit or print the private key. Never send the key file to Cloud.
-3. Send that JSON to `POST /api/v1/publishers/{publisherUuid}/keys`. The service
-   verifies the Ed25519 proof, creates a pending request and returns its record UUID.
-4. An independent Cloud admin sends
-   `POST /api/v1/admin/publishers/{publisherUuid}/keys/{recordUuid}/approve`.
+4. Send that JSON plus the grant to `POST /api/v1/publishers/{publisherUuid}/keys`.
+   The service verifies the Ed25519 proof, spends the grant in the same
+   transaction, creates a pending request and returns its record UUID.
+5. An independent Cloud admin verifies with a `publisher.key.approve` grant
+   naming the key record, then sends
+   `POST /api/v1/admin/publishers/{publisherUuid}/keys/{recordUuid}/approve`
+   with body `{ stepUpGrant }`.
    Revoke with the corresponding publisher or admin path ending in `/revoke`.
 
 The signed bytes are UTF-8 `tiktools-cloud-publisher-key-v1`, publisher UUID,
