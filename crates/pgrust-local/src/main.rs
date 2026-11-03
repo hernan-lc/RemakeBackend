@@ -192,6 +192,29 @@ fn install() -> Result<(), String> {
             "pgrust source is missing; run `git submodule update --init --recursive`".into(),
         );
     }
+    // The submodule cannot record uncommitted changes in its parent. Apply the
+    // maintained compatibility patch on fresh checkouts before building.
+    let patch = project_dir().join("patches/pgrust-mimalloc-glibc-2.44.patch");
+    let applied = Command::new("git")
+        .current_dir(&source)
+        .args(["apply", "--unidiff-zero", "--reverse", "--check"])
+        .arg(&patch)
+        .output()
+        .map_err(|e| format!("failed to check pgrust compatibility patch: {e}"))?;
+    if !applied.status.success() {
+        let result = Command::new("git")
+            .current_dir(&source)
+            .args(["apply", "--unidiff-zero"])
+            .arg(&patch)
+            .output()
+            .map_err(|e| format!("failed to apply pgrust compatibility patch: {e}"))?;
+        if !result.status.success() {
+            return Err(format!(
+                "cannot apply pgrust compatibility patch; check submodule changes: {}",
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+    }
     let status = Command::new("cargo")
         .current_dir(&source)
         .env_remove("CARGO_TARGET_DIR")

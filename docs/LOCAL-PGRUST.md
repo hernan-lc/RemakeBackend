@@ -4,6 +4,12 @@ The launcher builds the pinned pgrust source in `vendor/pgrust` locally. The
 source is a Git submodule so it retains its own workspace and can be developed
 and contributed upstream independently. Initialize it after cloning:
 
+The build checks for the repository's mimalloc compatibility fix for an early
+`free(NULL)` crash on glibc 2.44. If needed, it applies the patch tracked in
+`patches/pgrust-mimalloc-glibc-2.44.patch` to the submodule working tree. The
+pinned submodule commit already includes the fix. If the patch conflicts with
+local submodule edits or a different revision, the build stops for review.
+
 ```bash
 git submodule update --init --recursive
 cp .env.example .env
