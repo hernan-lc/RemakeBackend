@@ -27,6 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+ipnet = "2"
 
 [dev-dependencies]
 zip = { version = "9.1.2", default-features = false, features = ["deflate"] }

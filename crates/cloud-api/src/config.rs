@@ -1,10 +1,12 @@
 use better_auth::JwksRefreshPolicy;
+use ipnet::IpNet;
 use std::{env, net::SocketAddr, time::Duration};
 use url::Url;
 
 // Deliberately no Debug: this type contains credentials.
 pub struct Config {
     pub bind: SocketAddr,
+    pub trusted_proxy_cidrs: Vec<IpNet>,
     pub database_url: String,
     pub auth_secret: String,
     pub origin: String,
@@ -29,6 +31,29 @@ impl Config {
             .unwrap_or_else(|| "127.0.0.1:3000".into())
             .parse()
             .map_err(|_| "invalid BIND_ADDR")?;
+        let trusted_proxy_cidrs = get("TRUSTED_PROXY_CIDRS")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .map(|item| {
+                        if item.is_empty() {
+                            return Err("TRUSTED_PROXY_CIDRS contains an empty entry".to_string());
+                        }
+                        let network = item.parse::<IpNet>().map_err(|_| {
+                            "TRUSTED_PROXY_CIDRS must be comma-separated IP CIDRs".to_string()
+                        })?;
+                        if network.prefix_len() == 0 {
+                            return Err(
+                                "TRUSTED_PROXY_CIDRS must not contain default routes".to_string()
+                            );
+                        }
+                        Ok(network)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
         let database_url = required("DATABASE_URL")?;
         let db = Url::parse(&database_url).map_err(|_| "invalid DATABASE_URL")?;
         if !matches!(db.scheme(), "postgres" | "postgresql") || db.host().is_none() {
@@ -120,6 +145,7 @@ impl Config {
         };
         Ok(Self {
             bind,
+            trusted_proxy_cidrs,
             database_url,
             auth_secret,
             origin: url.origin().ascii_serialization(),
@@ -168,5 +194,8 @@ mod tests {
         assert!(config(&[("GOOGLE_JWKS_MAX_STALE_SECONDS", "86401")]).is_err());
         assert!(config(&[("GOOGLE_JWKS_MIN_RETRY_SECONDS", "0")]).is_err());
         assert!(config(&[("GOOGLE_JWKS_REFRESH_SECONDS", "1800")]).is_ok());
+        assert!(config(&[("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,10.0.0.0/8")]).is_ok());
+        assert!(config(&[("TRUSTED_PROXY_CIDRS", "not-a-cidr")]).is_err());
+        assert!(config(&[("TRUSTED_PROXY_CIDRS", "0.0.0.0/0")]).is_err());
     }
 }

@@ -4,7 +4,7 @@ use super::*;
 use axum::{
     body::Body,
     extract::Path,
-    http::{header, Request},
+    http::{header, HeaderMap, Request},
     routing::post,
 };
 use better_auth_core::options::SessionOptions;
@@ -13,6 +13,52 @@ use tower::ServiceExt;
 use url::Url;
 
 const ORIGIN: &str = "https://cloud.example.test";
+
+#[tokio::test]
+async fn forwarded_headers_require_an_allowlisted_proxy_peer() {
+    let app = Router::new()
+        .route(
+            "/",
+            axum::routing::get(|headers: HeaderMap| async move {
+                headers
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("missing")
+                    .to_owned()
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            vec!["127.0.0.1/32".parse::<ipnet::IpNet>().unwrap()],
+            super::proxy_boundary,
+        ));
+    let untrusted = Request::builder()
+        .uri("/")
+        .header("x-forwarded-for", "203.0.113.8")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(untrusted).await.unwrap();
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "missing"
+    );
+    let trusted = Request::builder()
+        .uri("/")
+        .header("x-forwarded-for", "203.0.113.8")
+        .extension(axum::extract::connect_info::ConnectInfo(
+            "127.0.0.1:43210".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(trusted).await.unwrap();
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+        "203.0.113.8"
+    );
+}
 
 async fn fixture() -> (String, tokio::task::JoinHandle<()>) {
     async fn token(
@@ -3128,7 +3174,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
     let auth = AuthRouter::new(ctx.clone()).unwrap();
     let disabled_app = app(ctx.clone(), pool.clone(), auth);
     let auth = AuthRouter::new(ctx.clone()).unwrap();
-    let app = app_inner(ctx, pool.clone(), auth, None, true);
+    let app = app_inner(ctx, pool.clone(), auth, None, Vec::new(), true);
     let base = format!("/api/v1/publishers/{publisher}/keys");
     async fn call(
         app: &Router,

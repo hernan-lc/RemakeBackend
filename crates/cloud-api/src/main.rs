@@ -100,6 +100,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             secret: config.auth_secret,
             base_url: Some(BaseUrl::Static(config.origin.clone())),
             trusted_origins: vec![config.origin],
+            advanced: better_auth_core::options::AdvancedOptions {
+                trusted_proxy_headers: !config.trusted_proxy_cidrs.is_empty(),
+                ..Default::default()
+            },
             ..AuthOptions::default()
         },
         adapter.clone(),
@@ -261,7 +265,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .object_storage
         .map(cloud_storage::QuarantineStore::new)
         .transpose()?;
-    let app = app_with_storage(context, pool, auth, object_storage);
+    let app = app_with_proxies(
+        context,
+        pool,
+        auth,
+        object_storage,
+        config.trusted_proxy_cidrs,
+    );
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(address = %config.bind, "cloud API listening");
     axum::serve(
@@ -280,13 +290,31 @@ fn app(context: AuthContext, pool: PgPool, auth: AuthRouter) -> Router {
     app_with_storage(context, pool, auth, None)
 }
 
+#[cfg(test)]
 fn app_with_storage(
     context: AuthContext,
     pool: PgPool,
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
 ) -> Router {
-    app_inner(context, pool, auth, object_storage, false)
+    app_inner(context, pool, auth, object_storage, Vec::new(), false)
+}
+
+fn app_with_proxies(
+    context: AuthContext,
+    pool: PgPool,
+    auth: AuthRouter,
+    object_storage: Option<cloud_storage::QuarantineStore>,
+    trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+) -> Router {
+    app_inner(
+        context,
+        pool,
+        auth,
+        object_storage,
+        trusted_proxy_cidrs,
+        false,
+    )
 }
 
 // The true value is available only to the test harness; there is no production
@@ -296,6 +324,7 @@ fn app_inner(
     pool: PgPool,
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
+    trusted_proxy_cidrs: Vec<ipnet::IpNet>,
     key_enrollment_enabled: bool,
 ) -> Router {
     Router::new()
@@ -516,6 +545,37 @@ fn app_inner(
             key_enrollment_enabled,
         })
         .merge(auth_routes(auth))
+        .layer(axum::middleware::from_fn_with_state(
+            trusted_proxy_cidrs,
+            proxy_boundary,
+        ))
+}
+
+async fn proxy_boundary(
+    State(trusted): State<Vec<ipnet::IpNet>>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::connect_info::ConnectInfo<std::net::SocketAddr>>()
+        .map(|connect| connect.0.ip());
+    let trusted_peer =
+        peer.is_some_and(|peer| trusted.iter().any(|network| network.contains(&peer)));
+    if !trusted_peer {
+        for name in [
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-forwarded-port",
+            "x-forwarded-prefix",
+            "x-real-ip",
+        ] {
+            request.headers_mut().remove(name);
+        }
+    }
+    next.run(request).await
 }
 
 #[cfg(test)]
