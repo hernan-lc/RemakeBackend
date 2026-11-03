@@ -646,6 +646,27 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
     }
     let auth = AuthRouter::new(ctx.clone()).unwrap();
     let app = app(ctx, pool.clone(), auth);
+    let publisher_id = uuid::Uuid::new_v4();
+    let namespace = format!("p{}", publisher_id.simple());
+    sqlx::query("INSERT INTO cloud_publishers(id,namespace,status) VALUES($1,$2,'pending')")
+        .bind(publisher_id)
+        .bind(namespace)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES($1,$2,'owner')",
+    )
+    .bind(publisher_id)
+    .bind(&user_ids[0])
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_account_roles(user_id,role) VALUES($1,'moderator')")
+        .bind(&user_ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
     let path = "/api/v1/sync/collections/plugin-selections/acme.plugin";
     let value =
         json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.0.0","enabled":true});
@@ -815,6 +836,41 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
             assert!(data["records"][0]["value"].is_null());
         }
     }
+    let account_export = request(&app, "GET", "/api/v1/me/export", Some(&cookies[0]), None).await;
+    assert_eq!(account_export.status(), StatusCode::OK);
+    assert_eq!(account_export.headers()[header::CACHE_CONTROL], "no-store");
+    let account_data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(account_export.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(account_data["profile"]["id"], user_ids[0]);
+    assert_eq!(account_data["cloudRoles"][0], "moderator");
+    assert_eq!(
+        account_data["publisherMemberships"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(account_data["sync"]["cursor"], 3);
+    assert_eq!(account_data["sync"]["records"][0]["deleted"], true);
+    assert!(account_data.get("sessionToken").is_none());
+    let other_export = request(&app, "GET", "/api/v1/me/export", Some(&cookies[1]), None).await;
+    assert_eq!(other_export.status(), StatusCode::OK);
+    let other_data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(other_export.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(other_data["sync"]["records"].as_array().unwrap().len(), 0);
+    assert!(other_data["cloudRoles"].as_array().unwrap().is_empty());
+    assert!(other_data["publisherMemberships"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let native = app
         .clone()
         .oneshot(
@@ -828,9 +884,28 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
         .unwrap();
     assert_eq!(native.status(), StatusCode::OK);
     assert_eq!(native.headers()[header::CACHE_CONTROL], "no-store");
+    let native_account = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/native/me/export")
+                .header(header::AUTHORIZATION, format!("Bearer {}", bearers[0]))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(native_account.status(), StatusCode::OK);
+    assert_eq!(native_account.headers()[header::CACHE_CONTROL], "no-store");
     sqlx::query("UPDATE cloud_sync_records SET deleted=false,value=$2 WHERE user_id=$1").bind(&user_ids[0]).bind(json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.0.0","enabled":true,"token":"secret"})).execute(&pool).await.unwrap();
     assert_eq!(
         request(&app, "GET", "/api/v1/sync/export", Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        request(&app, "GET", "/api/v1/me/export", Some(&cookies[0]), None)
             .await
             .status(),
         StatusCode::INTERNAL_SERVER_ERROR
@@ -1054,6 +1129,18 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
         .await
         .unwrap();
     assert_eq!(cursor, 10002, "quota rejection must not advance the cursor");
+
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(publisher_id)
+        .bind(&user_ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM cloud_account_roles WHERE user_id=$1")
+        .bind(&user_ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Better Auth rechecks the password and deletes the user; FK cascades must
     // remove only that user's sync state, including historical changes.

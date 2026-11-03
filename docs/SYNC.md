@@ -16,7 +16,7 @@ Each account is limited to 1,000 distinct records, including tombstones; a new r
 
 When Better Auth deletes its user row, foreign keys remove that user's sync cursor, records and retained history in the same database transaction. The migration refuses existing orphan rows for operator investigation. Deletion is blocked while the user holds a Cloud role or publisher membership; those must be removed explicitly first. This does not implement the full Cloud account-deletion policy: audit retention remains unresolved, and the upstream self-deletion route requires a password, which may not exist for social-only accounts. Backups retain data according to the separately required backup policy.
 
-Complete account export, production abuse controls, secret-leakage review, Desktop opt-in, offline conflict UI and other record schemas are not implemented. Do not use this for sensitive or production data yet.
+Production abuse controls, secret-leakage review, Desktop opt-in, offline conflict UI and other record schemas are not implemented. Do not use this for sensitive or production data yet.
 
 ## Experimental client library
 
@@ -39,6 +39,27 @@ unknown fields such as credentials are never returned by this endpoint.
 This is an export of the current Cloud sync dataset, not a complete account export:
 it excludes identity, publisher, moderation, audit, historical changes and local
 offline edits. Complete account deletion and audit retention remain separate unresolved work. Protect downloaded exports as user data.
+
+For a bounded Cloud account export, authenticated browser clients can call
+`GET /api/v1/me/export`; native clients can call
+`GET /api/v1/native/me/export` with a bearer session. `cloud-client` exposes this
+as `Session::export_account()` and verifies the profile account ID, schema version,
+section limits, sync record consistency and absence of credential/capability fields
+before returning it. The response uses one
+repeatable-read snapshot and includes the caller's profile, Cloud roles, publisher
+memberships, requested public-key metadata, submitted release and upload metadata,
+moderation decisions they recorded, publication requests, outstanding ownership
+transfers, audit events they authored, and current validated sync records including
+tombstones. Each collection is capped at 1,000 rows; larger exports fail with HTTP
+413 rather than silently truncating. The endpoint is limited to 10 requests per
+minute per account and returns `Cache-Control: no-store`.
+
+The export deliberately excludes session tokens, linked-provider credentials,
+password hashes, private signing material, signed upload URLs, object keys and
+version IDs. It does not include other users' data, retained sync change history,
+local-only pending edits, package bytes or backups. Protect any downloaded file as
+account data; this API does not delete the account or determine retention of audit
+events and backups.
 
 Migration `20261102000015_account_deletion_guards.sql` adds restrictive foreign keys
 for publisher memberships and Cloud roles. Existing orphan memberships make migration

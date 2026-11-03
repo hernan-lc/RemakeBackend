@@ -102,6 +102,87 @@ impl SyncExport {
         Ok(())
     }
 }
+
+/// Bounded Cloud-owned account data. Authentication secrets and object-storage
+/// capabilities are intentionally absent; callers must still protect the export.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountExport {
+    pub schema_version: u8,
+    pub profile: ExportProfile,
+    pub cloud_roles: Vec<String>,
+    pub publisher_memberships: Vec<serde_json::Value>,
+    pub publisher_keys_requested: Vec<serde_json::Value>,
+    pub releases_submitted: Vec<serde_json::Value>,
+    pub uploads_requested: Vec<serde_json::Value>,
+    pub reviews_recorded: Vec<serde_json::Value>,
+    pub publication_requests: Vec<serde_json::Value>,
+    pub ownership_transfers: Vec<serde_json::Value>,
+    pub audit_events_by_actor: Vec<serde_json::Value>,
+    pub sync: SyncExport,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExportProfile {
+    pub id: String,
+    pub email: String,
+    pub name: Option<String>,
+}
+impl AccountExport {
+    fn validate(&self, account_id: &str) -> Result<(), SyncError> {
+        if self.schema_version != 1 || self.profile.id != account_id {
+            return Err(SyncError::WrongAccount);
+        }
+        self.sync.validate()?;
+        for section in [
+            &self.publisher_memberships,
+            &self.publisher_keys_requested,
+            &self.releases_submitted,
+            &self.uploads_requested,
+            &self.reviews_recorded,
+            &self.publication_requests,
+            &self.ownership_transfers,
+            &self.audit_events_by_actor,
+        ] {
+            if section.len() > 1000 || section.iter().any(|item| !item.is_object()) {
+                return Err(SyncError::Protocol);
+            }
+            if section.iter().any(contains_sensitive_field) {
+                return Err(SyncError::Protocol);
+            }
+        }
+        if self.cloud_roles.len() > 1000
+            || self
+                .cloud_roles
+                .iter()
+                .any(|role| !matches!(role.as_str(), "admin" | "moderator"))
+        {
+            return Err(SyncError::Protocol);
+        }
+        Ok(())
+    }
+}
+fn contains_sensitive_field(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => fields.iter().any(|(name, child)| {
+            matches!(
+                name.as_str(),
+                "token"
+                    | "sessionToken"
+                    | "accessToken"
+                    | "refreshToken"
+                    | "password"
+                    | "passwordHash"
+                    | "privateKey"
+                    | "objectKey"
+                    | "versionId"
+                    | "signedUrl"
+            ) || contains_sensitive_field(child)
+        }),
+        serde_json::Value::Array(items) => items.iter().any(contains_sensitive_field),
+        _ => false,
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "operation",
@@ -419,6 +500,12 @@ impl Session {
         export.validate()?;
         Ok(export)
     }
+    /// Retrieve and validate a bounded snapshot of this account's Cloud-owned data.
+    pub async fn export_account(&self) -> Result<AccountExport, SyncError> {
+        let export: AccountExport = self.get("api/v1/native/me/export", &[]).await?;
+        export.validate(&self.account_id)?;
+        Ok(export)
+    }
     /// Apply one change page atomically in memory; persist it only after this returns.
     pub async fn pull_page(&self, state: &mut SyncState) -> Result<bool, SyncError> {
         self.verify_account(state)?;
@@ -725,6 +812,41 @@ mod tests {
             r#"{"schemaVersion":1,"cursor":0,"records":[],"token":"secret"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn account_export_is_account_bound_bounded_and_secret_free() {
+        let raw = serde_json::json!({
+            "schemaVersion": 1,
+            "profile": {"id":"user-1","email":"user@example.test","name":"User"},
+            "cloudRoles": ["moderator"],
+            "publisherMemberships": [{"namespace":"acme","role":"owner"}],
+            "publisherKeysRequested": [],
+            "releasesSubmitted": [],
+            "uploadsRequested": [],
+            "reviewsRecorded": [],
+            "publicationRequests": [],
+            "ownershipTransfers": [],
+            "auditEventsByActor": [],
+            "sync": {"schemaVersion":1,"cursor":0,"records":[]}
+        });
+        let mut export: AccountExport = serde_json::from_value(raw).unwrap();
+        assert!(export.validate("user-1").is_ok());
+        assert!(matches!(
+            export.validate("user-2"),
+            Err(SyncError::WrongAccount)
+        ));
+        export.publisher_memberships[0]["sessionToken"] = serde_json::json!("secret");
+        assert!(matches!(
+            export.validate("user-1"),
+            Err(SyncError::Protocol)
+        ));
+        export.publisher_memberships.clear();
+        export.cloud_roles.push("owner".into());
+        assert!(matches!(
+            export.validate("user-1"),
+            Err(SyncError::Protocol)
+        ));
     }
 
     #[test]

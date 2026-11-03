@@ -48,7 +48,7 @@ pub struct PluginSelection {
     enabled: bool,
 }
 
-fn valid_plugin_id(id: &str) -> bool {
+pub(crate) fn valid_plugin_id(id: &str) -> bool {
     id.len() <= 128
         && id.split_once('.').is_some()
         && id.split('.').all(|part| {
@@ -58,7 +58,7 @@ fn valid_plugin_id(id: &str) -> bool {
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
         })
 }
-fn validate(name: &str, key: &str, value: &Value) -> bool {
+pub(crate) fn validate(name: &str, key: &str, value: &Value) -> bool {
     if name != COLLECTION || !valid_plugin_id(key) {
         return false;
     }

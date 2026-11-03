@@ -97,8 +97,12 @@ users revoke their own Cloud roles before account deletion; it serializes with
 operator role changes, protects the final admin and records an audit event. Together
 with publisher departure and ownership transfer, this resolves Cloud authorization
 blockers. Better Auth still requires its own account-deletion reauthentication;
-social-only reauthentication, a user-facing deletion flow, audit retention policy
-and complete account export/deletion remain unfinished. The PostgreSQL 18
+social-only reauthentication, a user-facing deletion flow and audit retention policy
+remain unfinished. A bounded Cloud account export now covers profile, roles,
+memberships, user-requested publisher metadata, authored moderation/publication/audit
+activity and current validated sync records. It excludes credentials, tokens, signed
+URLs, object keys and version IDs; it is not a full identity-provider or backup export.
+The PostgreSQL 18
 integration test passed with cross-origin refusal, successful self-revocation,
 audit verification and final-admin protection coverage.
 
