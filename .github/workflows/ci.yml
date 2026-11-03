@@ -3,6 +3,14 @@ on: [push, pull_request]
 env:
   CARGO_BUILD_JOBS: 2
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: cargo check --workspace --locked
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: cargo check -p cloud-client --all-features --locked
   test:
     runs-on: ubuntu-latest
     services:

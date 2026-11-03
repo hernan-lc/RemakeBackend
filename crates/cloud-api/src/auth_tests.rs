@@ -2203,8 +2203,61 @@ async fn user_deletion_cannot_bypass_cloud_memberships_or_roles() {
     admin::change_role(&pool, true, &users[2], "admin", "test")
         .await
         .unwrap();
+    // This suite reuses a dedicated database, so establish an isolated
+    // last-admin scenario regardless of roles left by earlier integration cases.
+    sqlx::query("DELETE FROM cloud_account_roles WHERE role='admin' AND user_id<>$1")
+        .bind(&users[2])
+        .execute(&pool)
+        .await
+        .unwrap();
+    admin::change_role(&pool, true, &users[1], "moderator", "test")
+        .await
+        .unwrap();
     let auth = AuthRouter::new(ctx.clone()).unwrap();
     let app = app(ctx, pool.clone(), auth);
+    let refuse_role_delete = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/me/roles/moderator")
+        .header(header::COOKIE, &cookies[1])
+        .header(header::ORIGIN, "https://evil.example.test")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(refuse_role_delete)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let leave_moderator = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/me/roles/moderator")
+        .header(header::COOKIE, &cookies[1])
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(leave_moderator).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    let last_admin = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/me/roles/admin")
+        .header(header::COOKIE, &cookies[2])
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(last_admin).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    let self_revocation_audit: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE actor_user_id=$1 AND target_user_id=$1 AND action='account.role_self_revoked' AND old_role='moderator' AND new_role IS NULL")
+        .bind(&users[1])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(self_revocation_audit, 1);
     sqlx::query("INSERT INTO cloud_sync_cursors(user_id,cursor) VALUES ($1,1)")
         .bind(&users[0])
         .execute(&pool)

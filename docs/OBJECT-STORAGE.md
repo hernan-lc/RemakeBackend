@@ -78,7 +78,10 @@ docker stop cloud-minio-integration
 
 The test rejected unversioned storage, a changed payload, a missing signed header,
 a repeated conditional upload, a wrong object size and an incorrect digest. It
-captured and downloaded the versioned quarantine object and staged and re-read a
-versioned prepared object. This is one local provider/version using test root
-credentials and HTTP; it is not proof of production provider, TLS, IAM, CORS,
+captured and downloaded the versioned quarantine object, overwrote its mutable key
+with a privileged SDK write, and verified that both the replacement version and
+the originally captured version remained readable with their respective bytes. It
+also staged and re-read a versioned prepared object. The overwrite check passed
+against MinIO development build 2025-04-22 using disposable buckets, test root
+credentials and HTTP. This is not proof of production provider, TLS, IAM, CORS,
 retention, or lifecycle configuration.

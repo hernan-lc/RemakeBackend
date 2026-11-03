@@ -4,7 +4,9 @@ The plan remains the source of scope; the project is not ready for deployment.
 
 Foundation in this repository: Axum server, configuration validation, PostgreSQL adapter and secondary storage, explicit Better Auth migration command, health endpoints, Better Auth routes, cookie-protected `/api/v1/me`, optional Google provider, versioned Cloud migrations, pending publisher namespace requests and membership-scoped listing with an audit event, local PostgreSQL Compose file, and basic CI. Members may list their publisher membership; only an owner can add, change, or remove non-owner roles, with changes recorded in the audit table. Publisher namespace approval and a signing-key lifecycle are implemented, but key enrollment and approval are disabled until session-bound step-up is available; ownership transfer uses a time-limited offer accepted by an existing member. The pinned auth library has sign-in second-factor challenges; a session-bound step-up integration for key enrollment remains unverified. Better Auth is pinned in the manifest and lockfile. Google provider token retention is not enabled.
 
-Local checks on 2026-11-02: `cargo check --workspace`, `cargo test --workspace --locked` (one config test), and `cargo clippy --workspace --all-targets --locked -- -D warnings` passed. A fresh local PostgreSQL 18 database accepted `cloud-api migrate`; the running API returned 200 for liveness/readiness and 401 for anonymous `/me`. An additional PostgreSQL integration test exercises a local OAuth fixture through the Cloud router: PKCE initiation, state replay and unverified-email refusal, session restoration after reconstructing the app, CSRF rejection, cross-instance logout/revocation with and without cached cookies, and non-retention of provider tokens. It does not cover a real Google callback, an OS process restart, or the desktop flow. Docker Compose could not be exercised because the Compose plugin was unavailable. Better Auth declares Rust 1.89, but the pinned TikTools package crates require Rust 1.95; neither minimum has been tested here.
+Local checks on 2026-11-02: `cargo check --workspace`, `cargo test --workspace --locked` (one config test), and `cargo clippy --workspace --all-targets --locked -- -D warnings` passed. A fresh local PostgreSQL 18 database accepted `cloud-api migrate`; the running API returned 200 for liveness/readiness and 401 for anonymous `/me`. An additional PostgreSQL integration test exercises a local OAuth fixture through the Cloud router: PKCE initiation, state replay and unverified-email refusal, session restoration after reconstructing the app, CSRF rejection, cross-instance logout/revocation with and without cached cookies, and non-retention of provider tokens. It does not cover a real Google callback, an OS process restart, or the desktop flow. Docker Compose could not be exercised because the Compose plugin was unavailable. Better Auth declares Rust 1.89, while pinned TikTools packages require Rust 1.95.
+
+Minimum compiler verification: `cargo +1.95.0 check --workspace --locked` and `cargo +1.89.0 check -p cloud-client --all-features --locked` both passed locally. CI repeats those declared minimum compiler checks. These were compile checks, not full test-suite runs under each compiler.
 
 Still required include real Google OAuth E2E, process restart and native desktop client integration; static registry integration and signing; publisher authorization and audits; package upload, validation, moderation and publishing; opt-in sync and desktop integration; security/load testing, recovery drills, and independent review. See PLAN.md and ROADMAP.md for the full acceptance criteria. Migrations have no tested upgrade or rollback procedure beyond restoring a backup.
 
@@ -67,7 +69,7 @@ INSTREAM for the Rust adapter, including detection within a deflated ZIP archive
 This does not validate production signatures, other archive formats, scanner
 configuration, or freshness; the test is opt-in.
 
-MinIO smoke test: a disposable MinIO 2025-04-22 server enforced signed upload headers, checksum and conditional writes, and supported version-pinned quarantine and prepared-object readback. Production S3, IAM and retention remain unverified; see OBJECT-STORAGE.md.
+MinIO smoke test: a disposable MinIO 2025-04-22 server enforced signed upload headers, checksum and conditional writes, and supported version-pinned quarantine and prepared-object readback. A privileged overwrite of the quarantine key produced a different current version while the captured version remained downloadable with the original bytes. This is local emulator evidence only; production S3, IAM and retention remain unverified. See OBJECT-STORAGE.md.
 
 Sync export: authenticated browser and native endpoints return a bounded, consistent
 snapshot of the current allowlisted sync records and tombstones. PostgreSQL tests
@@ -89,14 +91,21 @@ Publisher departure: a non-owner can leave their own publisher membership with a
 audited, CSRF-protected request; an owner must transfer ownership first. Leaving
 invalidates a pending offer to that member.
 
-Deletion blocker visibility: authenticated browser and native endpoints list the
-caller’s Cloud roles and paginated publisher memberships. This helps users identify
-required role removal, departure or ownership transfer; it does not promise account
-deletion or address auth reauthentication and retention.
+Deletion preparation: authenticated browser and native endpoints list the caller’s
+Cloud roles and paginated publisher memberships. A CSRF-checked browser endpoint lets
+users revoke their own Cloud roles before account deletion; it serializes with
+operator role changes, protects the final admin and records an audit event. Together
+with publisher departure and ownership transfer, this resolves Cloud authorization
+blockers. Better Auth still requires its own account-deletion reauthentication;
+social-only reauthentication, a user-facing deletion flow, audit retention policy
+and complete account export/deletion remain unfinished. The PostgreSQL 18
+integration test passed with cross-origin refusal, successful self-revocation,
+audit verification and final-admin protection coverage.
 
-Combined local regression: the locked workspace unit tests, all-feature workspace
-Clippy, all-feature Cloud client tests, desktop-login JavaScript tests, and all 17
-PostgreSQL integration tests passed together on a fresh PostgreSQL 18 database.
+Regression verification: the locked workspace unit tests, all-feature workspace
+Clippy, all-feature Cloud client tests, and desktop-login JavaScript tests passed in
+the previously recorded local regression. The complete ignored PostgreSQL suite
+then passed separately: all 20 integration tests on a fresh PostgreSQL 18 database.
 The optional real-ClamAV test was not enabled in that combined run; its separate
 custom-signature smoke test is described above. CI itself was not run here.
 

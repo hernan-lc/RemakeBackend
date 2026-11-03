@@ -310,6 +310,11 @@ fn app_inner(
             get(account::blockers).layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
+            "/api/v1/me/roles/{role}",
+            axum::routing::delete(account::leave_role)
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/native/me/deletion-blockers",
             get(account::native_blockers).layer(axum::middleware::map_response(sync::no_store)),
         )

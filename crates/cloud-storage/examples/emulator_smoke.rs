@@ -61,6 +61,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let store = QuarantineStore::new(settings(&versioned_bucket))?;
     let unversioned = QuarantineStore::new(settings(&unversioned_bucket))?;
+    let s3 = aws_sdk_s3::Client::from_conf(
+        aws_sdk_s3::config::Builder::new()
+            .behavior_version_latest()
+            .endpoint_url(&endpoint)
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                &access_key,
+                &secret_key,
+                None,
+                None,
+                "smoke-test-overwrite",
+            ))
+            .force_path_style(true)
+            .build(),
+    );
     let key = format!("quarantine/{}/{}", Uuid::new_v4(), Uuid::new_v4());
     let bytes = b"disposable test artifact";
     let digest = hex::encode(Sha256::digest(bytes));
@@ -117,6 +132,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .download_version(&key, &captured, &digest, &mut downloaded)
         .await?;
     assert_eq!(downloaded, bytes);
+    // Simulate a privileged writer bypassing the conditional upload URL. The
+    // recorded version must remain readable even when the current key changes.
+    let replacement = b"privileged overwrite";
+    let replacement_digest = hex::encode(Sha256::digest(replacement));
+    let overwrite = s3
+        .put_object()
+        .bucket(&versioned_bucket)
+        .key(&key)
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(replacement))
+        .send()
+        .await?;
+    let replacement_version = overwrite
+        .version_id()
+        .filter(|id| !id.is_empty() && *id != "null")
+        .ok_or("overwrite did not return an immutable version ID")?;
+    assert_ne!(replacement_version, captured.version_id);
+    let current = store.capture(&key, replacement.len() as i64).await?;
+    assert_eq!(current.version_id, replacement_version);
+    let mut current_bytes = Vec::new();
+    store
+        .download_version(&key, &current, &replacement_digest, &mut current_bytes)
+        .await?;
+    assert_eq!(current_bytes, replacement);
+    let mut original_again = Vec::new();
+    store
+        .download_version(&key, &captured, &digest, &mut original_again)
+        .await?;
+    assert_eq!(original_again, bytes);
     let mut rejected = Vec::new();
     assert!(matches!(
         store
@@ -131,8 +174,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let repeated = put().send().await?;
     assert_eq!(repeated.status(), reqwest::StatusCode::PRECONDITION_FAILED);
     assert_eq!(
-        store.capture(&key, bytes.len() as i64).await?.version_id,
-        captured.version_id
+        store
+            .capture(&key, replacement.len() as i64)
+            .await?
+            .version_id,
+        replacement_version
     );
     let temp = tempfile::tempdir()?;
     let staged_path = temp.path().join("artifact.plugin");
@@ -151,6 +197,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .download_version(&prepared_key, &prepared_version, &digest, &mut prepared)
         .await?;
     assert_eq!(prepared, bytes);
-    println!("S3-compatible store enforced conditional upload, versioned download and prepared-object readback");
+    println!("S3-compatible store enforced conditional upload, immutable version download after overwrite, and prepared-object readback");
     Ok(())
 }

@@ -43,7 +43,10 @@ offline edits. Complete account deletion and audit retention remain separate unr
 Migration `20261102000015_account_deletion_guards.sql` adds restrictive foreign keys
 for publisher memberships and Cloud roles. Existing orphan memberships make migration
 fail and must be investigated first. Leave non-owner memberships using `DELETE /api/v1/publishers/{id}/membership`
-and revoke Cloud roles through the audited operator command before deletion.
+and revoke your own Cloud roles using the same-origin browser request
+`DELETE /api/v1/me/roles/{role}` (`admin` or `moderator`) before deletion. The route
+records an audit event and refuses to remove the final admin role; other role changes
+remain available only through the audited operator command.
 A publisher owner must first transfer ownership to an existing member and may then
 leave the publisher. The guard prevents a deletion from bypassing the operator command’s
 last-admin check; direct database role changes still require operator controls.

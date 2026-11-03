@@ -6,7 +6,7 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [x] Create the Rust Axum workspace, choose MIT licensing, and add CI configuration, PostgreSQL Compose configuration, and `.env.example`.
 - [ ] Create and configure the `nglmercer/TikTools-cloud` remote repository and validate CI and Compose in their target environments.
 - [x] Pin `nglmercer/better-auth-rs` to a reviewed Git SHA and lockfile; record feature flags and declared MSRV.
-- [ ] Test the declared minimum Rust versions.
+- [x] Check the full workspace with Rust 1.95 and the all-features client with Rust 1.89; CI now repeats both checks.
 - [x] Build a small Better Auth integration spike: migrations, HTTP auth routes, `SessionService` extractor, Google fixture callback and logout.
 - [x] Exercise mock OAuth, session cookies/revocation, native callback restrictions, and fresh migrations against the pinned Better Auth revision.
 - [ ] Verify live JWKS behavior and migration upgrades; report proven gaps upstream.
