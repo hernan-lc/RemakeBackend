@@ -2449,7 +2449,10 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         .await
         .unwrap();
     let key_row = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,'kk','cGtleQ',$3,'approved',$4)").bind(key_row).bind(publisher).bind("f".repeat(64)).bind(&users[0]).execute(&pool).await.unwrap();
+    // Random per run: the ignored suite shares one disposable database, so a
+    // fixed key_id would collide with earlier runs.
+    let key_name = format!("k{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,$3,'cGtleQ',$4,'approved',$5)").bind(key_row).bind(publisher).bind(&key_name).bind("f".repeat(64)).bind(&users[0]).execute(&pool).await.unwrap();
     let upload = uuid::Uuid::new_v4();
     let release = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO cloud_upload_sessions (id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at,version_id) VALUES ($1,$2,$3,$4,5,$5,'quarantine/drill','quarantined',now(),'version')").bind(upload).bind(publisher).bind(&users[0]).bind(format!("drill{}", upload.simple())).bind("a".repeat(64)).execute(&pool).await.unwrap();
@@ -2954,7 +2957,10 @@ async fn release_yanks_and_advisories_are_moderated_and_block_publication() {
         .unwrap();
     sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&users[0].0).execute(&pool).await.unwrap();
     let key_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,'kk','cGtleQ',$3,'approved',$4)").bind(key_id).bind(publisher).bind("f".repeat(64)).bind(&users[0].0).execute(&pool).await.unwrap();
+    // Random per run: the ignored suite shares one disposable database, so a
+    // fixed key_id would collide with earlier runs.
+    let key_name = format!("k{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,$3,'cGtleQ',$4,'approved',$5)").bind(key_id).bind(publisher).bind(&key_name).bind("f".repeat(64)).bind(&users[0].0).execute(&pool).await.unwrap();
     async fn release(
         pool: &PgPool,
         publisher: uuid::Uuid,
@@ -7431,6 +7437,215 @@ async fn username_set_sign_in_and_availability() {
         )
         .await
         .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn account_deletion_removes_identity_and_sync_state() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    async fn sign_up(
+        service: &better_auth::email_password::EmailPasswordService,
+    ) -> (String, String) {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        (
+            result.user.id,
+            format!("{}={}", result.cookie.name, result.cookie.value),
+        )
+    }
+    async fn delete(
+        app: &Router,
+        cookie: Option<&str>,
+        origin: Option<&str>,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/me")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
+        }
+        if let Some(origin) = origin {
+            req = req.header(header::ORIGIN, origin);
+        }
+        app.clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+    let (user, cookie) = sign_up(&service).await;
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let good = || json!({"password": "test password with enough characters"});
+    // No session is rejected before any password handling.
+    assert_eq!(
+        delete(&app, None, Some(ORIGIN), good()).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // An absent origin is accepted for non-browser clients, but the password
+    // check still applies.
+    assert_eq!(
+        delete(
+            &app,
+            Some(&cookie),
+            None,
+            json!({"password": "wrong password that is long enough"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    // An untrusted origin is refused before any password handling.
+    assert_eq!(
+        delete(&app, Some(&cookie), Some("https://evil.test"), good())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Empty passwords are rejected without touching the database.
+    assert_eq!(
+        delete(&app, Some(&cookie), Some(ORIGIN), json!({"password": ""}))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // A wrong password fails closed without deleting anything.
+    assert_eq!(
+        delete(
+            &app,
+            Some(&cookie),
+            Some(ORIGIN),
+            json!({"password": "wrong password that is long enough"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Failed attempts leave no audit or sync writes behind.
+    let stale_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE actor_user_id=$1 AND action='account.deleted'",
+    )
+    .bind(&user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stale_audits, 0);
+    // Publisher memberships block deletion until the user leaves.
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,$2,'approved')")
+        .bind(publisher)
+        .bind(format!("del{}", publisher.simple()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&user).execute(&pool).await.unwrap();
+    assert_eq!(
+        delete(&app, Some(&cookie), Some(ORIGIN), good())
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(publisher)
+        .bind(&user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Cloud roles block deletion until self-revoked.
+    admin::change_role(&pool, true, &user, "moderator", "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        delete(&app, Some(&cookie), Some(ORIGIN), good())
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let left = request(
+        &app,
+        "DELETE",
+        "/api/v1/me/roles/moderator",
+        Some(&cookie),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(left.status(), StatusCode::NO_CONTENT);
+    // Accounts without a password credential cannot re-authenticate.
+    let (social_user, social_cookie) = sign_up(&service).await;
+    sqlx::query("DELETE FROM account WHERE id=$1")
+        .bind(format!("{social_user}:credential"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        delete(&app, Some(&social_cookie), Some(ORIGIN), good())
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    // Sync state is removed with the account.
+    sqlx::query("INSERT INTO cloud_sync_cursors (user_id,cursor) VALUES ($1,1)")
+        .bind(&user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_sync_records (user_id,collection,key,revision,value,deleted) VALUES ($1,'plugin-selections','del.plugin',1,'{\"v\":1}',false)").bind(&user).execute(&pool).await.unwrap();
+    let response = delete(&app, Some(&cookie), Some(ORIGIN), good()).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .next()
+        .is_some());
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM \"user\" WHERE id=$1")
+        .bind(&user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let sync_left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_sync_records WHERE user_id=$1")
+            .bind(&user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sync_left, 0);
+    let cursor_left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_sync_cursors WHERE user_id=$1")
+            .bind(&user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(cursor_left, 0);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_audit_events WHERE actor_user_id=$1 AND action='account.deleted'",
+    )
+    .bind(&user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
+    assert_eq!(
+        request(&app, "GET", "/api/v1/me", Some(&cookie), None)
+            .await
+            .status(),
         StatusCode::UNAUTHORIZED
     );
 }

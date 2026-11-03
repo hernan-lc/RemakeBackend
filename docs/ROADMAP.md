@@ -19,7 +19,7 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [ ] Session resolution, CSRF/CORS, trusted proxies, rate limits, audit trail, key rotation and revocation E2E.
 - [ ] Use existing self-refreshing JWKS and loopback OAuth APIs; verify invalid/expired tokens, callback failure modes, proxy boundaries and desktop handoff end-to-end.
 - [x] Expose `/me`, locally verify verified-email account-linking constraints, and document secure local token storage.
-- [ ] Complete account deletion and its social-only reauthentication flow.
+- [ ] Complete account deletion and its social-only reauthentication flow. Done in-repo slice: `DELETE /api/v1/me` with blocker checks, password re-check, sync removal, and audit retention; verified on pgrust. Still outstanding: social-only re-authentication path and any `native` deletion route.
 **Exit:** repeated negative/replay tests and live callback integration green.
 
 ## M2 — Official signed registry (P0)
@@ -46,7 +46,7 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [ ] Complete the full sync schema and production abuse controls.
 - [x] Implement and locally test an opt-in sync client library with conflict handling and offline persistence.
 - [ ] Integrate sync into TikTools Desktop and verify the full multi-device offline workflow.
-- [ ] Account export/deletion and sensitive data exclusion.
+- [ ] Account export/deletion and sensitive data exclusion. Done in-repo slice: bounded export plus `DELETE /api/v1/me` as above. Still outstanding: Desktop integration, multi-device offline workflow, and any broader sensitive-data purge beyond sync state.
 **Exit:** deterministic two-device E2E for edits, conflicts, offline resumption and deletion.
 
 ## M5 — Production readiness (P0 before public launch)

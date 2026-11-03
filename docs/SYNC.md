@@ -14,7 +14,7 @@ Authenticated clients use `PUT /api/v1/sync/collections/plugin-selections/{plugi
 
 Each account is limited to 1,000 distinct records, including tombstones; a new record beyond that limit returns 507. On each write, only the latest 10,000 changes are retained. A cursor older than that window returns 410. To rebuild, first read `GET /api/v1/sync/head`, then enumerate all collection pages, and finally consume changes starting at that saved head. Apply a record only if its revision is newer than the local revision. If the cursor expires during rebuilding, restart the process. Old history from an upgraded deployment is pruned on its next write. Tombstones count toward the quota and no compaction protocol is implemented.
 
-When Better Auth deletes its user row, foreign keys remove that user's sync cursor, records and retained history in the same database transaction. The migration refuses existing orphan rows for operator investigation. Deletion is blocked while the user holds a Cloud role or publisher membership; those must be removed explicitly first. This does not implement the full Cloud account-deletion policy: audit retention remains unresolved, and the upstream self-deletion route requires a password, which may not exist for social-only accounts. Backups retain data according to the separately required backup policy.
+When Better Auth deletes its user row, foreign keys remove that user's sync cursor, records and retained history in the same database transaction; Cloud also deletes sync state explicitly after the password re-check. The migration refuses existing orphan rows for operator investigation. `DELETE /api/v1/me` refuses deletion while the user holds a Cloud role or publisher membership; those must be removed explicitly first, and a password re-check is required, so social-only accounts cannot self-delete yet. Audit events and shared pipeline rows are retained under the opaque user id. Backups retain data according to the separately required backup policy.
 
 Production abuse controls, secret-leakage review, Desktop opt-in, offline conflict UI and other record schemas are not implemented. Do not use this for sensitive or production data yet.
 
@@ -38,7 +38,8 @@ unknown fields such as credentials are never returned by this endpoint.
 
 This is an export of the current Cloud sync dataset, not a complete account export:
 it excludes identity, publisher, moderation, audit, historical changes and local
-offline edits. Complete account deletion and audit retention remain separate unresolved work. Protect downloaded exports as user data.
+offline edits. Account deletion is implemented separately (`DELETE /api/v1/me`);
+audit events are retained under the opaque user id. Protect downloaded exports as user data.
 
 For a bounded Cloud account export, authenticated browser clients can call
 `GET /api/v1/me/export`; native clients can call
@@ -72,8 +73,7 @@ remain available only through the audited operator command.
 A publisher owner must first transfer ownership to an existing member and may then
 leave the publisher. The guard prevents a deletion from bypassing the operator command’s
 last-admin check; direct database role changes still require operator controls.
-The upstream deletion endpoint may report a generic error when blocked. Audit records,
-backups, pending uploads and other historical identifiers are not erased by this guard.
+Blocked `DELETE /api/v1/me` calls fail with 409 before reaching the upstream deletion endpoint; a membership or role granted concurrently with the delete fails closed through the database guards. Audit records, backups, pending uploads and other historical identifiers are not erased by deletion.
 
 To identify Cloud deletion blockers, an authenticated browser can call
 `GET /api/v1/me/deletion-blockers`; a native bearer client can call
@@ -88,12 +88,15 @@ reauthentication, concurrent changes, historical data and retention are outside 
 endpoint. The database constraints remain authoritative.
 
 The pinned Better Auth password deletion path performs its database deletes in a
-single transaction. A local PostgreSQL integration test exercises deletion blocked
-by both a publisher membership and a Cloud role, and confirms the user session,
-credential account and Cloud sync state remain after the failure. Cloud does not
-currently register user-deletion hooks; any future hook that causes external side
-effects before that transaction needs its own failure and retry design. Social-only
-deletion remains unsupported by the upstream password-only path.
+single transaction. A Cloud integration test on pgrust exercises `DELETE /api/v1/me`
+blocked by a publisher membership and by a Cloud role (409 with session, credential
+and sync state intact), wrong passwords (403 with no audit or sync writes), and a
+successful delete (204 with user, session, credential, sync rows and cursor gone,
+one `account.deleted` audit event, and session cookie cleared). Password verification
+runs before any Cloud-side mutation. Cloud does not currently register user-deletion
+hooks; any future hook that causes external side effects before that transaction
+needs its own failure and retry design. Social-only deletion remains unsupported
+by the upstream password-only path.
 
 The native client exposes `Session::export_sync()` for this endpoint. It validates
 the export schema, record identities, revisions, duplicate keys and the 1,000-record

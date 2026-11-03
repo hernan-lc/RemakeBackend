@@ -483,7 +483,10 @@ fn app_inner(
         )
         .route(
             "/api/v1/me",
-            get(me).layer(axum::middleware::map_response(sync::no_store)),
+            get(me)
+                .delete(account::delete_me)
+                .layer(axum::extract::DefaultBodyLimit::max(2048))
+                .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
             "/api/v1/admin/publishers/{id}/approve",

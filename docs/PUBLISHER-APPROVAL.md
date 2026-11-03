@@ -4,7 +4,7 @@ A namespace request starts `pending`. An authenticated Cloud admin may call `POS
 
 Cloud account roles are separate from Better Auth identity roles. The explicit database operator commands are `cloud-api grant-role USER_ID admin OPERATOR` and `cloud-api revoke-role USER_ID admin OPERATOR`; `moderator` is also a supported role but has no moderation capability yet. Run migrations first. A successful change writes an audit event, a repeated no-op does not, and the command refuses to revoke the final admin. The operator label is supplied on the command line and is **not authenticated evidence of who ran it**: restrict database and shell access, and correlate it with independently authenticated operator logs. No HTTP role-management endpoint exists. This bootstrap mechanism is not a substitute for production access-control review.
 
-Auth-user deletion is blocked while Cloud roles or publisher memberships remain, so roles must first be revoked through the operator command. Audit retention and complete deletion remain unresolved. Approval is serialized with role revocation and membership changes, but it is not a replacement for independent security review or a complete approval UI.
+Auth-user deletion is blocked while Cloud roles or publisher memberships remain; roles can be self-revoked with `DELETE /api/v1/me/roles/{role}` or revoked through the operator command before calling `DELETE /api/v1/me`. Audit events are retained under the opaque user id. Approval is serialized with role revocation and membership changes, but it is not a replacement for independent security review or a complete approval UI.
 
 ## Ownership transfer
 

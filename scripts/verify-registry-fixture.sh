@@ -16,19 +16,17 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/src" "$work/scratch"
 cp "$script_dir/../tests/registry-fixture-client/main.rs" "$work/src/main.rs"
 cp "$repo/Cargo.lock" "$work/Cargo.lock"
-python3 - "$repo" "$work/Cargo.toml" <<'PY'
-import json, pathlib, sys
-repo = pathlib.Path(sys.argv[1])
-def p(name): return json.dumps(str(repo / "crates" / name))
-pathlib.Path(sys.argv[2]).write_text('''[package]
+esc=${repo//\\/\\\\}
+esc=${esc//\"/\\\"}
+cat > "$work/Cargo.toml" <<EOF
+[package]
 name = "cloud-registry-fixture-verifier"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
-tiktools-plugin-package = { path = %s }
-tiktools-plugin-registry = { path = %s }
-''' % (p("tiktools-plugin-package"), p("tiktools-plugin-registry")))
-PY
+tiktools-plugin-package = { path = "$esc/crates/tiktools-plugin-package" }
+tiktools-plugin-registry = { path = "$esc/crates/tiktools-plugin-registry" }
+EOF
 CARGO_TARGET_DIR="$repo/target" cargo run --offline --manifest-path "$work/Cargo.toml" -- "$fixture" "$pin" "$work/scratch"

@@ -40,7 +40,9 @@ and release gates remain outstanding.
 - PR 6 (profile sync): partially implemented — revisioned plugin-selection
   records with tombstones and a changes feed, write throttling and read/export
   limits, an opt-in client library with conflict handling and offline
-  persistence, account-scoped export, and deletion preparation. Remaining: full
+  persistence, account-scoped export, and deletion preparation. Done since:
+  `DELETE /api/v1/me` with blocker checks, password re-check, sync removal, and
+  audit retention (verified on pgrust). Remaining: full
   schema, Desktop integration with the multi-device offline workflow, and
   complete export/deletion.
 - PR 7 (production hardening): partially implemented — readiness gates with

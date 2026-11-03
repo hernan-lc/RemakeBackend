@@ -169,3 +169,17 @@ remain upstream library behavior covered only by the ignored live-network
 smoke test. The Compose file itself is still unexercised here because the
 Compose plugin is unavailable; the container was started with equivalent
 `docker run` settings.
+
+Account deletion verification on 2026-11-03: `DELETE /api/v1/me` requires a
+session and trusted origin, rejects empty passwords (400) and wrong passwords
+(403) without writing anything, refuses social-only accounts without a password
+credential (409) and blocked accounts with roles or memberships (409), then
+removes the auth identity, sessions, sync records, and cursor, records one
+`account.deleted` audit event, and clears the session cookie (204). Audit
+events and shared pipeline rows are retained under the opaque user id. A
+wrong-password attempt that previously recorded a deletion event before failing
+was caught by the new test and fixed by verifying the password before any
+Cloud-side mutation. The RESTRICT guards remain the backstop against a
+concurrent membership or role racing the delete; that race reports 500.
+Native (Bearer) deletion is not implemented because the library flow resolves
+cookie sessions only.

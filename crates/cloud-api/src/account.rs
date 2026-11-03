@@ -2,7 +2,8 @@
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
+    response::{IntoResponse, Response},
     Json,
 };
 use better_auth::rate_limit::{RateLimitPolicy, RateLimiter};
@@ -216,6 +217,147 @@ pub async fn native_blockers(
     page: Query<QueryPage>,
 ) -> Result<Json<Blockers>, StatusCode> {
     blockers(AuthUser(principal), state, page).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteRequest {
+    password: String,
+}
+
+/// Delete the caller's account. Cloud roles and publisher memberships must
+/// already be gone (RESTRICT guards enforce this); sync records and the cursor
+/// are removed. Shared pipeline rows (uploads, keys, releases, reviews, yanks,
+/// advisories, transfers) and audit events are retained under the opaque user
+/// id for pipeline and audit integrity. Password re-check means social-only
+/// accounts cannot self-delete yet.
+pub async fn delete_me(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(input): Json<DeleteRequest>,
+) -> Result<Response, StatusCode> {
+    let mut trusted_origins = state.auth.options.trusted_origins.clone();
+    if let Some(origin) = state.auth.base_origin() {
+        if !trusted_origins.contains(&origin) {
+            trusted_origins.push(origin);
+        }
+    }
+    let request = RequestMetadata::new(method, uri, headers.clone());
+    let context = RequestContext {
+        auth: state.auth.clone(),
+        base_url: state.auth.base_url.clone(),
+        trusted_origins,
+        trusted_providers: Vec::new(),
+        client_ip: None,
+    };
+    check_csrf(&context, &request).map_err(|_| StatusCode::FORBIDDEN)?;
+
+    if input.password.is_empty() || input.password.len() > 1024 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let user_id = &principal.user.id;
+    // Social-only accounts have no password credential to re-check.
+    let credential: Option<String> = sqlx::query_scalar("SELECT id FROM account WHERE id=$1")
+        .bind(format!("{user_id}:credential"))
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if credential.is_none() {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    // Blockers are checked before anything is mutated. Nothing Cloud-side
+    // changes until the password is verified below, so failed attempts leave
+    // no audit or sync writes behind. RESTRICT guards remain the backstop
+    // against a concurrent membership or role racing the delete.
+    let mut check = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *check)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(714928001)")
+        .execute(&mut *check)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let roles: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_account_roles WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(&mut *check)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let memberships: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_publisher_memberships WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(&mut *check)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    check
+        .commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if roles > 0 || memberships > 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let secure = state
+        .auth
+        .base_origin()
+        .is_some_and(|origin| origin.starts_with("https://"));
+    let service = better_auth::AccountService::new(state.auth.clone())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cleared = match service.delete_user(&headers, secure, &input.password).await {
+        Ok(cleared) => cleared,
+        Err(better_auth_core::error::AuthError::Unauthorized) => {
+            return Err(StatusCode::UNAUTHORIZED)
+        }
+        Err(better_auth_core::error::AuthError::Forbidden(_)) => return Err(StatusCode::FORBIDDEN),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    // The auth identity is gone; record the deletion and drop owned sync
+    // state. Shared pipeline rows stay under the opaque user id.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "INSERT INTO cloud_audit_events(id,actor_user_id,action) VALUES($1,$2,'account.deleted')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("DELETE FROM cloud_sync_records WHERE user_id=$1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("DELETE FROM cloud_sync_cursors WHERE user_id=$1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        cleared
+            .to_set_cookie_header()
+            .parse()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    Ok(response)
 }
 
 /// Let an authenticated user remove their own Cloud role before deleting the
