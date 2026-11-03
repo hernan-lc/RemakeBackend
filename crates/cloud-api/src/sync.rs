@@ -5,16 +5,32 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     Json,
 };
-use better_auth::axum_integration::{AuthUser, NativeAuthUser};
+use better_auth::{
+    axum_integration::{AuthUser, NativeAuthUser},
+    rate_limit::{RateLimitPolicy, RateLimiter},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{Postgres, Row, Transaction};
+use std::time::Duration;
 
 pub async fn no_store(mut response: axum::response::Response) -> axum::response::Response {
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("no-store"),
     );
+    response
+}
+
+/// Sync rate policies all use a 60-second window. Tell clients a conservative
+/// retry delay without adding rate headers to unrelated endpoints.
+pub async fn sync_response(response: axum::response::Response) -> axum::response::Response {
+    let mut response = no_store(response).await;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
+    }
     response
 }
 
@@ -60,6 +76,23 @@ fn internal(_: sqlx::Error) -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+async fn limit(state: &AppState, user: &str, action: &str, count: i64) -> Result<(), StatusCode> {
+    let backend = state
+        .auth
+        .secondary_storage
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let policy = RateLimitPolicy::new(action, count, Duration::from_secs(60))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    RateLimiter::new(backend, "cloud:sync")
+        .enforce(&policy, user)
+        .await
+        .map_err(|error| match error {
+            better_auth_core::error::AuthError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Record {
@@ -77,6 +110,68 @@ fn record(row: sqlx::postgres::PgRow) -> Record {
         deleted: row.get("deleted"),
         value: row.get("value"),
     }
+}
+
+/// A bounded, consistent export of the Cloud-owned sync dataset only.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncExport {
+    schema_version: u8,
+    cursor: i64,
+    records: Vec<Record>,
+}
+
+pub async fn export(
+    AuthUser(user): AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<SyncExport>, StatusCode> {
+    limit(&state, &user.user.id, "export", 30).await?;
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    let cursor: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT cursor FROM cloud_sync_cursors WHERE user_id=$1), 0)",
+    )
+    .bind(&user.user.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
+    let rows = sqlx::query("SELECT collection,key,revision,deleted,value FROM cloud_sync_records WHERE user_id=$1 ORDER BY collection,key LIMIT $2").bind(&user.user.id).bind(MAX_RECORDS + 1).fetch_all(&mut *tx).await.map_err(internal)?;
+    if rows.len() > MAX_RECORDS as usize {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let records: Vec<_> = rows.into_iter().map(record).collect();
+    if records.iter().any(|r| {
+        r.collection != COLLECTION
+            || !valid_plugin_id(&r.key)
+            || r.revision <= 0
+            || r.revision > cursor
+            || if r.deleted {
+                r.value.is_some()
+            } else {
+                r.value
+                    .as_ref()
+                    .is_none_or(|value| !validate(&r.collection, &r.key, value))
+            }
+    }) {
+        tracing::error!("sync export contains invalid or unsupported data");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(Json(SyncExport {
+        schema_version: 1,
+        cursor,
+        records,
+    }))
+}
+
+pub async fn native_export(
+    NativeAuthUser(user): NativeAuthUser,
+    state: State<AppState>,
+) -> Result<Json<SyncExport>, StatusCode> {
+    export(AuthUser(user), state).await
 }
 
 #[derive(Deserialize)]
@@ -99,6 +194,7 @@ pub async fn list(
     if name != COLLECTION || query.after.as_ref().is_some_and(|s| !valid_plugin_id(s)) {
         return Err(StatusCode::BAD_REQUEST);
     }
+    limit(&state, &user.user.id, "read", 300).await?;
     let rows = sqlx::query("SELECT collection, key, revision, deleted, value FROM cloud_sync_records WHERE user_id = $1 AND collection = $2 AND key > $3 ORDER BY key LIMIT $4")
         .bind(&user.user.id).bind(&name).bind(query.after.unwrap_or_default()).bind(PAGE_LIMIT + 1).fetch_all(&state.pool).await.map_err(internal)?;
     let has_more = rows.len() > PAGE_LIMIT as usize;
@@ -137,6 +233,7 @@ pub async fn head(
     AuthUser(user): AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<SyncHead>, StatusCode> {
+    limit(&state, &user.user.id, "read", 300).await?;
     let cursor: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT cursor FROM cloud_sync_cursors WHERE user_id=$1), 0)",
     )
@@ -155,6 +252,7 @@ pub async fn changes(
     if cursor < 0 {
         return Err(StatusCode::BAD_REQUEST);
     }
+    limit(&state, &user.user.id, "read", 300).await?;
     // Hold a shared cursor lock while checking the retention boundary and reading.
     // A concurrent writer cannot prune rows between those two operations.
     let mut tx = state.pool.begin().await.map_err(internal)?;
@@ -263,6 +361,7 @@ async fn mutate(
     value: Option<Value>,
     condition: Precondition,
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
+    limit(state, user, "write", 120).await?;
     let mut tx: Transaction<'_, Postgres> = state.pool.begin().await.map_err(internal)?;
     sqlx::query("INSERT INTO cloud_sync_cursors (user_id) VALUES ($1) ON CONFLICT DO NOTHING")
         .bind(user)

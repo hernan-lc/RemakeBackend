@@ -932,6 +932,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -954,6 +955,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+ "uuid",
  "zeroize",
 ]
 
@@ -981,6 +983,7 @@ dependencies = [
  "hex",
  "reqwest 0.12.28",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "url",

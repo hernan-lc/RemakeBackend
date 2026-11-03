@@ -5,9 +5,13 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use better_auth::axum_integration::AuthUser;
+use better_auth::{
+    axum_integration::AuthUser,
+    rate_limit::{RateLimitPolicy, RateLimiter},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Row, Transaction};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -54,8 +58,38 @@ pub async fn create(
     if !valid_namespace(&input.namespace) {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let backend = state
+        .auth
+        .secondary_storage
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let policy = RateLimitPolicy::new("create", 20, Duration::from_secs(60))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    RateLimiter::new(backend, "cloud:publishers")
+        .enforce(&policy, &principal.user.id)
+        .await
+        .map_err(|error| match error {
+            better_auth_core::error::AuthError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        })?;
     let id = Uuid::new_v4();
     let mut tx = state.pool.begin().await.map_err(internal)?;
+    // Serialize creation by this user, including the count check. FK locking also
+    // makes a concurrent account deletion wait for the transaction.
+    let exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM \"user\" WHERE id=$1 FOR UPDATE")
+            .bind(&principal.user.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal)?;
+    if exists.is_none() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_publisher_memberships m JOIN cloud_publishers p ON p.id=m.publisher_id WHERE m.user_id=$1 AND m.role='owner' AND p.status='pending'").bind(&principal.user.id).fetch_one(&mut *tx).await.map_err(internal)?;
+    if pending >= 10 {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     let inserted = sqlx::query(
         "INSERT INTO cloud_publishers (id, namespace, status) VALUES ($1, $2, 'pending')",
     )
@@ -196,6 +230,18 @@ pub async fn set_member(
     if old.as_deref() == Some("owner") {
         return Err(StatusCode::CONFLICT);
     }
+    if old.is_none() {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM cloud_publisher_memberships WHERE publisher_id=$1",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+        if count >= 1000 {
+            return Err(StatusCode::INSUFFICIENT_STORAGE);
+        }
+    }
     // Better Auth owns identities. Never create a membership for an unknown user.
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM \"user\" WHERE id = $1)")
         .bind(&user_id)
@@ -251,6 +297,211 @@ pub async fn remove_member(
         .map_err(internal)?;
         audit_member(&mut tx, id, &principal.user.id, &user_id, Some(&old), None).await?;
     }
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A non-owner may leave without cooperation from the publisher owner.
+pub async fn leave(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, false).await?;
+    let role: String = sqlx::query_scalar(
+        "SELECT role FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&principal.user.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if role == "owner" {
+        return Err(StatusCode::CONFLICT);
+    }
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(id)
+        .bind(&principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    audit_member(
+        &mut tx,
+        id,
+        &principal.user.id,
+        &principal.user.id,
+        Some(&role),
+        None,
+    )
+    .await?;
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransferOffer {
+    recipient_user_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transfer {
+    id: Uuid,
+    offered_by: String,
+    recipient_user_id: String,
+}
+
+pub async fn offer_transfer(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<TransferOffer>,
+) -> Result<(StatusCode, Json<Transfer>), StatusCode> {
+    if input.recipient_user_id.is_empty()
+        || input.recipient_user_id.len() > 256
+        || input.recipient_user_id == principal.user.id
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, true).await?;
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&input.recipient_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if role.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if role.as_deref() == Some("owner") {
+        return Err(StatusCode::CONFLICT);
+    }
+    let transfer = Transfer {
+        id: Uuid::new_v4(),
+        offered_by: principal.user.id.clone(),
+        recipient_user_id: input.recipient_user_id,
+    };
+    sqlx::query("INSERT INTO cloud_publisher_transfers(id,publisher_id,offered_by,recipient) VALUES($1,$2,$3,$4) ON CONFLICT (publisher_id) DO UPDATE SET id=EXCLUDED.id,offered_by=EXCLUDED.offered_by,recipient=EXCLUDED.recipient,created_at=now(),expires_at=now()+interval '24 hours'")
+        .bind(transfer.id).bind(id).bind(&transfer.offered_by).bind(&transfer.recipient_user_id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,publisher_id,action,target_user_id,subject_id) VALUES($1,$2,$3,'publisher.transfer_offered',$4,$5)").bind(Uuid::new_v4()).bind(&transfer.offered_by).bind(id).bind(&transfer.recipient_user_id).bind(transfer.id).execute(&mut *tx).await.map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok((StatusCode::CREATED, Json(transfer)))
+}
+
+pub async fn current_transfer(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Transfer>, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, false).await?;
+    let row = sqlx::query("SELECT id,offered_by,recipient FROM cloud_publisher_transfers WHERE publisher_id=$1 AND expires_at>now() AND ($2=offered_by OR $2=recipient)").bind(id).bind(&principal.user.id).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or(StatusCode::NOT_FOUND)?;
+    let transfer = Transfer {
+        id: row.get("id"),
+        offered_by: row.get("offered_by"),
+        recipient_user_id: row.get("recipient"),
+    };
+    tx.commit().await.map_err(internal)?;
+    Ok(Json(transfer))
+}
+
+pub async fn cancel_transfer(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, true).await?;
+    let removed = sqlx::query(
+        "DELETE FROM cloud_publisher_transfers WHERE publisher_id=$1 RETURNING id,recipient",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if let Some(row) = removed {
+        sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,publisher_id,action,target_user_id,subject_id) VALUES($1,$2,$3,'publisher.transfer_cancelled',$4,$5)").bind(Uuid::new_v4()).bind(&principal.user.id).bind(id).bind(row.get::<String,_>("recipient")).bind(row.get::<Uuid,_>("id")).execute(&mut *tx).await.map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn accept_transfer(
+    AuthUser(principal): AuthUser,
+    State(state): State<AppState>,
+    Path((id, transfer_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, false).await?;
+    let offered_by: Option<String> = sqlx::query_scalar("SELECT offered_by FROM cloud_publisher_transfers WHERE publisher_id=$1 AND id=$2 AND recipient=$3 AND expires_at>now()").bind(id).bind(transfer_id).bind(&principal.user.id).fetch_optional(&mut *tx).await.map_err(internal)?;
+    let offered_by = offered_by.ok_or(StatusCode::NOT_FOUND)?;
+    let issuer_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&offered_by)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal)?;
+    let recipient_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&principal.user.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if issuer_role.as_deref() != Some("owner")
+        || recipient_role.as_deref().is_none_or(|r| r == "owner")
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    sqlx::query(
+        "UPDATE cloud_publisher_memberships SET role='admin' WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&offered_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    sqlx::query(
+        "UPDATE cloud_publisher_memberships SET role='owner' WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(&principal.user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    sqlx::query("DELETE FROM cloud_publisher_transfers WHERE publisher_id=$1 AND id=$2")
+        .bind(id)
+        .bind(transfer_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    audit_member(
+        &mut tx,
+        id,
+        &principal.user.id,
+        &offered_by,
+        Some("owner"),
+        Some("admin"),
+    )
+    .await?;
+    audit_member(
+        &mut tx,
+        id,
+        &principal.user.id,
+        &principal.user.id,
+        recipient_role.as_deref(),
+        Some("owner"),
+    )
+    .await?;
+    sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,publisher_id,action,target_user_id,subject_id) VALUES($1,$2,$3,'publisher.transfer_accepted',$4,$5)").bind(Uuid::new_v4()).bind(&principal.user.id).bind(id).bind(&offered_by).bind(transfer_id).execute(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }

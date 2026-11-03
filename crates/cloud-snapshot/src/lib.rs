@@ -376,7 +376,11 @@ pub fn build(
     for input in releases {
         let metadata =
             fs::symlink_metadata(input.source).map_err(|_| SnapshotError::InvalidInventory)?;
-        if !matches!(input.channel, "stable" | "beta")
+        if config
+            .revoked_digests
+            .iter()
+            .any(|digest| digest == input.expected.sha256)
+            || !matches!(input.channel, "stable" | "beta")
             || input.expected.namespace.len() > 63
             || input.expected.plugin_id.len() > 256
             || input.expected.version.len() > 128
@@ -864,6 +868,18 @@ mod tests {
         assert!(matches!(
             build(&f.seed, &f.root, f.index(), &[f.input()]),
             Err(SnapshotError::InvalidSeed)
+        ));
+    }
+    #[test]
+    fn rejects_revoked_inventory_before_building() {
+        let f = Fixture::new();
+        let digest = Sha256Digest::parse(f.input().expected.sha256).unwrap();
+        IndexWriter::open(&f.seed, "fixture", Some(f.index()))
+            .revoke_digest(&digest)
+            .unwrap();
+        assert!(matches!(
+            build(&f.seed, &f.root, f.index(), &[f.input()]),
+            Err(SnapshotError::InvalidInventory)
         ));
     }
     #[tokio::test]

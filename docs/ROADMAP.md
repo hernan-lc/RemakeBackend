@@ -29,7 +29,8 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 
 ## M3 — Publisher API and moderation (P1)
 - [x] Implement publisher namespace requests, memberships, version-bound upload reservations, and signed package checks with local integration coverage.
-- [ ] Enable key enrollment and approval after session-bound step-up is available and verified; implement ownership transfer.
+- [x] Implement recipient-accepted, expiring publisher ownership transfer with audit events.
+- [ ] Enable key enrollment and approval after session-bound step-up is available and verified.
 - [x] Implement release submission, independent moderation, audited publication requests, and private artifact preparation.
 - [ ] Implement public publication, yanks, advisories, and registry revocation propagation.
 - [ ] Registry snapshot promotion and rollback; rate limits, quotas, malicious package/URL protections.

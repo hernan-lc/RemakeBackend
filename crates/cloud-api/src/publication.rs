@@ -50,7 +50,7 @@ pub async fn request(
         return Err(StatusCode::FORBIDDEN);
     }
     let (key_status,key_requester):(String,String)=sqlx::query_as("SELECT status,requested_by FROM cloud_publisher_keys WHERE id=$1 AND publisher_id=$2 FOR UPDATE").bind(key).bind(publisher).fetch_one(&mut *tx).await.map_err(db)?;
-    let row=sqlx::query("SELECT r.status,r.requested_by AS release_requester,u.requested_by AS upload_requester,j.status AS verification_status,j.result_class,m.decision FROM cloud_plugin_releases r JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_verification_jobs j ON j.upload_id=u.id AND j.release_id=r.id LEFT JOIN cloud_moderation_events m ON m.release_id=r.id WHERE r.id=$1 AND u.id=$2 FOR UPDATE OF r,j")
+    let row=sqlx::query("SELECT r.status,r.requested_by AS release_requester,u.requested_by AS upload_requester,u.status AS upload_status,j.status AS verification_status,j.result_class,m.decision FROM cloud_plugin_releases r JOIN cloud_upload_sessions u ON u.id=r.upload_id AND u.publisher_id=r.publisher_id JOIN cloud_verification_jobs j ON j.upload_id=u.id AND j.release_id=r.id LEFT JOIN cloud_moderation_events m ON m.release_id=r.id WHERE r.id=$1 AND u.id=$2 FOR UPDATE OF r,j")
         .bind(id).bind(upload).fetch_one(&mut *tx).await.map_err(db)?;
     if key_requester == user.user.id
         || row.get::<String, _>("release_requester") == user.user.id
@@ -60,6 +60,7 @@ pub async fn request(
     }
     if publisher_status != "approved"
         || key_status != "approved"
+        || row.get::<String, _>("upload_status") != "quarantined"
         || row.get::<String, _>("status") != "review_approved"
         || row.get::<String, _>("verification_status") != "antivirus_passed"
         || row.get::<Option<String>, _>("result_class").as_deref() != Some("antivirus_passed")
@@ -67,14 +68,28 @@ pub async fn request(
     {
         return Err(StatusCode::CONFLICT);
     }
-    if let Some((job_id, status)) = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id,status FROM cloud_publication_jobs WHERE release_id=$1",
+    if let Some(existing) = sqlx::query(
+        "SELECT id,status,result_class FROM cloud_publication_jobs WHERE release_id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db)?
     {
+        let job_id: Uuid = existing.get("id");
+        let mut status: String = existing.get("status");
+        if status == "blocked"
+            && existing.get::<Option<String>, _>("result_class").as_deref()
+                == Some("authorization_changed")
+        {
+            // Replace the old requester's authority only after the new requester
+            // passes all current role, independence, review and trust checks above.
+            sqlx::query("UPDATE cloud_publication_jobs SET status='queued',requested_by=$2,attempts=0,result_class=NULL WHERE id=$1 AND status='blocked' AND result_class='authorization_changed'")
+                .bind(job_id).bind(&user.user.id).execute(&mut *tx).await.map_err(db)?;
+            sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,publisher_id,subject_id,action) VALUES($1,$2,$3,$4,'release.publication_rerequested')")
+                .bind(Uuid::new_v4()).bind(&user.user.id).bind(publisher).bind(id).execute(&mut *tx).await.map_err(db)?;
+            status = "queued".to_owned();
+        }
         tx.commit().await.map_err(db)?;
         return Ok((
             StatusCode::ACCEPTED,

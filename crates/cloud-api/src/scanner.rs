@@ -124,6 +124,60 @@ mod tests {
         });
         (scanner, handle)
     }
+    // Opt-in because this requires the isolated custom-signature daemon documented
+    // in RELEASE-VERIFICATION.md. Ordinary unit tests use the protocol fixture.
+    #[tokio::test]
+    async fn real_clamav_custom_signature() {
+        let Ok(addr) = std::env::var("CLOUD_CLAMAV_TEST_ADDR") else {
+            return;
+        };
+        let scanner = ClamAv::new(addr.parse().expect("invalid test scanner address"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample");
+        for (data, expected) in [
+            (
+                b"ordinary benign content for scanner test".as_slice(),
+                Scan::Clean,
+            ),
+            (
+                b"cloud-av-integration-test-signature-2026".as_slice(),
+                Scan::Detected,
+            ),
+        ] {
+            std::fs::write(&path, data).unwrap();
+            let digest = format!("{:x}", Sha256::digest(data));
+            assert_eq!(
+                scanner.scan(&path, data.len() as u64, &digest).await,
+                expected
+            );
+        }
+        // Use deflation so the pattern is not visible in the outer byte stream.
+        use std::io::{Cursor, Write};
+        use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (payload, expected) in [
+            (
+                b"ordinary benign content for scanner test".as_slice(),
+                Scan::Clean,
+            ),
+            (
+                b"cloud-av-integration-test-signature-2026".as_slice(),
+                Scan::Detected,
+            ),
+        ] {
+            let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+            archive.start_file("entry.txt", options).unwrap();
+            archive.write_all(payload).unwrap();
+            let data = archive.finish().unwrap().into_inner();
+            assert!(!data.windows(payload.len()).any(|window| window == payload));
+            std::fs::write(&path, &data).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&data));
+            assert_eq!(
+                scanner.scan(&path, data.len() as u64, &digest).await,
+                expected
+            );
+        }
+    }
     #[tokio::test]
     async fn only_exact_clean_or_detected_response_is_accepted() {
         let dir = tempfile::tempdir().unwrap();

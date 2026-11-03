@@ -1,3 +1,4 @@
+mod account;
 mod admin;
 mod config;
 mod desktop;
@@ -7,9 +8,11 @@ mod publication_worker;
 mod publisher_keys;
 mod publishers;
 mod readiness;
+mod recovery;
 mod releases;
 mod scanner;
 mod snapshot_export;
+mod snapshot_verify;
 mod snapshot_worker;
 mod sync;
 mod uploads;
@@ -117,6 +120,61 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tracing::info!("auth and cloud migrations applied");
         return Ok(());
     }
+    if let [command, candidate] = args.as_slice() {
+        if command == "verify-candidate" {
+            let id = uuid::Uuid::parse_str(candidate)?;
+            let store = cloud_storage::QuarantineStore::new(
+                config
+                    .object_storage
+                    .ok_or("object storage must be configured")?,
+            )?;
+            let pool = PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&config.database_url)
+                .await?;
+            let root: tiktools_plugin_package::TrustedKey =
+                serde_json::from_slice(&snapshot_worker::read_file(
+                    std::path::Path::new(&std::env::var("SNAPSHOT_ROOT_PIN_FILE")?),
+                    false,
+                    16384,
+                )?)?;
+            let index: tiktools_plugin_package::PublicKey =
+                serde_json::from_slice(&snapshot_worker::read_file(
+                    std::path::Path::new(&std::env::var("SNAPSHOT_INDEX_PUBLIC_KEY_FILE")?),
+                    false,
+                    16384,
+                )?)?;
+            let scanner = scanner::ClamAv::new(
+                config
+                    .clamav_addr
+                    .ok_or("CLAMAV_ADDR must be configured for verification")?,
+            );
+            let seed = std::path::PathBuf::from(std::env::var("SNAPSHOT_SEED_DIR")?);
+            snapshot_verify::verify(&pool, &store, &scanner, &seed, id, &root, &index).await?;
+            tracing::info!(candidate_id=%id, "private candidate checks passed; not approved for deployment");
+            return Ok(());
+        }
+    }
+    if let [command, job, operator] = args.as_slice() {
+        let kind = match command.as_str() {
+            "retry-verification" => Some(recovery::Kind::Verification),
+            "retry-publication" => Some(recovery::Kind::Publication),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            let pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&config.database_url)
+                .await?;
+            let changed =
+                recovery::retry(&pool, kind, uuid::Uuid::parse_str(job)?, operator).await?;
+            if !changed {
+                return Err("job is not an eligible transient failure".into());
+            }
+            tracing::info!("transient job requeued");
+            return Ok(());
+        }
+    }
     if let [command, candidate, destination] = args.as_slice() {
         if command == "export-candidate" {
             let id = uuid::Uuid::parse_str(candidate)?;
@@ -178,7 +236,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
+        return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
     let mut auth = AuthRouter::new(context.clone())?;
     if let Some((id, secret)) = config.google {
@@ -248,6 +306,14 @@ fn app_inner(
         .route("/health/live", get(|| async { StatusCode::OK }))
         .route("/health/ready", get(readiness::ready))
         .route(
+            "/api/v1/me/deletion-blockers",
+            get(account::blockers).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/me/deletion-blockers",
+            get(account::native_blockers).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/me",
             get(me).layer(axum::middleware::map_response(sync::no_store)),
         )
@@ -304,7 +370,10 @@ fn app_inner(
         )
         .route(
             "/api/v1/publishers",
-            get(publishers::list).post(publishers::create),
+            get(publishers::list)
+                .post(publishers::create)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
             "/api/v1/publishers/{id}/keys/challenges",
@@ -337,6 +406,24 @@ fn app_inner(
             axum::routing::post(publisher_keys::admin_revoke)
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
+        .route(
+            "/api/v1/publishers/{id}/transfer",
+            get(publishers::current_transfer)
+                .post(publishers::offer_transfer)
+                .delete(publishers::cancel_transfer)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/publishers/{id}/transfer/{transfer_id}/accept",
+            axum::routing::post(publishers::accept_transfer)
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/publishers/{id}/membership",
+            axum::routing::delete(publishers::leave)
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
         .route("/api/v1/publishers/{id}/members", get(publishers::members))
         .route(
             "/api/v1/publishers/{id}/members/{user_id}",
@@ -344,22 +431,26 @@ fn app_inner(
         )
         .route(
             "/api/v1/sync/collections/{name}",
-            get(sync::list).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::list).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/sync/collections/{name}/{key}",
             axum::routing::put(sync::put)
                 .delete(sync::delete)
                 .layer(axum::extract::DefaultBodyLimit::max(4096))
-                .layer(axum::middleware::map_response(sync::no_store)),
+                .layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/sync/changes",
-            get(sync::changes).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::changes).layer(axum::middleware::map_response(sync::sync_response)),
+        )
+        .route(
+            "/api/v1/sync/export",
+            get(sync::export).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/sync/head",
-            get(sync::head).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::head).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/desktop/handoff",
@@ -384,22 +475,26 @@ fn app_inner(
         )
         .route(
             "/api/v1/native/sync/collections/{name}",
-            get(sync::native_list).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::native_list).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/native/sync/collections/{name}/{key}",
             axum::routing::put(sync::native_put)
                 .delete(sync::native_delete)
                 .layer(axum::extract::DefaultBodyLimit::max(4096))
-                .layer(axum::middleware::map_response(sync::no_store)),
+                .layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/native/sync/changes",
-            get(sync::native_changes).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::native_changes).layer(axum::middleware::map_response(sync::sync_response)),
+        )
+        .route(
+            "/api/v1/native/sync/export",
+            get(sync::native_export).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
             "/api/v1/native/sync/head",
-            get(sync::native_head).layer(axum::middleware::map_response(sync::no_store)),
+            get(sync::native_head).layer(axum::middleware::map_response(sync::sync_response)),
         )
         .with_state(AppState {
             auth: context,

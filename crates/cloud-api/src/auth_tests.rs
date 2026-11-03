@@ -789,6 +789,57 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
         .status(),
         StatusCode::CONFLICT
     );
+    // The export is scoped to the authenticated account, includes tombstones,
+    // and never returns unexpected stored fields.
+    assert_eq!(
+        request(&app, "GET", "/api/v1/sync/export", None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for (cookie, expected_cursor, expected_records) in [(&cookies[0], 3, 1), (&cookies[1], 0, 0)] {
+        let response = request(&app, "GET", "/api/v1/sync/export", Some(cookie), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let data: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["cursor"], expected_cursor);
+        assert_eq!(data["records"].as_array().unwrap().len(), expected_records);
+        if expected_records == 1 {
+            assert_eq!(data["records"][0]["deleted"], true);
+            assert!(data["records"][0]["value"].is_null());
+        }
+    }
+    let native = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/native/sync/export")
+                .header(header::AUTHORIZATION, format!("Bearer {}", bearers[0]))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(native.status(), StatusCode::OK);
+    assert_eq!(native.headers()[header::CACHE_CONTROL], "no-store");
+    sqlx::query("UPDATE cloud_sync_records SET deleted=false,value=$2 WHERE user_id=$1").bind(&user_ids[0]).bind(json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.0.0","enabled":true,"token":"secret"})).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "GET", "/api/v1/sync/export", Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    sqlx::query("UPDATE cloud_sync_records SET deleted=true,value=NULL WHERE user_id=$1")
+        .bind(&user_ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
     for (cookie, expected) in [(&cookies[0], 3), (&cookies[1], 0)] {
         let response = request(
             &app,
@@ -1516,6 +1567,924 @@ async fn role_bootstrap_protects_last_admin_and_audits_changes() {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use std::borrow::Cow;
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let control = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("upgrade_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&control)
+        .await
+        .unwrap();
+    let mut schema_url = Url::parse(&url).unwrap();
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let schema_url = schema_url.to_string();
+    let adapter = Arc::new(SqlxDbAdapter::postgres(&schema_url).await.unwrap());
+    let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
+    let ctx = AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            ..Default::default()
+        },
+        adapter.clone(),
+        Some(secondary.clone()),
+        vec![],
+    )
+    .unwrap();
+    adapter
+        .apply_migrations(&ctx.migration_plan(), SqlDialect::Postgres)
+        .await
+        .unwrap();
+    secondary.migrate().await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&schema_url)
+        .await
+        .unwrap();
+    let migrations = |last: i64| sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            readiness::MIGRATOR
+                .iter()
+                .filter(|m| m.version <= last)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: false,
+        locking: false,
+        no_tx: false,
+    };
+    migrations(20261102000014).run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx).unwrap();
+    let mut users = Vec::new();
+    for _ in 0..2 {
+        users.push(
+            service
+                .sign_up(
+                    SignUpInput {
+                        email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                        name: "Upgrade Test".into(),
+                        password: "test password with enough characters".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap()
+                .user
+                .id,
+        );
+    }
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cloud_publishers(id,namespace,status) VALUES($1,'upgrade-fixture','approved')",
+    )
+    .bind(publisher)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES ($1,$2,'owner'),($1,'missing-user','viewer')").bind(publisher).bind(&users[0]).execute(&pool).await.unwrap();
+    assert!(
+        migrations(20261102000015).run(&pool).await.is_err(),
+        "orphan membership must stop the upgrade"
+    );
+    sqlx::query(
+        "DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id='missing-user'",
+    )
+    .bind(publisher)
+    .execute(&pool)
+    .await
+    .unwrap();
+    migrations(20261102000015).run(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES($1,$2,'owner')",
+    )
+    .bind(publisher)
+    .bind(&users[1])
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        migrations(20261102000016).run(&pool).await.is_err(),
+        "duplicate owners must stop the upgrade"
+    );
+    sqlx::query(
+        "UPDATE cloud_publisher_memberships SET role='viewer' WHERE publisher_id=$1 AND user_id=$2",
+    )
+    .bind(publisher)
+    .bind(&users[1])
+    .execute(&pool)
+    .await
+    .unwrap();
+    migrations(20261102000016).run(&pool).await.unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_publisher_memberships WHERE publisher_id=$1",
+    )
+    .bind(publisher)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(versions, 16);
+    assert!(sqlx::query("DELETE FROM \"user\" WHERE id=$1")
+        .bind(&users[0])
+        .execute(&pool)
+        .await
+        .is_err());
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&control)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn publisher_request_limits_serialize_and_rate_limit() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut users = Vec::new();
+    let mut cookies = Vec::new();
+    for _ in 0..2 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Quota Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        users.push(result.user.id);
+        cookies.push(format!("{}={}", result.cookie.name, result.cookie.value));
+    }
+    let prefix = format!("p{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("WITH created AS (INSERT INTO cloud_publishers(id,namespace,status) SELECT gen_random_uuid(),$2 || n::text,'pending' FROM generate_series(1,9) AS n RETURNING id) INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) SELECT id,$1,'owner' FROM created").bind(&users[0]).bind(&prefix).execute(&pool).await.unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    async fn create(app: &Router, cookie: &str, namespace: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publishers")
+                    .header(header::COOKIE, cookie)
+                    .header(header::ORIGIN, ORIGIN)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"namespace":namespace}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+    let a = format!("p{}", uuid::Uuid::new_v4().simple());
+    let b = format!("p{}", uuid::Uuid::new_v4().simple());
+    let (x, y) = tokio::join!(create(&app, &cookies[0], &a), create(&app, &cookies[0], &b));
+    assert!(
+        (x == StatusCode::CREATED && y == StatusCode::TOO_MANY_REQUESTS)
+            || (y == StatusCode::CREATED && x == StatusCode::TOO_MANY_REQUESTS)
+    );
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_publisher_memberships m JOIN cloud_publishers p ON p.id=m.publisher_id WHERE m.user_id=$1 AND m.role='owner' AND p.status='pending'").bind(&users[0]).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 10);
+    let duplicate = format!("p{}", uuid::Uuid::new_v4().simple());
+    assert_eq!(
+        create(&app, &cookies[1], &duplicate).await,
+        StatusCode::CREATED
+    );
+    for _ in 0..19 {
+        assert_eq!(
+            create(&app, &cookies[1], &duplicate).await,
+            StatusCode::CONFLICT
+        );
+    }
+    assert_eq!(
+        create(&app, &cookies[1], &duplicate).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let full: uuid::Uuid = sqlx::query_scalar("SELECT id FROM cloud_publishers WHERE namespace=$1")
+        .bind(&duplicate)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let fake_prefix = format!("quota-{}-", uuid::Uuid::new_v4());
+    sqlx::query("INSERT INTO \"user\"(id,email,email_verified,name) SELECT $1||n::text,$1||n::text||'@example.test',false,'Fixture' FROM generate_series(1,999) n").bind(&fake_prefix).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) SELECT $1,id,'viewer' FROM \"user\" WHERE id LIKE $2").bind(full).bind(format!("{fake_prefix}%")).execute(&pool).await.unwrap();
+    let member_path = format!("/api/v1/publishers/{full}/members/{}", users[0]);
+    let result = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&member_path)
+                .header(header::COOKIE, &cookies[1])
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"role":"viewer"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status(), StatusCode::INSUFFICIENT_STORAGE);
+    sqlx::query(
+        "DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id LIKE $2",
+    )
+    .bind(full)
+    .bind(format!("{fake_prefix}%"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM \"user\" WHERE id LIKE $1")
+        .bind(format!("{fake_prefix}%"))
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn publisher_transfer_requires_owner_offer_and_recipient_acceptance() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut users = Vec::new();
+    let mut cookies = Vec::new();
+    let mut bearers = Vec::new();
+    for _ in 0..3 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Transfer Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        bearers.push(result.session_token.clone());
+        users.push(result.user.id);
+        cookies.push(format!("{}={}", result.cookie.name, result.cookie.value));
+    }
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publishers(id,namespace,status) VALUES($1,$2,'approved')")
+        .bind(publisher)
+        .bind(format!("p{}", publisher.simple()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES($1,$2,'owner'),($1,$3,'viewer')").bind(publisher).bind(&users[0]).bind(&users[1]).execute(&pool).await.unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_app = app.clone();
+    let client_server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            server_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let native_client =
+        cloud_client::Session::connect(&format!("http://{address}"), bearers[0].clone())
+            .await
+            .unwrap();
+    let client_blockers = native_client.deletion_blockers(None).await.unwrap();
+    assert_eq!(client_blockers.memberships.len(), 1);
+    assert_eq!(client_blockers.memberships[0].publisher_id, publisher);
+    assert_eq!(client_blockers.memberships[0].role, "owner");
+    let blockers = "/api/v1/me/deletion-blockers";
+    assert_eq!(
+        request(&app, "GET", blockers, None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = request(&app, "GET", blockers, Some(&cookies[0]), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["memberships"][0]["publisherId"], publisher.to_string());
+    assert_eq!(data["memberships"][0]["role"], "owner");
+    assert!(data["cloudRoles"].as_array().unwrap().is_empty());
+    admin::change_role(&pool, true, &users[2], "moderator", "test")
+        .await
+        .unwrap();
+    let native = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/native/me/deletion-blockers")
+                .header(header::AUTHORIZATION, format!("Bearer {}", bearers[2]))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(native.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["cloudRoles"], json!(["moderator"]));
+    assert!(data["memberships"].as_array().unwrap().is_empty());
+    let page_prefix = format!("p{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("WITH created AS (INSERT INTO cloud_publishers(id,namespace,status) SELECT gen_random_uuid(),$2 || n::text,'pending' FROM generate_series(1,101) AS n RETURNING id) INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) SELECT id,$1,'viewer' FROM created").bind(&users[2]).bind(&page_prefix).execute(&pool).await.unwrap();
+    let first_page = request(&app, "GET", blockers, Some(&cookies[2]), None).await;
+    let first_page: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first_page.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_page["memberships"].as_array().unwrap().len(), 100);
+    let next_page = format!(
+        "{blockers}?after={}",
+        first_page["nextAfter"].as_str().unwrap()
+    );
+    let next_page = request(&app, "GET", &next_page, Some(&cookies[2]), None).await;
+    let next_page: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(next_page.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(next_page["memberships"].as_array().unwrap().len(), 1);
+    assert!(next_page["nextAfter"].is_null());
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE user_id=$1")
+        .bind(&users[2])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM cloud_publishers WHERE namespace LIKE $1")
+        .bind(format!("{page_prefix}%"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let bad = request(
+        &app,
+        "GET",
+        "/api/v1/me/deletion-blockers?after=bad",
+        Some(&cookies[0]),
+        None,
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    let path = format!("/api/v1/publishers/{publisher}/transfer");
+    async fn call(
+        app: &Router,
+        method: &str,
+        path: &str,
+        cookie: &str,
+        origin: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header(header::COOKIE, cookie)
+                    .header(header::ORIGIN, origin)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+    // A departing recipient invalidates an outstanding transfer atomically.
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES ($1,$2,'viewer')").bind(publisher).bind(&users[2]).execute(&pool).await.unwrap();
+    let departure_offer = call(
+        &app,
+        "POST",
+        &path,
+        &cookies[0],
+        ORIGIN,
+        json!({"recipientUserId":users[2]}),
+    )
+    .await;
+    let departure_offer: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(departure_offer.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let leave_path = format!("/api/v1/publishers/{publisher}/membership");
+    assert_eq!(
+        call(&app, "DELETE", &leave_path, &cookies[2], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let invalid_accept = format!("{path}/{}/accept", departure_offer["id"].as_str().unwrap());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &invalid_accept,
+            &cookies[2],
+            ORIGIN,
+            json!({})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let offer = json!({"recipientUserId":users[1]});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &path,
+            &cookies[1],
+            ORIGIN,
+            json!({"recipientUserId":users[2]})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &path,
+            &cookies[0],
+            "https://evil.example.test",
+            offer.clone()
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let first = call(&app, "POST", &path, &cookies[0], ORIGIN, offer.clone()).await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(first.into_body(), 8192).await.unwrap())
+            .unwrap();
+    sqlx::query("UPDATE cloud_publisher_transfers SET expires_at=now()-interval '1 second' WHERE publisher_id=$1").bind(publisher).execute(&pool).await.unwrap();
+    let expired = format!("{path}/{}/accept", first["id"].as_str().unwrap());
+    assert_eq!(
+        call(&app, "POST", &expired, &cookies[1], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app, "DELETE", &path, &cookies[1], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&app, "DELETE", &path, &cookies[0], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let next = call(&app, "POST", &path, &cookies[0], ORIGIN, offer).await;
+    let next: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(next.into_body(), 8192).await.unwrap())
+            .unwrap();
+    assert_eq!(
+        call(&app, "GET", &path, &cookies[1], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "GET", &path, &cookies[2], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let stale = format!("{path}/{}/accept", first["id"].as_str().unwrap());
+    assert_eq!(
+        call(&app, "POST", &stale, &cookies[1], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let accept = format!("{path}/{}/accept", next["id"].as_str().unwrap());
+    assert_eq!(
+        call(&app, "POST", &accept, &cookies[0], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let (a, b) = tokio::join!(
+        call(&app, "POST", &accept, &cookies[1], ORIGIN, json!({})),
+        call(&app, "POST", &accept, &cookies[1], ORIGIN, json!({}))
+    );
+    assert!(
+        (a.status() == StatusCode::NO_CONTENT && b.status() == StatusCode::NOT_FOUND)
+            || (b.status() == StatusCode::NO_CONTENT && a.status() == StatusCode::NOT_FOUND)
+    );
+    let roles:Vec<(String,String)>=sqlx::query_as("SELECT user_id,role FROM cloud_publisher_memberships WHERE publisher_id=$1 ORDER BY user_id").bind(publisher).fetch_all(&pool).await.unwrap();
+    assert!(roles.contains(&(users[0].clone(), "admin".into())));
+    assert!(roles.contains(&(users[1].clone(), "owner".into())));
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE publisher_id=$1 AND action='publisher.transfer_accepted'").bind(publisher).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1);
+    let leave = format!("/api/v1/publishers/{publisher}/membership");
+    assert_eq!(
+        call(&app, "DELETE", &leave, &cookies[1], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "DELETE",
+            &leave,
+            &cookies[0],
+            "https://evil.example.test",
+            json!({})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let response = call(&app, "DELETE", &leave, &cookies[0], ORIGIN, json!({})).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        call(&app, "DELETE", &leave, &cookies[0], ORIGIN, json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let response = request(&app, "GET", blockers, Some(&cookies[0]), None).await;
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(data["memberships"].as_array().unwrap().is_empty());
+    assert!(native_client
+        .deletion_blockers(None)
+        .await
+        .unwrap()
+        .memberships
+        .is_empty());
+    client_server.abort();
+    let left: i64=sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE publisher_id=$1 AND actor_user_id=$2 AND target_user_id=$2 AND action='publisher.membership_changed' AND old_role='admin' AND new_role IS NULL").bind(publisher).bind(&users[0]).fetch_one(&pool).await.unwrap();
+    assert_eq!(left, 1);
+    assert_eq!(
+        sqlx::query("DELETE FROM \"user\" WHERE id=$1")
+            .bind(&users[0])
+            .execute(&pool)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn user_deletion_cannot_bypass_cloud_memberships_or_roles() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut cookies = Vec::new();
+    let mut users = Vec::new();
+    for _ in 0..3 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Deletion Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        cookies.push(format!("{}={}", result.cookie.name, result.cookie.value));
+        users.push(result.user.id);
+    }
+    let publisher = uuid::Uuid::new_v4();
+    let namespace = format!("p{}", publisher.simple());
+    sqlx::query("INSERT INTO cloud_publishers(id,namespace,status) VALUES ($1,$2,'approved')")
+        .bind(publisher)
+        .bind(namespace)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES ($1,$2,'owner'),($1,$3,'viewer')").bind(publisher).bind(&users[0]).bind(&users[1]).execute(&pool).await.unwrap();
+    admin::change_role(&pool, true, &users[2], "admin", "test")
+        .await
+        .unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    sqlx::query("INSERT INTO cloud_sync_cursors(user_id,cursor) VALUES ($1,1)")
+        .bind(&users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    for index in [0, 2] {
+        let delete = Request::builder()
+            .method("POST")
+            .uri("/api/auth/delete-user")
+            .header(header::COOKIE, &cookies[index])
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"password":"test password with enough characters"}).to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(delete).await.unwrap();
+        assert!(!response.status().is_success(), "deletion must be blocked");
+        assert_eq!(
+            request(&app, "GET", "/api/v1/me", Some(&cookies[index]), None)
+                .await
+                .status(),
+            StatusCode::OK,
+            "blocked delete must preserve session"
+        );
+        let accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM account WHERE user_id=$1")
+            .bind(&users[index])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(accounts, 1, "blocked delete must preserve credentials");
+    }
+    let cursor: i64 = sqlx::query_scalar("SELECT cursor FROM cloud_sync_cursors WHERE user_id=$1")
+        .bind(&users[0])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cursor, 1, "blocked delete must preserve sync state");
+    for user in &users {
+        let err = sqlx::query("DELETE FROM \"user\" WHERE id=$1")
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(
+            err.as_database_error()
+                .is_some_and(|e| matches!(e.code().as_deref(), Some("23001" | "23503"))),
+            "unexpected deletion error: {err}"
+        );
+    }
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(publisher)
+        .bind(&users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query("DELETE FROM \"user\" WHERE id=$1")
+            .bind(&users[1])
+            .execute(&pool)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    // Ownership remains protected even after an unrelated account is deleted.
+    assert!(sqlx::query("DELETE FROM \"user\" WHERE id=$1")
+        .bind(&users[0])
+        .execute(&pool)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn sync_write_rate_limit_is_shared_and_preserves_pending_edits() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use cloud_client::{Edit, PluginSelection, Session, SyncError};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut users = Vec::new();
+    for _ in 0..2 {
+        users.push(
+            service
+                .sign_up(
+                    SignUpInput {
+                        email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                        name: "Rate Test".into(),
+                        password: "test password with enough characters".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let cookie = format!("{}={}", users[0].cookie.name, users[0].cookie.value);
+    let value = json!({"schemaVersion":1,"pluginId":"acme.limit","version":"1.0.0","enabled":true});
+    for i in 0..120 {
+        let native = i % 2 == 1;
+        let path = if native {
+            "/api/v1/native/sync/collections/plugin-selections/acme.limit"
+        } else {
+            "/api/v1/sync/collections/plugin-selections/acme.limit"
+        };
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::IF_NONE_MATCH, "*");
+        req = if native {
+            req.header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", users[0].session_token),
+            )
+        } else {
+            req.header(header::COOKIE, &cookie)
+        };
+        let response = app
+            .clone()
+            .oneshot(req.body(Body::from(value.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if i == 0 {
+                StatusCode::CREATED
+            } else {
+                StatusCode::CONFLICT
+            }
+        );
+    }
+    // Browser and bearer reads draw from the same per-account budgets. Export
+    // has its own stricter budget and cannot exhaust ordinary read capacity.
+    for i in 0..31 {
+        let native = i % 2 == 1;
+        let path = if native {
+            "/api/v1/native/sync/export"
+        } else {
+            "/api/v1/sync/export"
+        };
+        let req = Request::builder().uri(path);
+        let req = if native {
+            req.header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", users[0].session_token),
+            )
+        } else {
+            req.header(header::COOKIE, &cookie)
+        };
+        let response = app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if i < 30 {
+                StatusCode::OK
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        if i == 30 {
+            assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+        }
+    }
+    for i in 0..301 {
+        let native = i % 2 == 1;
+        let path = if native {
+            "/api/v1/native/sync/head"
+        } else {
+            "/api/v1/sync/changes?cursor=0"
+        };
+        let req = Request::builder().uri(path);
+        let req = if native {
+            req.header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", users[0].session_token),
+            )
+        } else {
+            req.header(header::COOKIE, &cookie)
+        };
+        let response = app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if i < 300 {
+                StatusCode::OK
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+    }
+    let other_cookie = format!("{}={}", users[1].cookie.name, users[1].cookie.value);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/v1/sync/export",
+            Some(&other_cookie),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "GET", "/api/v1/sync/head", Some(&other_cookie), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let client = Session::connect(&format!("http://{address}"), users[0].session_token.clone())
+        .await
+        .unwrap();
+    let mut state = client.new_state();
+    state
+        .stage(
+            "acme.other".into(),
+            Edit::Put(PluginSelection {
+                schema_version: 1,
+                plugin_id: "acme.other".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+            }),
+        )
+        .unwrap();
+    assert!(matches!(
+        client.push(&mut state, "acme.other").await,
+        Err(SyncError::RateLimited {
+            retry_after_seconds: Some(60)
+        })
+    ));
+    assert!(state.entries["acme.other"].pending.is_some());
+    let cursor: i64 = sqlx::query_scalar("SELECT cursor FROM cloud_sync_cursors WHERE user_id=$1")
+        .bind(&users[0].user.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cursor, 1);
+    let other = Session::connect(&format!("http://{address}"), users[1].session_token.clone())
+        .await
+        .unwrap();
+    let mut other_state = other.new_state();
+    other_state
+        .stage(
+            "acme.other".into(),
+            Edit::Put(PluginSelection {
+                schema_version: 1,
+                plugin_id: "acme.other".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+            }),
+        )
+        .unwrap();
+    other.push(&mut other_state, "acme.other").await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn native_sync_client_preserves_offline_edits_and_conflicts() {
     use better_auth::{
         email_password::{EmailPasswordService, SignUpInput},
@@ -1577,6 +2546,11 @@ async fn native_sync_client_preserves_offline_edits_and_conflicts() {
         .stage(key.into(), Edit::Put(selection("1.0.0")))
         .unwrap();
     device1.push(&mut first, key).await.unwrap();
+    let snapshot = device2.export_sync().await.unwrap();
+    assert_eq!(snapshot.schema_version, 1);
+    assert_eq!(snapshot.cursor, 1);
+    assert_eq!(snapshot.records.len(), 1);
+    assert_eq!(snapshot.records[0].value.as_ref().unwrap().version, "1.0.0");
     let mut unseen = device2.new_state();
     unseen.stage(key.into(), Edit::Delete).unwrap();
     assert!(matches!(
@@ -1611,6 +2585,9 @@ async fn native_sync_client_preserves_offline_edits_and_conflicts() {
     device1.push(&mut first, key).await.unwrap();
     assert!(!device2.pull_page(&mut second).await.unwrap());
     assert!(second.entries[key].remote.as_ref().unwrap().deleted);
+    let snapshot = device1.export_sync().await.unwrap();
+    assert_eq!(snapshot.cursor, 3);
+    assert!(snapshot.records[0].deleted && snapshot.records[0].value.is_none());
     let mut wrong = SyncState::new(origin.clone(), "another-user".into());
     assert!(matches!(
         device1.pull_page(&mut wrong).await,
@@ -2650,6 +3627,24 @@ async fn integrity_worker_verifies_exact_version_and_fences_retries() {
         &pool, publisher, key_row, &plugin_id, &digest, size, "1.0.0",
     )
     .await;
+    assert!(
+        !recovery::retry(&pool, recovery::Kind::Verification, upload, "test")
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE cloud_verification_jobs SET status='failed',attempts=3,result_class='temporary_failure' WHERE upload_id=$1").bind(upload).execute(&pool).await.unwrap();
+    assert!(
+        recovery::retry(&pool, recovery::Kind::Verification, upload, "bad operator!")
+            .await
+            .is_err()
+    );
+    let (a, b) = tokio::join!(
+        recovery::retry(&pool, recovery::Kind::Verification, upload, "test"),
+        recovery::retry(&pool, recovery::Kind::Verification, upload, "test")
+    );
+    assert_ne!(a.unwrap(), b.unwrap());
+    let audit:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='verification.retry_requested'").bind(upload).fetch_one(&pool).await.unwrap();
+    assert_eq!(audit, 1);
     assert!(worker::once(&pool, &storage, &scanner).await.unwrap());
     let status: String = sqlx::query_scalar("SELECT status FROM cloud_plugin_releases WHERE id=$1")
         .bind(release)
@@ -2696,6 +3691,11 @@ async fn integrity_worker_verifies_exact_version_and_fences_retries() {
     .await
     .unwrap();
     assert_eq!(result, ("rejected".into(), "antivirus_alert".into()));
+    assert!(
+        !recovery::retry(&pool, recovery::Kind::Verification, upload, "test")
+            .await
+            .unwrap()
+    );
     let status: String = sqlx::query_scalar("SELECT status FROM cloud_plugin_releases WHERE id=$1")
         .bind(release)
         .fetch_one(&pool)
@@ -3472,6 +4472,25 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
         )
         .await
         .unwrap();
+    let replacement_user = service
+        .sign_up(
+            SignUpInput {
+                email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                name: "Replacement Moderator".into(),
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let replacement_id = replacement_user.user.id;
+    let replacement_cookie = format!(
+        "{}={}",
+        replacement_user.cookie.name, replacement_user.cookie.value
+    );
+    admin::change_role(&pool, true, &replacement_id, "moderator", "test")
+        .await
+        .unwrap();
     let requester = signed_up.user.id;
     let requester_cookie = format!("{}={}", signed_up.cookie.name, signed_up.cookie.value);
     let auth = AuthRouter::new(ctx.clone()).unwrap();
@@ -3663,11 +4682,14 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     let scan_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let scanner = crate::scanner::ClamAv::new(scan_listener.local_addr().unwrap());
     let expected = Arc::new(vec![bytes.as_ref().clone(), second_bytes.clone()]);
+    let infected = Arc::new(AtomicBool::new(false));
+    let scan_infected = infected.clone();
     let scan_server = tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         loop {
             let (mut socket, _) = scan_listener.accept().await.unwrap();
             let expected = expected.clone();
+            let infected = scan_infected.clone();
             tokio::spawn(async move {
                 let mut command = [0u8; 10];
                 socket.read_exact(&mut command).await.unwrap();
@@ -3685,7 +4707,12 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
                     socket.read_exact(&mut data[at..]).await.unwrap();
                 }
                 assert!(expected.iter().any(|candidate| candidate == &data));
-                socket.write_all(b"stream: OK\0").await.unwrap();
+                let reply = if infected.load(Ordering::SeqCst) {
+                    b"stream: Test FOUND\0".as_slice()
+                } else {
+                    b"stream: OK\0".as_slice()
+                };
+                socket.write_all(reply).await.unwrap();
             });
         }
     });
@@ -3705,11 +4732,29 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     sqlx::query("INSERT INTO cloud_verification_jobs (upload_id,release_id,status,attempts,result_class) VALUES ($1,$2,'antivirus_passed',1,'antivirus_passed')").bind(upload).bind(release).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_moderation_events (id,release_id,actor_user_id,decision,reason_code) VALUES ($1,$2,'reviewer-fixture','approve','policy_reviewed')").bind(uuid::Uuid::new_v4()).bind(release).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_publication_jobs (id,release_id,requested_by,status) VALUES ($1,$2,$3,'queued')").bind(job).bind(release).bind(&requester).execute(&pool).await.unwrap();
+    assert!(
+        !recovery::retry(&pool, recovery::Kind::Publication, job, "test")
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE cloud_publication_jobs SET status='failed',attempts=3,result_class='temporary_failure' WHERE id=$1").bind(job).execute(&pool).await.unwrap();
+    let (a, b) = tokio::join!(
+        recovery::retry(&pool, recovery::Kind::Publication, job, "test"),
+        recovery::retry(&pool, recovery::Kind::Publication, job, "test")
+    );
+    assert_ne!(a.unwrap(), b.unwrap());
+    let audit:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='publication.retry_requested'").bind(job).fetch_one(&pool).await.unwrap();
+    assert_eq!(audit, 1);
     assert!(publication_worker::once(&pool, &store, &scanner)
         .await
         .unwrap());
     let row:(String,Option<String>,Option<String>,i32)=sqlx::query_as("SELECT status,prepared_key,prepared_version_id,attempts FROM cloud_publication_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap();
     assert_eq!(row.0, "prepared");
+    assert!(
+        !recovery::retry(&pool, recovery::Kind::Publication, job, "test")
+            .await
+            .unwrap()
+    );
     assert!(row
         .1
         .unwrap()
@@ -3805,6 +4850,110 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     .await
     .unwrap();
     assert_eq!(total_links, 2);
+    let index_public = SigningKey::from_json(&index_json).unwrap().public_key();
+    Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public,
+    ))
+    .await
+    .unwrap();
+    let seed_config = std::fs::read(seed.join("config.json")).unwrap();
+    let seed_signature = std::fs::read(seed.join("config.json.sig")).unwrap();
+    IndexWriter::open(
+        &seed,
+        "fixture",
+        Some(SigningKey::from_json(&index_json).unwrap()),
+    )
+    .revoke_digest(&Sha256Digest::parse(&digest).unwrap())
+    .unwrap();
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public
+    ))
+    .await
+    .is_err());
+    std::fs::write(seed.join("config.json"), &seed_config).unwrap();
+    std::fs::write(seed.join("config.json.sig"), &seed_signature).unwrap();
+    std::fs::write(seed.join("config.json"), b"{}").unwrap();
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public
+    ))
+    .await
+    .is_err());
+    std::fs::write(seed.join("config.json"), &seed_config).unwrap();
+    infected.store(true, Ordering::SeqCst);
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public
+    ))
+    .await
+    .is_err());
+    infected.store(false, Ordering::SeqCst);
+    let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable = crate::scanner::ClamAv::new(unused.local_addr().unwrap());
+    drop(unused);
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &unavailable,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public
+    ))
+    .await
+    .is_err());
+    let wrong_root = TrustedKey::new(
+        SigningKey::generate(KeyId::parse("wrong-root").unwrap(), None)
+            .unwrap()
+            .public_key(),
+        KeyRole::Root,
+    );
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &wrong_root,
+        &index_public
+    ))
+    .await
+    .is_err());
+    state.tamper_read_candidate.store(true, Ordering::SeqCst);
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &root_pin,
+        &index_public
+    ))
+    .await
+    .is_err());
+    state.tamper_read_candidate.store(false, Ordering::SeqCst);
     // Reconstruct the exact private candidate and verify it with the real TikTools client.
     let exported = dir.path().join("exported");
     Box::pin(snapshot_export::export(&pool, &store, candidate, &exported))
@@ -3846,10 +4995,13 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     }
     let static_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let static_base = format!("http://{}", static_listener.local_addr().unwrap());
+    let static_exported = exported.clone();
     let static_server = tokio::spawn(async move {
         axum::serve(
             static_listener,
-            Router::new().fallback(static_files).with_state(exported),
+            Router::new()
+                .fallback(static_files)
+                .with_state(static_exported),
         )
         .await
         .unwrap()
@@ -3872,6 +5024,68 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
         assert_eq!(document.releases[0].artifacts[0].sha256.as_hex(), expected);
     }
     static_server.abort();
+    // Signed content must describe exactly the authorized inventory.
+    let inventory = snapshot_worker::current(&pool).await.unwrap();
+    let approved = inventory
+        .iter()
+        .map(snapshot_worker::Item::approved)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    let manifest = snapshot_export::current(&pool, candidate).await.unwrap();
+    let files: std::collections::BTreeMap<_, _> = manifest
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.digest.clone()))
+        .collect();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_ok());
+    let index_path = tiktools_plugin_registry::shard_path(&plugin_id);
+    let mut missing = files.clone();
+    missing.remove(&index_path);
+    assert!(snapshot_verify::check_contents(&exported, &missing, &inventory, &approved).is_err());
+    let mut extra = files.clone();
+    extra.insert("packages/unexpected.plugin".into(), "a".repeat(64));
+    assert!(snapshot_verify::check_contents(&exported, &extra, &inventory, &approved).is_err());
+    let index_bytes = std::fs::read(exported.join(&index_path)).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+    doc["releases"][0]["artifacts"][0]["target"] = serde_json::json!("forged-target");
+    std::fs::write(
+        exported.join(&index_path),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_err());
+    let mut doc: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+    doc["releases"][0]["runtime"] = serde_json::json!("forged-runtime");
+    std::fs::write(
+        exported.join(&index_path),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_err());
+    let mut doc: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+    doc["name"] = serde_json::json!("forged-name");
+    std::fs::write(
+        exported.join(&index_path),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_err());
+    let mut doc: serde_json::Value = serde_json::from_slice(&index_bytes).unwrap();
+    doc["dist-tags"]["stable"] = serde_json::json!("99.0.0");
+    std::fs::write(
+        exported.join(&index_path),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_err());
+    std::fs::write(exported.join(&index_path), index_bytes).unwrap();
+    let catalog_path = exported.join("catalog/page-1.json");
+    let catalog_bytes = std::fs::read(&catalog_path).unwrap();
+    let mut catalog: serde_json::Value = serde_json::from_slice(&catalog_bytes).unwrap();
+    catalog["entries"][0]["name"] = serde_json::json!("forged-name");
+    std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    assert!(snapshot_verify::check_contents(&exported, &files, &inventory, &approved).is_err());
+    std::fs::write(&catalog_path, catalog_bytes).unwrap();
     // Corrupt object bytes and changing DB metadata must leave exports without a completion marker.
     state.tamper_read_candidate.store(true, Ordering::SeqCst);
     let bad_export = dir.path().join("bad-export");
@@ -3944,6 +5158,18 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
         .execute(&pool)
         .await
         .unwrap();
+    // Even restored authorization changes the inventory revision and invalidates the old candidate.
+    assert!(Box::pin(snapshot_verify::verify(
+        &pool,
+        &store,
+        &scanner,
+        &seed,
+        candidate,
+        &TrustedKey::new(root_key.public_key(), KeyRole::Root),
+        &index_public
+    ))
+    .await
+    .is_err());
     // A role change during candidate file staging leaves objects unreferenced and no candidate record.
     state.hold_candidate.store(true, Ordering::SeqCst);
     let inputs = snapshot_worker::Inputs {
@@ -4032,13 +5258,28 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     .unwrap();
     assert_eq!(row, ("blocked".into(), None, None));
     assert_eq!(state.objects.lock().await.len(), baseline + 1);
+    assert_eq!(
+        request(&app, "POST", &path, Some(&requester_cookie), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
     // Losing the requester's moderator role blocks preparation before any new upload.
     sqlx::query("UPDATE cloud_publisher_keys SET status='approved' WHERE id=$1")
         .bind(key_id)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE cloud_publication_jobs SET status='queued',attempts=0,result_class=NULL WHERE id=$1").bind(job).execute(&pool).await.unwrap();
+    let rerequest = request(&app, "POST", &path, Some(&requester_cookie), Some(ORIGIN)).await;
+    assert_eq!(rerequest.status(), StatusCode::ACCEPTED);
+    let rerequest: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(rerequest.into_body(), 4096)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rerequest["status"], "queued");
+
     admin::change_role(&pool, false, &requester, "moderator", "test")
         .await
         .unwrap();
@@ -4053,11 +5294,50 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
             .unwrap();
     assert_eq!(status, "blocked");
     assert_eq!(state.objects.lock().await.len(), baseline + 1);
+    assert_eq!(
+        request(&app, "POST", &path, Some(&requester_cookie), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let (a, b) = tokio::join!(
+        request(&app, "POST", &path, Some(&replacement_cookie), Some(ORIGIN)),
+        request(&app, "POST", &path, Some(&replacement_cookie), Some(ORIGIN))
+    );
+    assert_eq!(a.status(), StatusCode::ACCEPTED);
+    assert_eq!(b.status(), StatusCode::ACCEPTED);
+    let current: (String, String) =
+        sqlx::query_as("SELECT status,requested_by FROM cloud_publication_jobs WHERE id=$1")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(current, ("queued".into(), replacement_id.clone()));
+    let events:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE subject_id=$1 AND action='release.publication_rerequested'").bind(release).fetch_one(&pool).await.unwrap();
+    assert_eq!(events, 2);
+    admin::change_role(&pool, false, &replacement_id, "moderator", "test")
+        .await
+        .unwrap();
+    assert!(publication_worker::once(&pool, &store, &scanner)
+        .await
+        .unwrap());
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM cloud_publication_jobs WHERE id=$1")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "blocked");
     admin::change_role(&pool, true, &requester, "moderator", "test")
         .await
         .unwrap();
+    assert_eq!(
+        request(&app, "POST", &path, Some(&requester_cookie), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::ACCEPTED
+    );
     // The role is also rechecked after storage I/O, not just before work begins.
-    sqlx::query("UPDATE cloud_publication_jobs SET status='queued',attempts=0,result_class=NULL WHERE id=$1").bind(job).execute(&pool).await.unwrap();
     state.hold.store(true, Ordering::SeqCst);
     let worker_pool = pool.clone();
     let worker_store = store.clone();

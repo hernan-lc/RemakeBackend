@@ -14,20 +14,20 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
 const MARKER: &str = ".cloud-candidate.json";
 #[derive(Clone, PartialEq, Eq)]
-struct File {
-    path: String,
-    digest: String,
+pub(crate) struct File {
+    pub(crate) path: String,
+    pub(crate) digest: String,
     size: i64,
     key: String,
     version: String,
     revision: String,
 }
 #[derive(Clone, PartialEq, Eq)]
-struct Manifest {
-    root: String,
-    inventory: String,
+pub(crate) struct Manifest {
+    pub(crate) root: String,
+    pub(crate) inventory: String,
     revision: String,
-    files: Vec<File>,
+    pub(crate) files: Vec<File>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,7 +130,7 @@ async fn manifest(conn: &mut PgConnection, id: Uuid) -> Result<Manifest> {
         files,
     })
 }
-async fn current(pool: &PgPool, id: Uuid) -> Result<Manifest> {
+pub(crate) async fn current(pool: &PgPool, id: Uuid) -> Result<Manifest> {
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)

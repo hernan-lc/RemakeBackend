@@ -19,10 +19,14 @@ use reqwest::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 pub use store::{StateSnapshot, StateStore, StoreError};
 use thiserror::Error;
 use url::Url;
+use uuid::Uuid;
 
 const COLLECTION: &str = "plugin-selections";
 const MAX_RESPONSE: usize = 1024 * 1024;
@@ -42,6 +46,8 @@ pub enum SyncError {
     Conflict,
     #[error("sync cursor expired; rebuild is required")]
     CursorExpired,
+    #[error("cloud rate limit reached; retry after {retry_after_seconds:?} seconds")]
+    RateLimited { retry_after_seconds: Option<u64> },
     #[error("cloud rejected the request ({0})")]
     Http(u16),
     #[error("invalid cloud response")]
@@ -72,6 +78,29 @@ pub struct Record {
     pub revision: i64,
     pub deleted: bool,
     pub value: Option<PluginSelection>,
+}
+/// Current server-side sync records, including tombstones; pending local edits are excluded.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyncExport {
+    pub schema_version: u8,
+    pub cursor: i64,
+    pub records: Vec<Record>,
+}
+impl SyncExport {
+    fn validate(&self) -> Result<(), SyncError> {
+        if self.schema_version != 1 || self.cursor < 0 || self.records.len() > 1000 {
+            return Err(SyncError::Protocol);
+        }
+        let mut keys = BTreeSet::new();
+        for record in &self.records {
+            validate_record(record)?;
+            if record.revision > self.cursor || !keys.insert(&record.key) {
+                return Err(SyncError::Protocol);
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
@@ -215,6 +244,60 @@ struct Head {
     cursor: i64,
 }
 
+/// Cloud-owned deletion blockers. Each page is a separate point-in-time view.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeletionBlockerPage {
+    pub cloud_roles: Vec<String>,
+    pub memberships: Vec<DeletionMembership>,
+    pub next_after: Option<Uuid>,
+}
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeletionMembership {
+    pub publisher_id: Uuid,
+    pub namespace: String,
+    pub role: String,
+}
+impl DeletionBlockerPage {
+    fn validate(&self, after: Option<Uuid>) -> Result<(), SyncError> {
+        let mut roles = BTreeSet::new();
+        if self
+            .cloud_roles
+            .iter()
+            .any(|r| !matches!(r.as_str(), "admin" | "moderator") || !roles.insert(r))
+            || self.memberships.len() > 100
+        {
+            return Err(SyncError::Protocol);
+        }
+        let mut previous = after;
+        for member in &self.memberships {
+            let name = member.namespace.as_bytes();
+            if previous.is_some_and(|id| member.publisher_id <= id)
+                || !(2..=63).contains(&name.len())
+                || !name[0].is_ascii_lowercase()
+                || name[name.len() - 1] == b'-'
+                || !name
+                    .iter()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+                || !matches!(
+                    member.role.as_str(),
+                    "owner" | "admin" | "publisher" | "viewer"
+                )
+            {
+                return Err(SyncError::Protocol);
+            }
+            previous = Some(member.publisher_id);
+        }
+        if self.next_after.is_some()
+            && (self.memberships.len() != 100 || self.next_after != previous)
+        {
+            return Err(SyncError::Protocol);
+        }
+        Ok(())
+    }
+}
+
 /// A verified account and in-memory token. It is not serializable or printable.
 pub struct Session {
     origin: Url,
@@ -260,6 +343,20 @@ impl Session {
     }
     pub fn account_id(&self) -> &str {
         &self.account_id
+    }
+    /// List Cloud-owned deletion blockers. An empty page is not a deletion guarantee.
+    pub async fn deletion_blockers(
+        &self,
+        after: Option<Uuid>,
+    ) -> Result<DeletionBlockerPage, SyncError> {
+        let params = after
+            .map(|id| vec![("after", id.to_string())])
+            .unwrap_or_default();
+        let page: DeletionBlockerPage = self
+            .get("api/v1/native/me/deletion-blockers", &params)
+            .await?;
+        page.validate(after)?;
+        Ok(page)
     }
     /// Revoke the current bearer session on the server. Remove any stored keychain
     /// entry separately after success; an offline error means revocation is unknown.
@@ -315,6 +412,12 @@ impl Session {
             .await
             .map_err(|_| SyncError::Network)?;
         decode(response).await
+    }
+    /// Retrieve a point-in-time export of server-side sync records without changing local state.
+    pub async fn export_sync(&self) -> Result<SyncExport, SyncError> {
+        let export: SyncExport = self.get("api/v1/native/sync/export", &[]).await?;
+        export.validate()?;
+        Ok(export)
     }
     /// Apply one change page atomically in memory; persist it only after this returns.
     pub async fn pull_page(&self, state: &mut SyncState) -> Result<bool, SyncError> {
@@ -482,11 +585,32 @@ fn parse_origin(origin: &str) -> Result<Url, SyncError> {
     Ok(url)
 }
 
+fn retry_delay(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let values: Vec<_> = headers
+        .get_all(reqwest::header::RETRY_AFTER)
+        .iter()
+        .collect();
+    if values.len() != 1 {
+        return None;
+    }
+    values[0]
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| (1..=86_400).contains(value))
+}
+
 async fn decode<T: for<'de> Deserialize<'de>>(mut response: Response) -> Result<T, SyncError> {
     match response.status() {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => return Err(SyncError::Unauthorized),
         StatusCode::CONFLICT => return Err(SyncError::Conflict),
         StatusCode::GONE => return Err(SyncError::CursorExpired),
+        StatusCode::TOO_MANY_REQUESTS => {
+            return Err(SyncError::RateLimited {
+                retry_after_seconds: retry_delay(response.headers()),
+            })
+        }
         s if !s.is_success() => return Err(SyncError::Http(s.as_u16())),
         _ => (),
     }
@@ -533,6 +657,74 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn deletion_blocker_pages_reject_invalid_roles_and_cursors() {
+        let member = DeletionMembership {
+            publisher_id: Uuid::from_u128(1),
+            namespace: "example".into(),
+            role: "owner".into(),
+        };
+        let mut page = DeletionBlockerPage {
+            cloud_roles: vec!["admin".into()],
+            memberships: vec![member.clone()],
+            next_after: None,
+        };
+        assert!(page.validate(None).is_ok());
+        page.memberships.push(member);
+        assert!(page.validate(None).is_err());
+        page.memberships.pop();
+        page.next_after = Some(Uuid::from_u128(1));
+        assert!(page.validate(None).is_err());
+        page.next_after = None;
+        page.cloud_roles.push("admin".into());
+        assert!(page.validate(None).is_err());
+        page.cloud_roles.clear();
+        assert!(page.validate(Some(Uuid::from_u128(1))).is_err());
+    }
+
+    #[test]
+    fn rate_limit_retry_delay_is_bounded_and_unambiguous() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_delay(&headers), None);
+        headers.insert(reqwest::header::RETRY_AFTER, "60".parse().unwrap());
+        assert_eq!(retry_delay(&headers), Some(60));
+        headers.insert(reqwest::header::RETRY_AFTER, "86401".parse().unwrap());
+        assert_eq!(retry_delay(&headers), None);
+        headers.insert(reqwest::header::RETRY_AFTER, "0".parse().unwrap());
+        assert_eq!(retry_delay(&headers), None);
+        headers.append(reqwest::header::RETRY_AFTER, "60".parse().unwrap());
+        assert_eq!(retry_delay(&headers), None);
+    }
+
+    #[test]
+    fn sync_export_rejects_inconsistent_or_unrecognized_records() {
+        let good = Record {
+            collection: COLLECTION.into(),
+            key: "acme.plugin".into(),
+            revision: 1,
+            deleted: true,
+            value: None,
+        };
+        let mut export = SyncExport {
+            schema_version: 1,
+            cursor: 1,
+            records: vec![good.clone()],
+        };
+        assert!(export.validate().is_ok());
+        export.records.push(good);
+        assert!(matches!(export.validate(), Err(SyncError::Protocol)));
+        export.records.pop();
+        export.cursor = 0;
+        assert!(matches!(export.validate(), Err(SyncError::Protocol)));
+        export.cursor = 1;
+        export.records[0].collection = "other".into();
+        assert!(matches!(export.validate(), Err(SyncError::Protocol)));
+        assert!(serde_json::from_str::<SyncExport>(
+            r#"{"schemaVersion":1,"cursor":0,"records":[],"token":"secret"}"#
+        )
+        .is_err());
     }
 
     #[test]

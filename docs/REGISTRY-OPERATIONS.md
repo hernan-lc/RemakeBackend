@@ -42,7 +42,7 @@ SHA-256 before recording `prepared`. It rechecks authorization and the input met
 under locks after network and scanning work. Ten-minute leases fence stale workers;
 transient failures retry at most three times, while revoked authorization blocks the
 job. A failed, blocked or superseded attempt can leave an unreferenced object version;
-cleanup and operator retry are not implemented. The bucket must remain private and
+cleanup is not implemented; an operator may explicitly retry eligible transient failures as described below. The bucket must remain private and
 its policies must preserve referenced versions through publication.
 
 `prepared` is **not published** and does not imply that a snapshot exists. A future
@@ -155,3 +155,53 @@ publisher, reviewer, scanner or inventory authorization and does not promote the
 candidate. The test reconstructs a candidate through simulated storage and verifies
 its registry documents with the pinned TikTools client; actual provider behavior and
 an isolated reviewer environment remain unverified.
+
+### Point-in-time candidate checks
+
+`cargo run --locked -p cloud-api -- verify-candidate CANDIDATE_UUID` uses the
+configured private object store and database. Set `SNAPSHOT_ROOT_PIN_FILE` to an
+independently supplied JSON `TrustedKey` for the root and
+`SNAPSHOT_INDEX_PUBLIC_KEY_FILE` to the independently supplied JSON `PublicKey` for
+the index signer. Set `SNAPSHOT_SEED_DIR` to the independently maintained current
+signed policy seed. Set `CLAMAV_ADDR` to a loopback ClamAV INSTREAM service. No
+signing key is needed. The command reconstructs the stored
+versions in a temporary private directory, validates their hashes and registry
+signatures, compares release links and the recorded inventory with current Cloud
+authorization, checks every indexed artifact and catalog entry against that inventory, validates
+release metadata and channel tags against signed packages,
+compares current root-signed delegations and registry policy with the seed, rejects
+revoked release digests, reverifies package signatures, rescans each exact package,
+rechecks file hashes and
+signatures, and repeats the database checks before returning. An infected result,
+scanner failure, or digest mismatch fails verification.
+
+A successful result is a point-in-time inspection, not approval to publish. It depends on the operator supplying the current policy seed; it cannot detect rollback
+to an older valid seed or prevent changes
+after the check. The inventory comparison applies only to initial candidates without
+prior releases, yanks, or advisories. Promotion must independently establish these properties and
+fence authorization changes atomically. Storage and scanner production behavior,
+review procedures, and promotion remain unverified.
+
+For an initial candidate, all target variants of the latest release must carry the
+same displayed package metadata. The verifier rejects divergent variants instead
+of relying on the writer’s order-dependent choice.
+
+## Recovering transient preparation failures
+
+After fixing the cause, run `cargo run --locked -p cloud-api -- retry-publication
+JOB_UUID OPERATOR`. Only a `failed` preparation job with `temporary_failure`, no
+lease or prepared version, and a review-approved release can be requeued. The
+worker repeats all authorization, package, scanner and storage checks. Blocked,
+rejected, running and prepared jobs cannot be reset by this command. Each successful
+requeue records an audit event; the operator label is self-supplied and must be
+correlated with separately authenticated operator logs. Orphan object cleanup and
+recovery from changed authorization remain separate operational work.
+
+A publication job blocked by `authorization_changed` can be requested again through
+`POST /api/v1/plugins/releases/{id}/publish` by a currently authorized, independent
+moderator or admin. The request rechecks the publisher, key, quarantined upload,
+antivirus result and approved review, then atomically assigns the new requester and
+queues a fresh preparation attempt. Repeated requests for an already queued job do
+not replace its requester or add another re-request audit event. Rejected jobs are
+not reopened by this flow; transient `failed` jobs use the operator command above.
+Preparation still performs its own checks and no public registry is changed.

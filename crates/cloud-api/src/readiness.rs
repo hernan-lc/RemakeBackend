@@ -146,6 +146,17 @@ async fn check(state: &AppState) -> bool {
             ][..],
         ),
         (
+            "cloud_publisher_transfers",
+            &[
+                "id",
+                "publisher_id",
+                "offered_by",
+                "recipient",
+                "created_at",
+                "expires_at",
+            ][..],
+        ),
+        (
             "cloud_snapshot_candidates",
             &[
                 "id",

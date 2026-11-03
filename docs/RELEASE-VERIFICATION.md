@@ -30,7 +30,7 @@ worker publishes an artifact.
 A job has a ten-minute lease with a unique fencing token. Workers claim with
 `SKIP LOCKED`; an expired lease can be retried, and a stale worker cannot commit a
 result after losing its lease. Transient failures are retried at most three times and
-then recorded as `failed`; an operator recovery flow is not yet implemented. Invalid
+then recorded as `failed`; an operator can explicitly requeue an eligible transient failure after addressing its cause. Invalid
 packages, revoked keys and antivirus alerts are rejected. A scanner error, malformed
 reply, timeout, or mismatch in streamed bytes is a transient failure. New successful
 jobs are `antivirus_passed`, meaning the configured scanner returned a clean result
@@ -38,7 +38,7 @@ for the verified bytes; it is not proof that an artifact is harmless, moderation
 approval, an immutable publication artifact, or authorization to publish. An independent
 reviewer can record a decision through the [moderation API](MODERATION.md). Historical
 `integrity_passed` records predate scanning and must not be treated as scanned. No
-rescan/requeue operator command is implemented. Key and publisher
+general rescan command is implemented. Key and publisher
 status must be checked again when later decisions or publication occur.
 
 Run the worker as a separate unprivileged process with externally enforced CPU,
@@ -46,9 +46,9 @@ memory, disk, process-count, network and wall-time limits, and restrict its data
 and object-store credentials. The code does not currently create or enforce that
 sandbox, ensure antivirus configuration or signature freshness, or produce signed
 registry snapshots. Moderation records decisions and provides version-bound inspection links, but does
-not supply an isolated inspection environment. Do not treat this pipeline as production-ready. The local test
-uses a signed TikTools package with simulated S3 and ClamAV protocol servers; it does
-not prove real S3, ClamAV detection or configuration, IAM, or sandbox behavior. Key enrollment itself remains disabled until the
+not supply an isolated inspection environment. Do not treat this pipeline as production-ready. The package integration test uses simulated S3 and ClamAV protocol servers. A separate
+opt-in adapter smoke test exercises a real ClamAV daemon with an artificial signature;
+neither test proves production ClamAV configuration, real S3, IAM, or sandbox behavior. Key enrollment itself remains disabled until the
 required session-bound step-up authentication exists.
 
 Migrations `20261102000008_plugin_releases.sql` and
@@ -72,3 +72,51 @@ use. ClamAV's [protocol documentation](https://docs.clamav.net/manual/Usage/Clam
 describes the streaming transport and its limits; the upstream
 [sample configuration](https://github.com/Cisco-Talos/clamav/blob/main/etc/clamd.conf.sample)
 describes scan-limit and alert options.
+
+## Local ClamAV adapter integration test
+
+The adapter has an opt-in test against a real daemon. It checks a clean stream and
+an artificial byte pattern detected by a private test signature, both directly and
+inside a deflated ZIP archive. It does not test production signature freshness,
+other archive formats, or deployment configuration. When
+`CLOUD_CLAMAV_TEST_ADDR` is unset the test returns without contacting a daemon.
+
+For example, on a Linux Docker host, create a private test database directory and
+run an isolated daemon with only this test signature:
+
+```sh
+mkdir -p /tmp/cloud-clamav-test-db
+printf '%s\n' 'Cloud.Test.Signature:0:*:636c6f75642d61762d696e746567726174696f6e2d746573742d7369676e61747572652d32303236' > /tmp/cloud-clamav-test-db/cloud-test.ndb
+cat > /tmp/cloud-clamav-test-db/clamd.conf <<'CONF'
+Foreground yes
+TCPSocket 33317
+TCPAddr 127.0.0.1
+DatabaseDirectory /test-db
+StreamMaxLength 134217728
+MaxFileSize 134217728
+MaxScanSize 268435456
+ScanArchive yes
+AlertExceedsMax yes
+CONF
+docker run -d --rm --name cloud-clamav-integration --network host \
+  -v /tmp/cloud-clamav-test-db:/test-db:ro --entrypoint /usr/sbin/clamd \
+  clamav/clamav:1.4 -c /test-db/clamd.conf
+# Wait for clamd to load the signature database, then:
+CLOUD_CLAMAV_TEST_ADDR=127.0.0.1:33317 cargo test -p cloud-api scanner::tests::real_clamav_custom_signature
+docker stop cloud-clamav-integration
+```
+
+This daemon has **only the test signature** and must never be used for real package
+verification. The host-network example is Linux-specific and reserves port 33317.
+
+## Recovering a transient verification failure
+
+After investigating the cause, an operator may run
+`cargo run --locked -p cloud-api -- retry-verification UPLOAD_UUID OPERATOR`.
+Only a `failed` job with `temporary_failure`, no lease, an awaiting-verification
+release and a quarantined upload is reset to `queued` with three fresh attempts.
+A competing or repeated retry fails without a second audit event. Running, passed,
+rejected, malware-detected and otherwise ineligible jobs are never reset by this
+command. The worker rechecks authorization and re-downloads and re-scans the
+recorded version; retry does not grant trust or approval. The operator label is
+self-supplied, so restrict command and database access and correlate external logs.

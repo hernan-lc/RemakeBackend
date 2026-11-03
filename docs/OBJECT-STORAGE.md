@@ -8,7 +8,7 @@ After upload, `capture` checks the expected length and records a non-null S3 ver
 
 The API enforces publisher membership, quota, idempotency, expiry and authorization changes, and creates a transactional verification queue record. A future worker and publication system must independently approve publisher keys, scan and validate packages in a resource-limited worker, recheck digest and key authorization at publication, and publish only a reviewed immutable artifact. A compatible store must enforce signed headers, conditional writes and checksums; verify those properties on the actual deployment before use. Storage credentials and rotation, IAM boundaries, encryption, cleanup and recovery procedures are still needed. The component currently accepts static credentials and does not support short-lived role credentials.
 
-Local tests validate endpoint/key handling and inspect the SDK's presigned header list with a minimal HTTP fixture. A manual smoke example was run against Moto with disposable buckets, exercising versioning, conditional PUT, version capture, streamed download and digest mismatch. Moto is an emulator and does not establish that real S3 or MinIO enforces signatures, checksums, IAM, TLS, CORS or lifecycle policy. Docker image pulls for MinIO were denied in this environment, so a real S3-compatible smoke test remains outstanding.
+Local tests validate endpoint/key handling and inspect the SDK's presigned header list with a minimal HTTP fixture. A manual smoke example was run against Moto with disposable buckets, exercising versioning, conditional PUT, version capture, streamed download and digest mismatch. Moto is an emulator and does not establish that real S3 or MinIO enforces signatures, checksums, IAM, TLS, CORS or lifecycle policy. A later smoke test also passed against a disposable MinIO server; see below. Neither test establishes AWS S3, production IAM, TLS, CORS, or lifecycle behavior.
 
 ## Authenticated quarantine reservations
 
@@ -55,3 +55,30 @@ reading that exact version back and checking its size and digest. Failed or stal
 attempts can leave unreferenced versions; no automatic cleanup exists. Prepared
 versions are not public artifacts and are not protected against deletion by this
 component alone. See [registry operations](REGISTRY-OPERATIONS.md).
+
+
+## Disposable MinIO smoke test
+
+The storage example can create uniquely named test buckets when explicitly requested.
+Use this only with a disposable server: the buckets and objects are not deleted by
+the example. The following local test used the legacy Bitnami MinIO image
+`2025.4.22` (MinIO development build 2025-04-22), with no persistent volume:
+
+```sh
+docker run -d --rm --name cloud-minio-integration -p 127.0.0.1:39000:9000 \
+  -e MINIO_ROOT_USER=test -e MINIO_ROOT_PASSWORD=testsecret \
+  bitnamilegacy/minio:2025.4.22
+# Wait until the server is ready, then:
+CLOUD_TEST_S3_ENDPOINT=http://127.0.0.1:39000 \
+CLOUD_TEST_S3_ACCESS_KEY=test CLOUD_TEST_S3_SECRET_KEY=testsecret \
+CLOUD_TEST_S3_CREATE_BUCKETS=1 \
+  cargo run --locked -p cloud-storage --example emulator_smoke
+docker stop cloud-minio-integration
+```
+
+The test rejected unversioned storage, a changed payload, a missing signed header,
+a repeated conditional upload, a wrong object size and an incorrect digest. It
+captured and downloaded the versioned quarantine object and staged and re-read a
+versioned prepared object. This is one local provider/version using test root
+credentials and HTTP; it is not proof of production provider, TLS, IAM, CORS,
+retention, or lifecycle configuration.
