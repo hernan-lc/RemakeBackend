@@ -30,6 +30,30 @@ export BIND_ADDR=127.0.0.1:3000
 export APP_ORIGIN=http://127.0.0.1:5173
 export CLOUD_API_URL=http://127.0.0.1:3000
 
+# Build acceleration: use kache v2.0.0 as the Rust compiler cache when available.
+# Honors a pre-set RUSTC_WRAPPER; bypass with RUSTC_WRAPPER='' to opt out.
+if [[ -z ${RUSTC_WRAPPER:-} ]] && command -v kache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER=kache
+  echo "Using kache as RUSTC_WRAPPER ($(kache --version))."
+fi
+
+# Fast linker: use mold when available. Honors existing -fuse-ld settings.
+if command -v mold >/dev/null 2>&1; then
+  case " ${RUSTFLAGS:-} " in
+    *"fuse-ld="*) ;;
+    *)
+      if [[ -z ${RUSTFLAGS:-} ]]; then
+        export RUSTFLAGS='-C link-arg=-fuse-ld=mold'
+      else
+        export RUSTFLAGS="$RUSTFLAGS -C link-arg=-fuse-ld=mold"
+      fi
+      echo 'Using mold linker via RUSTFLAGS.'
+      ;;
+  esac
+else
+  echo 'mold not found; using the default linker.'
+fi
+
 if $local_database; then
   if docker compose version >/dev/null 2>&1; then
     echo 'Starting the local Compose database...'
