@@ -338,10 +338,10 @@ fn verified_pid() -> Result<Option<u32>, String> {
 fn pid_belongs_to(pid: u32, expected_binary: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
-        return fs::read_link(format!("/proc/{pid}/exe"))
+        fs::read_link(format!("/proc/{pid}/exe"))
             .ok()
             .zip(fs::canonicalize(expected_binary).ok())
-            .is_some_and(|(actual, expected)| actual == expected);
+            .is_some_and(|(actual, expected)| actual == expected)
     }
     #[cfg(not(target_os = "linux"))]
     {
