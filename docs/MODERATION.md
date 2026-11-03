@@ -46,6 +46,13 @@ the snapshot builder carries the recorded advisory into the candidate's registry
 documents, and the candidate verifier rejects documents whose advisory differs
 from the recorded one.
 
+Registry clients check revocation state without authentication at
+`GET /api/v1/plugins/releases/{releaseUuid}/revocation`. It returns the release
+identity (`id`, `pluginId`, `version`, `target`) with `yanked`, `yankReason`,
+the recorded `advisory` (`severity`, `message`, `url`), and whether the signing
+key is revoked (`keyRevoked`). Tenant, upload, and key identifiers are never
+included. Unknown releases return 404, and responses carry `no-store`.
+
 The decision, actor, reason code and audit event are recorded transactionally. One
 decision is allowed per release; an identical retry by the same reviewer is
 idempotent and a competing or changed decision conflicts. A decision on a yanked

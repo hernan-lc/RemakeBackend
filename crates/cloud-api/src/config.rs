@@ -198,4 +198,30 @@ mod tests {
         assert!(config(&[("TRUSTED_PROXY_CIDRS", "not-a-cidr")]).is_err());
         assert!(config(&[("TRUSTED_PROXY_CIDRS", "0.0.0.0/0")]).is_err());
     }
+
+    #[test]
+    fn jwks_policy_maps_env_values() {
+        let policy = config(&[
+            ("GOOGLE_JWKS_REFRESH_SECONDS", "1800"),
+            ("GOOGLE_JWKS_MAX_STALE_SECONDS", "7200"),
+            ("GOOGLE_JWKS_MIN_RETRY_SECONDS", "30"),
+        ])
+        .unwrap()
+        .jwks_policy;
+        assert_eq!(policy.refresh_after, Duration::from_secs(1800));
+        assert_eq!(policy.max_stale, Duration::from_secs(7200));
+        assert_eq!(policy.min_retry_interval, Duration::from_secs(30));
+        assert_ne!(policy, JwksRefreshPolicy::default());
+    }
+
+    #[test]
+    fn jwks_policy_default_skips_startup_reload() {
+        // main.rs only reloads Google's JWKS at startup when the configured
+        // policy differs from the library default, so a stock configuration
+        // must round-trip exactly and never trigger that network call.
+        assert_eq!(
+            config(&[]).unwrap().jwks_policy,
+            JwksRefreshPolicy::default()
+        );
+    }
 }

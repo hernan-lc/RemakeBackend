@@ -364,7 +364,7 @@ async fn context(database_url: &str, cache: bool) -> (AuthContext, PgPool) {
         },
         adapter.clone(),
         Some(secondary.clone()),
-        vec![],
+        vec![Arc::new(better_auth::UsernamePlugin)],
     )
     .unwrap();
     adapter
@@ -7111,4 +7111,326 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
     assert_eq!(row, ("failed".into(), 3, None));
     server.abort();
     scan_server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn public_revocation_serves_yank_advisory_and_key_state() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use tiktools_plugin_package::{KeyId, SigningKey};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let result = service
+        .sign_up(
+            SignUpInput {
+                email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                name: "Test".into(),
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let user = result.user.id;
+    let cookie = format!("{}={}", result.cookie.name, result.cookie.value);
+    let publisher = uuid::Uuid::new_v4();
+    let namespace = format!("pub{}", publisher.simple());
+    sqlx::query("INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,$2,'approved')")
+        .bind(publisher)
+        .bind(&namespace)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')").bind(publisher).bind(&user).execute(&pool).await.unwrap();
+    let key = SigningKey::generate(
+        KeyId::parse(&format!("key-{}", uuid::Uuid::new_v4().simple())).unwrap(),
+        None,
+    )
+    .unwrap()
+    .public_key();
+    let key_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys (id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES ($1,$2,$3,$4,$5,'approved',$6)").bind(key_id).bind(publisher).bind(key.key_id.as_str()).bind(&key.public_key).bind(key.fingerprint().unwrap().to_string()).bind(&user).execute(&pool).await.unwrap();
+    let upload = uuid::Uuid::new_v4();
+    let release = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_upload_sessions (id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at,version_id) VALUES ($1,$2,$3,$4,5,$5,$6,'quarantined',now()+interval '5 minutes','version')").bind(upload).bind(publisher).bind(&user).bind(format!("key{}",upload.simple())).bind("a".repeat(64)).bind(format!("quarantine/{publisher}/{upload}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_plugin_releases (id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) VALUES ($1,$2,$3,$4,$5,'1.0.0','any','antivirus_passed',$6)").bind(release).bind(publisher).bind(upload).bind(key_id).bind(format!("{namespace}.plugin")).bind(&user).execute(&pool).await.unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let path = format!("/api/v1/plugins/releases/{release}/revocation");
+    async fn get(
+        app: &Router,
+        path: &str,
+        cookie: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = request(app, "GET", path, cookie, None).await;
+        let status = response.status();
+        let data: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap(),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        (status, data)
+    }
+    // Unknown releases stay hidden from anonymous clients.
+    let (status, _) = get(
+        &app,
+        &format!(
+            "/api/v1/plugins/releases/{}/revocation",
+            uuid::Uuid::new_v4()
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Anonymous clients see identity and clean trust state, nothing internal.
+    let (status, data) = get(&app, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response_no_store(&app, &path).await, StatusCode::OK);
+    assert_eq!(data["id"], release.to_string());
+    assert_eq!(data["pluginId"], format!("{namespace}.plugin"));
+    assert_eq!(data["version"], "1.0.0");
+    assert_eq!(data["target"], "any");
+    assert_eq!(data["yanked"], false);
+    assert!(data["advisory"].is_null());
+    assert_eq!(data["keyRevoked"], false);
+    for hidden in [
+        "publisherId",
+        "publisher_id",
+        "uploadId",
+        "upload_id",
+        "publisherKeyId",
+        "publisher_key_id",
+        "requestedBy",
+        "requested_by",
+        "status",
+    ] {
+        assert!(data.get(hidden).is_none(), "{hidden} must stay hidden");
+    }
+    // Authenticated members get the same public view.
+    let (status, _) = get(&app, &path, Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    // A yank and advisory become visible to anonymous clients.
+    sqlx::query(
+        "INSERT INTO cloud_release_yanks (release_id,yanked_by,reason) VALUES ($1,$2,'malware')",
+    )
+    .bind(release)
+    .bind(&user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cloud_release_advisories (release_id,severity,message,url,created_by) VALUES ($1,'critical','update now','https://example.test/fix',$2)").bind(release).bind(&user).execute(&pool).await.unwrap();
+    let (status, data) = get(&app, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["yanked"], true);
+    assert_eq!(data["yankReason"], "malware");
+    assert_eq!(data["advisory"]["severity"], "critical");
+    assert_eq!(data["advisory"]["message"], "update now");
+    assert_eq!(data["advisory"]["url"], "https://example.test/fix");
+    // Revoking the signing key is reflected without exposing the key.
+    sqlx::query("UPDATE cloud_publisher_keys SET status='revoked' WHERE id=$1")
+        .bind(key_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, data) = get(&app, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["keyRevoked"], true);
+}
+
+async fn response_no_store(app: &Router, path: &str) -> StatusCode {
+    let response = request(app, "GET", path, None, None).await;
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    response.status()
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn username_set_sign_in_and_availability() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    async fn sign_up(
+        service: &better_auth::email_password::EmailPasswordService,
+        password: &str,
+    ) -> (String, String) {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Test".into(),
+                    password: password.into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        (
+            result.user.id,
+            format!("{}={}", result.cookie.name, result.cookie.value),
+        )
+    }
+    async fn post(
+        app: &Router,
+        path: &str,
+        cookie: Option<&str>,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
+        }
+        app.clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+    fn session_cookie(response: &axum::response::Response) -> String {
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .next()
+            .expect("sign-in must set a session cookie")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+    let password = "test password with enough characters";
+    let (_user, cookie) = sign_up(&service, password).await;
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    // Random per run: the ignored suite shares one disposable database, so a
+    // fixed username would collide with earlier runs.
+    let mixed = format!("Tester.{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let normalized = mixed.to_ascii_lowercase();
+    // Usernames are normalized to lowercase on set.
+    let response = post(
+        &app,
+        "/api/auth/username/set",
+        Some(&cookie),
+        json!({"username": mixed.clone()}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["username"], normalized);
+    // Setting without a session is refused.
+    assert_eq!(
+        post(
+            &app,
+            "/api/auth/username/set",
+            None,
+            json!({"username": "other.name"})
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // Availability reflects taken names and rejects invalid ones.
+    let response = post(
+        &app,
+        "/api/auth/is-username-available",
+        None,
+        json!({"username": normalized}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["available"], false);
+    let response = post(
+        &app,
+        "/api/auth/is-username-available",
+        None,
+        json!({"username": "free.name"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["available"], true);
+    assert_eq!(
+        post(
+            &app,
+            "/api/auth/is-username-available",
+            None,
+            json!({"username": "x"})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // A second user cannot claim the same username (any casing).
+    let (_other, other_cookie) = sign_up(&service, password).await;
+    assert_eq!(
+        post(
+            &app,
+            "/api/auth/username/set",
+            Some(&other_cookie),
+            json!({"username": mixed.to_ascii_uppercase()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // Sign in with the username yields a working session.
+    let response = post(
+        &app,
+        "/api/auth/sign-in/username",
+        None,
+        json!({"username": mixed, "password": password}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let session = session_cookie(&response);
+    let me = request(&app, "GET", "/api/v1/me", Some(&session), None).await;
+    assert_eq!(me.status(), StatusCode::OK);
+    // Unknown usernames and wrong passwords are refused without detail.
+    assert_eq!(
+        post(
+            &app,
+            "/api/auth/sign-in/username",
+            None,
+            json!({"username": "nobody.here", "password": password})
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/auth/sign-in/username",
+            None,
+            json!({"username": normalized, "password": "wrong password that is long enough"})
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
 }

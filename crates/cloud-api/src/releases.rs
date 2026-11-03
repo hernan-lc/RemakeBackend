@@ -258,6 +258,54 @@ pub struct Review {
     yank_reason: Option<String>,
     advisory: Option<AdvisoryView>,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicRevocation {
+    id: Uuid,
+    plugin_id: String,
+    version: String,
+    target: String,
+    yanked: bool,
+    yank_reason: Option<String>,
+    advisory: Option<AdvisoryView>,
+    key_revoked: bool,
+}
+
+/// Public revocation state for registry clients. No authentication: only the
+/// release identity, its yank/advisory state, and whether the signing key is
+/// revoked are exposed. Tenant, upload, and key identifiers stay hidden.
+pub async fn revocation_status(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PublicRevocation>, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    let row = sqlx::query(
+        "SELECT id,plugin_id,version,target,publisher_key_id FROM cloud_plugin_releases WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let (yanked, yank_reason, advisory) = revocation(&mut tx, id).await?;
+    let key_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM cloud_publisher_keys WHERE id=$1")
+            .bind(row.get::<Uuid, _>("publisher_key_id"))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    Ok(Json(PublicRevocation {
+        id: row.get("id"),
+        plugin_id: row.get("plugin_id"),
+        version: row.get("version"),
+        target: row.get("target"),
+        yanked,
+        yank_reason,
+        advisory,
+        key_revoked: key_status.as_deref() == Some("revoked"),
+    }))
+}
 pub async fn review(
     AuthUser(user): AuthUser,
     State(state): State<AppState>,

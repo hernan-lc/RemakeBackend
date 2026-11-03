@@ -23,6 +23,7 @@ per-resource caps and row locks instead.
 | Surface | Status | Limits |
 |---|---|---|
 | `GET /api/v1/me`, `GET /api/v1/native/me`, `POST /api/v1/native/logout` | Experimental | Session resolution works; account deletion needs Better Auth re-authentication that social-only users lack. Keychain adapters exist but use platform backends directly without verified OS integration. |
+| Email sign-up/sign-in, `POST /api/auth/username/set`, `POST /api/auth/sign-in/username`, `POST /api/auth/is-username-available` | Experimental | Email+password and username+password login work; usernames are lowercase-normalized, unique, and set after email sign-up. Google OAuth is intentionally last and remains unconfigured. |
 | `GET /api/v1/me/deletion-blockers`, `GET /api/v1/me/export`, `DELETE /api/v1/me/roles/{role}` (+ `native` variants), `DELETE /api/v1/publishers/{id}/membership` | Experimental | Deletion preparation only: lists blockers, exports bounded account data including recorded yanks, advisories, and validated sync records, revokes own roles, leaves memberships. No user-facing deletion flow, no audit retention policy. |
 | `POST /api/v1/desktop/handoff`, `POST /api/v1/native/handoff/redeem` | Experimental | Loopback PKCE handoff with single-use short-lived codes. Redemption is rate-limited per trusted client IP behind allowlisted proxies, per socket peer otherwise. No real Desktop, browser, or keychain verification. See [DESKTOP-AUTH.md](DESKTOP-AUTH.md). |
 | `POST /api/v1/admin/publishers/{id}/approve`, `grant-role` / `revoke-role` | Experimental | Operator-run with self-supplied labels; role bootstrap is not production-hardened. Deleting a user can still remove the last admin. |
@@ -39,7 +40,7 @@ per-resource caps and row locks instead.
 | Surface | Status | Limits |
 |---|---|---|
 | `POST /api/v1/plugins/uploads`, `POST .../uploads/{id}/complete` | Experimental | Constrained reservations (10 pending per publisher) into private quarantine with version capture and digest checks. Moto/MinIO evidence only; no proof of real S3/IAM behavior. See [OBJECT-STORAGE.md](OBJECT-STORAGE.md). |
-| `POST /api/v1/plugins/releases`, `GET .../releases/{id}`, `GET .../releases/{id}/review` | Experimental | Submissions bind upload, key, and namespace metadata. No public release status. Release and review reads expose yank and advisory state. |
+| `POST /api/v1/plugins/releases`, `GET .../releases/{id}`, `GET .../releases/{id}/review`, `GET .../releases/{id}/revocation` | Experimental | Submissions bind upload, key, and namespace metadata. The revocation read serves release identity with yank, advisory, and key-revocation state to unauthenticated registry clients; tenant, upload, and key identifiers stay hidden. Release and review reads expose yank and advisory state. |
 | `POST /api/v1/moderation/releases`, `POST .../{id}/decision`, `POST .../{id}/inspection` | Experimental | Independent audited decisions with conflict-of-interest refusal; 60-second version-bound inspection URLs with no isolated review environment, refused for yanked releases. No appeal or reversal. See [MODERATION.md](MODERATION.md). |
 | `POST .../{id}/yank`, `POST .../{id}/advisory` | Experimental | Permanent yanks block publication, preparation, approval, and candidacy; advisories inform and propagate into candidates. No un-yank, no reviewer appeal. See [MODERATION.md](MODERATION.md). |
 | `POST /api/v1/plugins/releases/{id}/publish`, `prepare-publication-once`, `retry-publication` | Experimental | Queues an audited request and prepares a read-back-verified private object with fenced leases. The response reports end-to-end publication as unavailable. See [REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md). |
@@ -61,7 +62,7 @@ per-resource caps and row locks instead.
 ## Absent scope
 
 No public registry serving, snapshot promotion or deployment, CDN or rollback
-handling, yanks or advisories served to clients, appeal or un-yank flows,
-enabled key enrollment, full sync schema, user-facing account deletion,
-publisher dashboard, analytics, additional identity providers, or production
-abuse/load testing. Anything not listed above does not exist.
+handling, appeal or un-yank flows, enabled key enrollment, full sync schema,
+user-facing account deletion, publisher dashboard, analytics, additional
+identity providers, or production abuse/load testing. Anything not listed above
+does not exist.

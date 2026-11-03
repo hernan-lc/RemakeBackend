@@ -156,3 +156,16 @@ restored a test database with the same user, publisher, membership, audit and
 migration counts and retained the owner-deletion foreign-key guard. This is a local
 database-only drill; production-sized recovery, object versions, secrets, backup
 retention and point-in-time recovery remain untested.
+
+pgrust migration verification on 2026-11-03: dev, prod-overlay, and CI database
+images moved to self-hosted `malisper/pgrust:v0.4-beta`; no external database
+remains. A standalone pgrust container reported
+`PostgreSQL 18.6 (pgrust 0.4-beta)`, accepted `cloud-api migrate` (Better Auth
+migrations plus all 20 Cloud migrations), and passed the full workspace unit
+suite plus the ignored disposable-database integration suite (27 passed,
+0 failed). JWKS policy mapping and the default-policy startup-reload skip are
+now covered by offline config tests; rotation, outage, and unknown-key refresh
+remain upstream library behavior covered only by the ignored live-network
+smoke test. The Compose file itself is still unexercised here because the
+Compose plugin is unavailable; the container was started with equivalent
+`docker run` settings.

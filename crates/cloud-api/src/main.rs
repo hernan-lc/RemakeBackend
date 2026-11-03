@@ -145,7 +145,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         adapter.clone(),
         Some(storage.clone()),
-        vec![],
+        // Username sign-in: set a username after email sign-up, then sign in
+        // with it. Google OAuth stays last and remains unconfigured here.
+        vec![Arc::new(better_auth::UsernamePlugin)],
     )?;
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["migrate"] {
@@ -533,6 +535,10 @@ fn app_inner(
         .route(
             "/api/v1/plugins/releases/{id}/review",
             get(releases::review).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/plugins/releases/{id}/revocation",
+            get(releases::revocation_status).layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
             "/api/v1/plugins/uploads",

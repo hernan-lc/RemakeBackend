@@ -3,7 +3,7 @@
 A new independent backend consuming `better-auth-rs` as a library. Checked items describe work completed and locally verified in this repository. Unchecked items include unfinished integration, production validation, and milestone exit criteria. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for evidence and limitations.
 
 ## M0 — Repository and dependency audit (P0)
-- [x] Create the Rust Axum workspace, choose MIT licensing, and add CI configuration, PostgreSQL Compose configuration, and `.env.example`.
+- [x] Create the Rust Axum workspace, choose MIT licensing, and add CI configuration, pgrust (PostgreSQL 18.6-compatible, self-hosted) Compose configuration, and `.env.example`.
 - [ ] Create and configure the `nglmercer/TikTools-cloud` remote repository and validate CI and Compose in their target environments.
 - [x] Pin `nglmercer/better-auth-rs` to a reviewed Git SHA and lockfile; record feature flags and declared MSRV.
 - [x] Check the full workspace with Rust 1.95 and the all-features client with Rust 1.89; CI now repeats both checks.
@@ -36,7 +36,7 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [ ] Enable key enrollment and approval after session-bound step-up is available and verified.
 - [x] Implement release submission, independent moderation, audited publication requests, and private artifact preparation.
 - [x] Model moderator-recorded release yanks and security advisories, enforce them across publication, preparation, approval, candidacy, and verification, and surface them in release, review, and queue reads.
-- [ ] Implement public publication and serve yanks, advisories, and revocation state to registry clients.
+- [ ] Implement public publication and serve yanks, advisories, and revocation state to registry clients. Done in-repo slice: `GET /api/v1/plugins/releases/{id}/revocation` serves release-level yank, advisory, and key-revocation state to unauthenticated clients with integration coverage. Still outstanding: public publication flow, registry-document serving, snapshot promotion/rollback, CDN, and Desktop validation.
 - [x] Record audited promotion-readiness (`verified`/`blocked`) decisions for private candidates without deploying.
 - [ ] Registry snapshot promotion and rollback; rate limits, quotas, malicious package/URL protections.
 **Exit:** an authorized third-party publisher publishes a valid signed plugin without server-side access to root keys.
