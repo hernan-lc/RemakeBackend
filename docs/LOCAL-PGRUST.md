@@ -1,67 +1,33 @@
-# pgrust without Docker (local development)
+# Local pgrust without Docker
 
-This is an **optional** local runner for the same pgrust v0.4-beta engine used by
-`compose.yaml`. It is **not** a second database implementation, and it does not
-install, require, or modify Docker. Official Linux and macOS bundles include
-`postgres`, `initdb`, `psql`, and required share files. There is no native
-Windows release for v0.4-beta; use WSL2 on Windows.
-
-Requirements: Rust toolchain, Linux (glibc 2.34+ for the Linux binary) or
-macOS 11+, system `curl` and `tar`, `sha256sum` (or `shasum -a 256`), and
-network access for the initial download. No Python, no Docker.
-
-From the repository root:
+The launcher builds the pinned pgrust source in `vendor/pgrust` locally. The
+source is a Git submodule so it retains its own workspace and can be developed
+and contributed upstream independently. Initialize it after cloning:
 
 ```bash
+git submodule update --init --recursive
 cp .env.example .env
-# Edit .env: use a local database URL and change AUTH_SECRET.
-set -a; . ./.env; set +a  # Export env vars for the backend and launcher
+# Edit .env and set a private AUTH_SECRET.
+set -a; . ./.env; set +a
 cargo run -p pgrust-local -- up
 cargo run -p cloud-api -- migrate
 cargo run -p cloud-api
 ```
 
-The runner reads `DATABASE_URL` from the environment first, then `.env`.
-For the checked-in example it creates the `cloud` role as the cluster
-superuser and a separate `cloud` database, matching:
-`postgres://cloud:local-only-password@localhost:5432/cloud`.
+You need Git, the Rust toolchain specified by the submodule, a C/C++ build
+chain, pkg-config, RE2 development files, and `psql` on PATH. Cargo may download
+source dependencies on the first build. No Docker or prebuilt pgrust download
+is required. See the submodule README for platform-specific build prerequisites.
 
-Commands:
+`cargo run -p pgrust-local -- install` builds the source; `up` builds it if
+needed and starts the server; `status` reports its state; `down` stops it while
+preserving data. `cargo test -p pgrust-local --locked` runs launcher unit tests.
 
-```bash
-cargo run -p pgrust-local -- install  # Verify checksum and unpack official tarball
-cargo run -p pgrust-local -- up       # Install/init if needed; start and create database
-cargo run -p pgrust-local -- status   # Show managed process and data path
-cargo run -p pgrust-local -- down     # SIGINT/fast shutdown; preserve data
-cargo test -p pgrust-local --locked   # Offline unit tests, no database or Docker
-```
+The cluster and logs reside under `~/.local/share/remakebackend/pgrust`, or
+`$XDG_DATA_HOME/remakebackend/pgrust`; `PGRUST_LOCAL_HOME` overrides the root.
+The launcher only listens on loopback and refuses an occupied port. The existing
+cluster is reused; changing credentials does not rotate them. Migrations are
+explicit and no reset command is provided. Use a disposable, dedicated database
+for integration tests. pgrust is beta software and is not production-ready.
 
-The install, data, log and PID file are stored under
-`~/.local/share/remakebackend/pgrust` by default (or under
-`$XDG_DATA_HOME/remakebackend/pgrust`). Set `PGRUST_LOCAL_HOME`
-to override the root. The password is supplied only through the temporary,
-mode-0600 `initdb --pwfile` and the `PGPASSWORD` environment variable for
-`psql`; it is not included in the process command line or stored by this tool.
-Both TCP and local socket connections use SCRAM authentication. TCP binds only
-127.0.0.1; no public listener is configured. The tool refuses to reuse an
-occupied TCP port or clobber an existing nonempty data directory.
-
-**Important:**
-
-- Existing `data/PG_VERSION` is reused without modifying it. Changing the
-  user/password in `.env` does not rotate database credentials. Do not
-  mix this cluster with Docker's separate volume.
-- Migrations remain **explicit**; `up` does not run application migrations.
-  Run `cargo run -p cloud-api -- migrate` after starting the database.
-- Do not run `docker compose up` simultaneously against the same local port.
-- For failed startup inspect `pgrust.log` in the data root. `down` only
-  signals the verified managed process; it is deliberately not a general
-  PostgreSQL process killer. No automated deletion/reset command is provided.
-- This runs a pinned beta release and does not automatically upgrade or
-  migrate old clusters. Back up and restore before changing engine versions.
-- pgrust's own README says it is not production-ready. This helper is for
-  local development and disposable testing, not an endorsed production setup.
-
-Backend configuration and recovery guidance: `README.md` and
-`docs/DATABASE-RECOVERY.md`. Upstream:
-https://github.com/malisper/pgrust#quickstart
+The source is licensed under its upstream license; see `vendor/pgrust/LICENSE`.

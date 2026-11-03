@@ -1,8 +1,7 @@
 //! Optional, Docker-free pgrust launcher for local RemakeBackend development.
 //!
-//! Std-only Rust port of the closed PR's `scripts/pgrust-local.py`: no Python,
-//! no Docker. Downloads the official pgrust v0.4-beta tarball with SHA-256
-//! verification, keeps an isolated cluster under
+//! Builds the pinned pgrust source locally, without Docker.
+//! Keeps an isolated cluster under
 //! `~/.local/share/remakebackend/pgrust` (or `$PGRUST_LOCAL_HOME`), and starts
 //! it on 127.0.0.1. Migrations stay explicit (`cargo run -p cloud-api -- migrate`).
 
@@ -12,13 +11,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-const VERSION: &str = "0.4-beta";
-const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-fn base_url() -> String {
-    format!("https://pgrust.com/downloads/v{VERSION}")
-}
 
 fn project_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -44,57 +36,10 @@ fn home_dir() -> PathBuf {
         .join("pgrust")
 }
 
-/// Map `uname`-style system/machine names to a pgrust release triple.
-fn platform_name(system: &str, machine: &str) -> Result<&'static str, String> {
-    let system = system.to_lowercase();
-    let machine = machine.to_lowercase();
-    if system != "linux" && system != "darwin" {
-        return Err(
-            "pgrust v0.4-beta has no native Windows release; use WSL2 for local development"
-                .to_string(),
-        );
-    }
-    let arch = match machine.as_str() {
-        "x86_64" | "amd64" => "x86_64",
-        "aarch64" | "arm64" => "aarch64",
-        _ => return Err(format!("Unsupported pgrust architecture: {machine}")),
-    };
-    if system == "darwin" {
-        return Ok(if arch == "aarch64" {
-            "macos-arm64"
-        } else {
-            "macos-x86_64"
-        });
-    }
-    Ok(if arch == "aarch64" {
-        "linux-aarch64"
-    } else {
-        "linux-x86_64"
-    })
-}
-
-fn host_platform() -> Result<&'static str, String> {
-    let system = env::consts::OS;
-    let machine = env::consts::ARCH;
-    // env::consts uses "macos"/"linux" and "x86_64"/"aarch64", matching platform_name.
-    platform_name(system, machine)
-}
-
-fn release_dir() -> Result<PathBuf, String> {
-    Ok(home_dir()
-        .join("releases")
-        .join(format!("pgrust-{VERSION}-{}", host_platform()?)))
-}
-
 fn bin_dir() -> Result<PathBuf, String> {
-    let dir = release_dir()?.join("bin");
-    for name in ["postgres", "initdb", "psql"] {
-        if !dir.join(name).is_file() {
-            return Err(format!(
-                "Missing {}; run `cargo run -p pgrust-local -- install` first",
-                dir.join(name).display()
-            ));
-        }
+    let dir = project_dir().join("vendor/pgrust/target/release");
+    if !dir.join("postgres").is_file() || !dir.join("initdb").is_file() {
+        return Err("pgrust is not built; run `cargo run -p pgrust-local -- install`".into());
     }
     Ok(dir)
 }
@@ -240,197 +185,32 @@ fn database_settings() -> Result<DbSettings, String> {
     Err("Set DATABASE_URL or create .env from .env.example before initializing".to_string())
 }
 
-/// Reject unsafe tar member names before extraction.
-fn validate_entry_name(name: &str, expected_root: &str) -> Result<(), String> {
-    if name.is_empty() || name.starts_with('/') {
-        return Err("pgrust archive contains an unsafe path".to_string());
-    }
-    let parts: Vec<&str> = name.split('/').collect();
-    if parts.contains(&"..") {
-        return Err("pgrust archive contains an unsafe path".to_string());
-    }
-    if parts.first() != Some(&expected_root) {
-        return Err("pgrust archive contains an unsafe path".to_string());
-    }
-    Ok(())
-}
-
-fn run(cmd: &mut Command) -> Result<(), String> {
-    let status = cmd
-        .status()
-        .map_err(|e| format!("failed to run command: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("command failed with status {status}"))
-    }
-}
-
-fn download(url: &str, dest: &Path) -> Result<(), String> {
-    let mut cmd = Command::new("curl");
-    cmd.args(["-fsSL", "--max-time", "60", "-o"])
-        .arg(dest)
-        .arg(url);
-    run(&mut cmd).map_err(|e| format!("download failed for {url}: {e}"))
-}
-
-fn is_hex64(text: &str) -> bool {
-    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-fn sha256_of_file(path: &Path) -> Result<String, String> {
-    // Prefer coreutils; fall back to BSD shasum.
-    for (program, args) in [
-        ("sha256sum", vec![] as Vec<&str>),
-        ("shasum", vec!["-a", "256"]),
-    ] {
-        let output = Command::new(program).args(&args).arg(path).output();
-        if let Ok(output) = output {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let digest = stdout
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_lowercase();
-                if is_hex64(&digest) {
-                    return Ok(digest);
-                }
-            }
-        }
-    }
-    Err("could not compute SHA-256 (need sha256sum or shasum)".to_string())
-}
-
-fn tar_names(archive: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new("tar")
-        .args(["-tzf"])
-        .arg(archive)
-        .output()
-        .map_err(|e| format!("failed to list archive: {e}"))?;
-    if !output.status.success() {
-        return Err("failed to list pgrust archive".to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| line.trim_start_matches("./").to_string())
-        .collect())
-}
-
-/// Walk an extracted tree, rejecting symlinks and enforcing the size cap.
-fn check_tree(root: &Path) -> Result<(), String> {
-    let mut total: u64 = 0;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries =
-            fs::read_dir(&dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("failed to read entry: {e}"))?;
-            let meta = fs::symlink_metadata(entry.path())
-                .map_err(|e| format!("failed to stat entry: {e}"))?;
-            if meta.file_type().is_symlink() {
-                return Err("pgrust archive contains a link or special file".to_string());
-            }
-            if meta.is_dir() {
-                stack.push(entry.path());
-            } else if meta.is_file() {
-                total = total.checked_add(meta.len()).ok_or_else(|| {
-                    "pgrust archive exceeds the extraction size limit".to_string()
-                })?;
-                if total > MAX_ARCHIVE_BYTES {
-                    return Err("pgrust archive exceeds the extraction size limit".to_string());
-                }
-            } else {
-                return Err("pgrust archive contains a link or special file".to_string());
-            }
-        }
-    }
-    Ok(())
-}
-
 fn install() -> Result<(), String> {
-    let plat = host_platform()?;
-    let destination = release_dir()?;
-    if destination.join("bin/postgres").is_file()
-        && destination.join("bin/initdb").is_file()
-        && destination.join("bin/psql").is_file()
-    {
-        println!("Already installed: {}", destination.display());
-        return Ok(());
+    let source = project_dir().join("vendor/pgrust");
+    if !source.join("Cargo.toml").is_file() {
+        return Err(
+            "pgrust source is missing; run `git submodule update --init --recursive`".into(),
+        );
     }
-    let home = home_dir();
-    fs::create_dir_all(&home).map_err(|e| format!("failed to create {}: {e}", home.display()))?;
-    let name = format!("pgrust-{VERSION}-{plat}.tar.gz");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let work = home.join(format!(".download-{}-{}", std::process::id(), nanos));
-    fs::create_dir_all(&work).map_err(|e| format!("failed to create work dir: {e}"))?;
-    let cleanup = |_: ()| {
-        let _ = fs::remove_dir_all(&work);
-    };
-    let archive_path = work.join(&name);
-    let checksum_path = work.join(format!("{name}.sha256"));
-    println!("Downloading official {name} and checksum...");
-    let base = base_url();
-    if let Err(e) = download(&format!("{base}/{name}"), &archive_path)
-        .and_then(|_| download(&format!("{base}/{name}.sha256"), &checksum_path))
-    {
-        cleanup(());
-        return Err(e);
+    let status = Command::new("cargo")
+        .current_dir(&source)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "main_main",
+            "-p",
+            "initdb",
+        ])
+        .status()
+        .map_err(|e| format!("failed to build pgrust: {e}"))?;
+    if !status.success() {
+        return Err(format!("pgrust build failed: {status}"));
     }
-    let sidecar = fs::read_to_string(&checksum_path)
-        .map_err(|e| format!("failed to read checksum sidecar: {e}"))?;
-    let expected = sidecar
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
-    if !is_hex64(&expected) {
-        cleanup(());
-        return Err("Invalid upstream SHA-256 sidecar".to_string());
-    }
-    let actual = sha256_of_file(&archive_path)?;
-    if actual != expected {
-        cleanup(());
-        return Err("pgrust archive checksum mismatch; refusing extraction".to_string());
-    }
-    let expected_root = format!("pgrust-{VERSION}-{plat}");
-    for member in tar_names(&archive_path)? {
-        validate_entry_name(&member, &expected_root)?;
-    }
-    let mut extract = Command::new("tar");
-    extract
-        .args(["-xzf"])
-        .arg(&archive_path)
-        .arg("-C")
-        .arg(&work);
-    if run(&mut extract).is_err() {
-        cleanup(());
-        return Err("failed to extract pgrust archive".to_string());
-    }
-    let extracted = work.join(&expected_root);
-    for item in ["bin/postgres", "bin/initdb", "bin/psql"] {
-        if !extracted.join(item).is_file() {
-            cleanup(());
-            return Err(format!("Upstream archive is missing {item}"));
-        }
-    }
-    check_tree(&extracted)?;
-    if destination.exists() {
-        cleanup(());
-        return Err(format!(
-            "Incomplete installation found at {}; inspect it manually",
-            destination.display()
-        ));
-    }
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("failed to create releases dir: {e}"))?;
-    }
-    fs::rename(&extracted, &destination).map_err(|e| format!("failed to install release: {e}"))?;
-    cleanup(());
-    println!("Installed {}", destination.display());
+    bin_dir()?;
     Ok(())
 }
 
@@ -449,6 +229,13 @@ fn initialize(settings: &DbSettings) -> Result<(), String> {
         ));
     }
     let bin = bin_dir()?;
+    let version = Command::new(bin.join("postgres"))
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("failed to execute pgrust postgres: {e}"))?;
+    if !version.status.success() {
+        return Err(format!("pgrust postgres --version failed ({}); the upstream binary may be incompatible with this system; see docs/LOCAL-PGRUST.md", version.status));
+    }
     fs::create_dir_all(home_dir()).map_err(|e| format!("failed to create home: {e}"))?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -489,7 +276,7 @@ fn initialize(settings: &DbSettings) -> Result<(), String> {
 }
 
 fn query(settings: &DbSettings, sql: &str, database: &str) -> Result<String, String> {
-    let output = Command::new(bin_dir()?.join("psql"))
+    let output = Command::new("psql")
         .args([
             "-X",
             "-A",
@@ -551,23 +338,22 @@ fn verified_pid() -> Result<Option<u32>, String> {
 fn pid_belongs_to(pid: u32, expected_binary: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) {
-            if !cmdline.is_empty() {
-                let joined = String::from_utf8_lossy(&cmdline);
-                return joined.contains(expected_binary);
-            }
-            return false;
-        }
+        return fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .zip(fs::canonicalize(expected_binary).ok())
+            .is_some_and(|(actual, expected)| actual == expected);
     }
-    // Fallback (macOS, or /proc unavailable): ask ps.
-    Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .map(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains(expected_binary)
-        })
-        .unwrap_or(false)
+    #[cfg(not(target_os = "linux"))]
+    {
+        Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .map(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == expected_binary
+            })
+            .unwrap_or(false)
+    }
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -750,28 +536,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn platform_linux_x64() {
-        assert_eq!(platform_name("Linux", "x86_64").unwrap(), "linux-x86_64");
-    }
-
-    #[test]
-    fn platform_macos_arm() {
-        assert_eq!(platform_name("Darwin", "arm64").unwrap(), "macos-arm64");
-    }
-
-    #[test]
-    fn platform_windows_rejected() {
-        assert!(platform_name("Windows", "x86_64")
-            .unwrap_err()
-            .contains("WSL2"));
-    }
-
-    #[test]
-    fn platform_arch_rejected() {
-        assert!(platform_name("Linux", "mips").is_err());
-    }
-
-    #[test]
     fn database_url_valid() {
         let settings =
             parse_database_url("postgres://cloud:local-only-password@localhost:5433/cloud")
@@ -814,59 +578,5 @@ mod tests {
     #[test]
     fn database_url_rejects_missing_password() {
         assert!(parse_database_url("postgres://cloud@localhost/cloud").is_err());
-    }
-
-    #[test]
-    fn archive_rejects_traversal() {
-        assert!(validate_entry_name(
-            "pgrust-0.4-beta-linux-x86_64/../../oops",
-            "pgrust-0.4-beta-linux-x86_64"
-        )
-        .unwrap_err()
-        .contains("unsafe path"));
-    }
-
-    #[test]
-    fn archive_rejects_absolute_and_wrong_root() {
-        assert!(validate_entry_name("/etc/passwd", "pgrust-0.4-beta-linux-x86_64").is_err());
-        assert!(
-            validate_entry_name("other-root/bin/postgres", "pgrust-0.4-beta-linux-x86_64").is_err()
-        );
-        assert!(validate_entry_name(
-            "pgrust-0.4-beta-linux-x86_64/bin/postgres",
-            "pgrust-0.4-beta-linux-x86_64"
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn archive_rejects_symlinks_on_disk() {
-        // Exercise the real extraction guard: symlinks are rejected, regular
-        // files and directories pass.
-        let base = env::temp_dir().join(format!(
-            "pgrust-local-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        fs::create_dir_all(base.join("root/sub")).unwrap();
-        fs::write(base.join("root/sub/file"), b"data").unwrap();
-        assert!(check_tree(&base.join("root")).is_ok());
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink("target", base.join("root/sub/link")).unwrap();
-            assert!(check_tree(&base.join("root"))
-                .unwrap_err()
-                .contains("link or special"));
-        }
-        fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn checksum_sidecar_shape() {
-        assert!(is_hex64(&"a".repeat(64)));
-        assert!(!is_hex64("xyz"));
     }
 }

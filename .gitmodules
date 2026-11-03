@@ -1,0 +1,3 @@
+[submodule "vendor/pgrust"]
+	path = vendor/pgrust
+	url = https://github.com/malisper/pgrust.git

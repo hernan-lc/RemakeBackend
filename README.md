@@ -10,7 +10,7 @@ Back up the database before migrations. The upstream migration API does not supp
 
 ## Optional Docker-free database
 
-For local Linux/macOS development without Docker, run `cargo run -p pgrust-local -- up` after configuring `.env`. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown. It is a std-only Rust binary with offline unit tests (`cargo test -p pgrust-local --locked`); no Python is required.
+For local Linux/macOS development without Docker, run `cargo run -p pgrust-local -- up` after initializing the pgrust submodule and configuring `.env`. The launcher builds the pinned source locally. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites and shutdown.
 
 ## Tests
 
