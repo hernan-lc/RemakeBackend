@@ -9,7 +9,9 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [x] Check the full workspace with Rust 1.95 and the all-features client with Rust 1.89; CI now repeats both checks.
 - [x] Build a small Better Auth integration spike: migrations, HTTP auth routes, `SessionService` extractor, Google fixture callback and logout.
 - [x] Exercise mock OAuth, session cookies/revocation, native callback restrictions, and fresh migrations against the pinned Better Auth revision.
-- [ ] Verify live JWKS behavior and migration upgrades; report proven gaps upstream.
+- [x] Verify local PostgreSQL migration upgrades and restore a disposable database from `pg_dump`.
+- [x] Fetch and parse Google's live JWKS through the pinned Better Auth provider using an opt-in smoke test.
+- [ ] Verify this deployment's scheduled/unknown-key JWKS refresh and outage/stale-key behavior; report proven gaps upstream.
 **Exit:** local auth integration compiles and passes mock OAuth + session tests.
 
 ## M1 — Identity and security (P0)

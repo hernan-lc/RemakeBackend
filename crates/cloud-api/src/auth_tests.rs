@@ -60,6 +60,21 @@ async fn forwarded_headers_require_an_allowlisted_proxy_peer() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires outbound network access to Google's JWKS endpoint"]
+async fn google_jwks_live_refresh_smoke() {
+    let mut provider = better_auth::http_oauth::HttpOAuthProvider::google(
+        "jwks-smoke-client",
+        "jwks-smoke-secret",
+    )
+    .unwrap();
+    let count = provider
+        .refresh_oidc_jwks(Url::parse("https://www.googleapis.com/oauth2/v3/certs").unwrap())
+        .await
+        .unwrap();
+    assert!(count > 0, "Google returned no supported signing keys");
+}
+
 async fn fixture() -> (String, tokio::task::JoinHandle<()>) {
     async fn token(
         axum::Form(form): axum::Form<std::collections::HashMap<String, String>>,
