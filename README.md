@@ -85,6 +85,10 @@ Health and identity:
   publisher portal) with read-only admin APIs ([admin web plan](docs/ADMIN-WEB-PLAN.md),
   [deployment hardening](docs/ADMIN-WEB-DEPLOYMENT.md)).
 
+## Optional Docker-free database
+
+For local Linux/macOS development without Docker, use the `pgrust-local` launcher after configuring `.env`; if you cannot build from source, `python3 scripts/pgrust-local.py up` downloads a verified prebuilt bundle instead. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown.
+
 ## Tests
 
 ```sh
