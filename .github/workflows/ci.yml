@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: malisper/pgrust:v0.4-beta
         env:
           POSTGRES_USER: cloud
           POSTGRES_PASSWORD: test-only

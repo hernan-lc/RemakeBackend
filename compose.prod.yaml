@@ -1,0 +1,13 @@
+# Production overlay: self-hosted pgrust only, no external database.
+# Usage: docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Notes:
+# - pgrust v0.4-beta is beta software. Upstream does not recommend it for
+#   production yet; keep tested backups and rehearse restore before every
+#   image upgrade (on-disk format has changed between betas before).
+# - Never reuse a volume created by postgres:17; start from an empty volume
+#   or restore from a dump taken with pg_dump.
+services:
+  postgres:
+    image: malisper/pgrust:v0.4-beta
+    restart: unless-stopped

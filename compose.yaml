@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:17
+    # pgrust v0.4-beta: Postgres 18.6-compatible engine, drop-in for the
+    # official image (same env vars, init scripts, and data volume).
+    # Fresh volume required when coming from postgres:17 (PG17 disk format
+    # is not reusable here): run `docker compose down -v` once.
+    image: malisper/pgrust:v0.4-beta
     environment:
       POSTGRES_USER: cloud
       POSTGRES_PASSWORD: local-only-password
