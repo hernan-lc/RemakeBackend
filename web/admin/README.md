@@ -5,6 +5,33 @@ cookie sessions only; the backend (`cloud-api`) authorizes every call.
 
 ## Run
 
+For a coordinated local start, install the frontend dependencies with
+`cd web/admin && npm ci`, then run from the repository root:
+
+```sh
+./scripts/dev-admin.sh
+```
+
+By default the launcher starts the Docker Compose database and applies
+migrations. If Docker Compose is unavailable, it uses the Docker-free
+[local pgrust launcher](../../docs/LOCAL-PGRUST.md), which has additional
+build prerequisites. Database data persists between runs; it is not temporary.
+A random local auth secret is saved in the
+gitignored `.local-dev` directory so sessions survive restarts. Export
+`DATABASE_URL` to use an existing database instead: in that case the launcher
+does not start a database or run migrations. `AUTH_SECRET` and other backend
+settings can also be exported. Back up existing data before migrations.
+
+Open the printed URL, `http://127.0.0.1:5173/app`. The launcher sets the
+backend origin and proxy target consistently and stops the API and UI when
+either exits; the database remains running. Ports 3000 and 5173 must
+be free; Vite fails instead of silently choosing another port.
+Use the exact printed hostname: `localhost` and `127.0.0.1` are different
+origins. Google OAuth also requires the corresponding callback URL to be
+registered with Google.
+
+To run each service separately:
+
 ```sh
 cd web/admin
 npm install
