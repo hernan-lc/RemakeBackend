@@ -494,6 +494,18 @@ fn app_inner(
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
+            "/api/v1/admin/overview",
+            get(admin::overview).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/admin/publishers",
+            get(admin::publishers).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/admin/audit",
+            get(admin::audit).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/moderation/releases",
             get(moderation::queue).layer(axum::middleware::map_response(sync::no_store)),
         )

@@ -635,6 +635,349 @@ async fn oauth_email_collision_requires_both_accounts_verified() {
         .unwrap();
 }
 
+/// PR B exit: a Cloud admin can review publishers and audit events through the
+/// read-only admin APIs; anonymous callers get 401 and non-admins get 403
+/// without enumerating anything. Malicious filters fail closed with 400.
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn admin_read_apis_authorize_paginate_and_redact() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut cookies = Vec::new();
+    let mut user_ids = Vec::new();
+    for _ in 0..2 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Admin Read".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        user_ids.push(result.user.id.clone());
+        cookies.push(format!("{}={}", result.cookie.name, result.cookie.value));
+    }
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    async fn get(app: &Router, path: &str, cookie: Option<&str>) -> axum::response::Response {
+        let mut builder = Request::builder().method("GET").uri(path);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        app.clone()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+    async fn body(response: axum::response::Response) -> serde_json::Value {
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    }
+    // Anonymous callers are rejected before any data access.
+    for path in [
+        "/api/v1/admin/overview",
+        "/api/v1/admin/publishers",
+        "/api/v1/admin/audit",
+    ] {
+        assert_eq!(
+            get(&app, path, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Ordinary users cannot enumerate administrative data.
+    for path in [
+        "/api/v1/admin/overview",
+        "/api/v1/admin/publishers?status=pending",
+        "/api/v1/admin/audit",
+    ] {
+        assert_eq!(
+            get(&app, path, Some(&cookies[0])).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    // Malicious filters fail closed even for callers who would otherwise pass
+    // the role gate; unknown query fields are rejected by deny_unknown_fields.
+    assert!(
+        admin::change_role(&pool, true, &user_ids[0], "admin", "test-operator")
+            .await
+            .unwrap()
+    );
+    for path in [
+        "/api/v1/admin/publishers?status=approved%2Cpending",
+        "/api/v1/admin/publishers?status=",
+        "/api/v1/admin/publishers?status=PENDING",
+        "/api/v1/admin/publishers?limit=0",
+        "/api/v1/admin/publishers?limit=101",
+        "/api/v1/admin/publishers?limit=-1",
+        "/api/v1/admin/publishers?cursor=00000000-0000-0000-0000-000000000000",
+        "/api/v1/admin/publishers?cursor=not-a-uuid",
+        "/api/v1/admin/publishers?order=desc",
+        "/api/v1/admin/audit?limit=1000",
+        "/api/v1/admin/audit?cursor=00000000-0000-0000-0000-000000000000",
+        "/api/v1/admin/audit?select=*",
+    ] {
+        assert_eq!(
+            get(&app, path, Some(&cookies[0])).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    // Seed two pending publishers owned by the non-admin user.
+    let baseline: i64 = body(get(&app, "/api/v1/admin/overview", Some(&cookies[0])).await).await
+        ["publishers"]["pending"]
+        .as_i64()
+        .unwrap();
+    let mut seeded = Vec::new();
+    for _ in 0..2 {
+        let namespace = format!("adm{}", uuid::Uuid::new_v4().simple());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publishers")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, ORIGIN)
+                    .header(header::COOKIE, &cookies[1])
+                    .body(Body::from(json!({"namespace": namespace}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        seeded.push(body(response).await["id"].as_str().unwrap().to_owned());
+    }
+    // The dedicated test database is shared by the suite, so assert deltas
+    // against the pre-seed baseline instead of absolute counts.
+    let overview = get(&app, "/api/v1/admin/overview", Some(&cookies[0])).await;
+    assert_eq!(overview.status(), StatusCode::OK);
+    assert_eq!(overview.headers()[header::CACHE_CONTROL], "no-store");
+    // Every admin read carries no-store: administrative data must never sit
+    // in a browser or proxy cache.
+    for path in [
+        "/api/v1/admin/publishers?status=pending&limit=1",
+        "/api/v1/admin/audit?limit=1",
+    ] {
+        let response = get(&app, path, Some(&cookies[0])).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "no-store",
+            "{path}"
+        );
+    }
+    let overview = body(overview).await;
+    assert_eq!(overview["contractVersion"], 1);
+    assert_eq!(overview["publishers"]["pending"], baseline + 2);
+    let publishers = get(
+        &app,
+        "/api/v1/admin/publishers?status=pending&limit=1",
+        Some(&cookies[0]),
+    )
+    .await;
+    assert_eq!(publishers.status(), StatusCode::OK);
+    let publishers = body(publishers).await;
+    assert_eq!(publishers["contractVersion"], 1);
+    assert_eq!(publishers["items"].as_array().unwrap().len(), 1);
+    // The projection carries namespaces and statuses only: no user secrets.
+    let raw_publishers = publishers.to_string().to_lowercase();
+    for leaked in [
+        "email",
+        "members",
+        "userid",
+        "user_id",
+        "requested_by",
+        "fingerprint",
+    ] {
+        assert!(
+            !raw_publishers.contains(leaked),
+            "admin publishers projection leaks {leaked}"
+        );
+    }
+    let first = &publishers["items"][0];
+    assert!(
+        first.get("namespace").is_some()
+            && first.get("status").is_some()
+            && first.get("createdAt").is_some()
+    );
+    assert!(
+        first.get("userId").is_none()
+            && first.get("email").is_none()
+            && first.get("members").is_none()
+    );
+    let cursor = publishers["nextCursor"].as_str().unwrap();
+    let second = body(
+        get(
+            &app,
+            &format!("/api/v1/admin/publishers?status=pending&limit=1&cursor={cursor}"),
+            Some(&cookies[0]),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_ne!(second["items"][0]["id"], first["id"]);
+    // Other suite tests may leave pending publishers behind; pages only need
+    // to advance without repeating the cursor row.
+    let seen_first = second["items"][0]["id"].as_str().unwrap().to_owned();
+    let mut seen = std::collections::BTreeSet::from([
+        first["id"].as_str().unwrap().to_owned(),
+        seen_first.clone(),
+    ]);
+    let mut cursor = second["nextCursor"].as_str().map(str::to_owned);
+    while let Some(c) = cursor {
+        let page = body(
+            get(
+                &app,
+                &format!("/api/v1/admin/publishers?status=pending&limit=1&cursor={c}"),
+                Some(&cookies[0]),
+            )
+            .await,
+        )
+        .await;
+        for item in page["items"].as_array().unwrap() {
+            assert!(
+                seen.insert(item["id"].as_str().unwrap().to_owned()),
+                "publisher page repeated an id"
+            );
+        }
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+    }
+    assert!(seen.len() >= 2);
+    // A revoked admin loses read access immediately. Revocation needs a second
+    // admin standing: the last admin role is protected by design.
+    assert!(
+        admin::change_role(&pool, true, &user_ids[1], "admin", "test-operator")
+            .await
+            .unwrap()
+    );
+    assert!(
+        admin::change_role(&pool, false, &user_ids[0], "admin", "test-operator")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        get(&app, "/api/v1/admin/overview", Some(&cookies[0]))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Re-grant the first admin and drop the second; the audit trail stays redacted.
+    assert!(
+        admin::change_role(&pool, true, &user_ids[0], "admin", "test-operator")
+            .await
+            .unwrap()
+    );
+    assert!(
+        admin::change_role(&pool, false, &user_ids[1], "admin", "test-operator")
+            .await
+            .unwrap()
+    );
+    assert!(
+        seen.contains(&seeded[0]) && seen.contains(&seeded[1]),
+        "seeded publishers must be pageable"
+    );
+    let approve = format!("/api/v1/admin/publishers/{}/approve", seeded[1]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&approve)
+                .header(header::COOKIE, &cookies[0])
+                .header(header::ORIGIN, ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let audit = body(get(&app, "/api/v1/admin/audit?limit=50", Some(&cookies[0])).await).await;
+    assert_eq!(audit["contractVersion"], 1);
+    assert!(!audit["events"].as_array().unwrap().is_empty());
+    // Find our approval event instead of assuming it is the global newest:
+    // the shared test database accumulates rows from other tests.
+    let newest = audit["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["action"] == "publisher.approved"
+                && e["publisherId"].as_str() == Some(seeded[1].as_str())
+        })
+        .expect("approval audit event must be listed")
+        .clone();
+    // Redaction: exact key set, no secret-bearing fields anywhere in the page.
+    let mut keys: Vec<&str> = newest
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "action",
+            "actorUserId",
+            "createdAt",
+            "id",
+            "newRole",
+            "oldRole",
+            "publisherId",
+            "subjectId",
+            "targetUserId"
+        ]
+    );
+    let raw = audit.to_string().to_lowercase();
+    for leaked in [
+        "email",
+        "token",
+        "secret",
+        "password",
+        "object_key",
+        "version_id",
+        "digest",
+        "cookie",
+        "@example.test",
+    ] {
+        assert!(!raw.contains(leaked), "admin audit page leaks {leaked}");
+    }
+    let newest_id = newest["id"].as_str().unwrap();
+    let older = body(
+        get(
+            &app,
+            &format!("/api/v1/admin/audit?limit=50&cursor={newest_id}"),
+            Some(&cookies[0]),
+        )
+        .await,
+    )
+    .await;
+    assert!(older["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["id"].as_str().unwrap() != newest_id));
+    // The second user never gained admin: still forbidden after real data exists.
+    assert_eq!(
+        get(&app, "/api/v1/admin/audit", Some(&cookies[1]))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn oauth_session_restart_replay_and_revocation() {
