@@ -8,6 +8,10 @@ For local development, start the pgrust database with `docker compose up -d` (th
 
 Back up the database before migrations. The upstream migration API does not supply an automatic rollback here; restore the backup to roll back. Do not use example credentials outside local development. Never log database URLs, auth secrets, cookies, or OAuth credentials.
 
+## Optional Docker-free database
+
+For local Linux/macOS development without Docker, run `python3 scripts/pgrust-local.py up` after configuring `.env`. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown. The [admin web roadmap](docs/ADMIN-WEB-PLAN.md) is a proposal only; no dashboard is implemented yet.
+
 ## Tests
 
 Run `cargo test --workspace --locked` for tests that do not need external services. For the OAuth and session integration test, create a dedicated disposable pgrust database and run `CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1`. This test applies Better Auth migrations and inserts fixture records; never point it at a production database. CI provisions a separate pgrust service for it. The fixture is not a substitute for a real Google or desktop end-to-end test.
