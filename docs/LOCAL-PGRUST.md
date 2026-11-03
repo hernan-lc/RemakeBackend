@@ -14,6 +14,7 @@ From the repository root:
 \`\`\`bash
 cp .env.example .env
 # Edit .env: use a local database URL and change AUTH_SECRET.
+set -a; . ./.env; set +a  # Export env vars for the backend and launcher
 python3 scripts/pgrust-local.py up
 cargo run -p cloud-api -- migrate
 cargo run -p cloud-api
