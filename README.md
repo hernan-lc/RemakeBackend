@@ -1,41 +1,103 @@
 # TikTools Cloud
 
-Early foundation for the optional TikTools cloud backend. See [specification](docs/SPECS.md), [plan](docs/PLAN.md), and [roadmap](docs/ROADMAP.md). This is not production-ready; publisher signing-key approval, registry publication, complete sync, desktop integration, and release gates remain outstanding. The per-surface status and limits are listed in the [feature matrix](docs/FEATURE-MATRIX.md).
+Early foundation for the optional TikTools cloud backend. **Not
+production-ready:** publisher signing-key approval, registry publication,
+complete sync, desktop integration, and release gates remain outstanding.
+Per-surface status and limits are in the [feature matrix](docs/FEATURE-MATRIX.md);
+verified evidence in [implementation status](docs/IMPLEMENTATION-STATUS.md).
+The plan, specification, and roadmap are [here](docs/PLAN.md),
+[here](docs/SPECS.md), and [here](docs/ROADMAP.md). All design docs are
+indexed in [docs/README.md](docs/README.md).
 
-The workspace declares Rust 1.95 or newer (required by the pinned TikTools package crates) and requires pgrust (Postgres 18.6-compatible, self-hosted; no external database). The minimums are verified with `cargo +1.95.0 check --workspace --locked` and `cargo +1.89.0 check -p cloud-client --all-features --locked`; CI repeats both checks. Better Auth is pinned to `c6940517155ff9a123221789b1efc89ef48cb19c`, with only `axum` and `sqlx` features; provider token retention is not enabled. Google credentials are optional and must be set together. Google JWKS is loaded at startup using the library's refresh policy. Production setup and independent security review remain necessary.
+## Requirements
 
-For local development, start the pgrust database with `docker compose up -d` (the Compose file provides only the database), create a private `.env` based on `.env.example`, export its variables in your shell, and run `cargo run -p cloud-api -- migrate` followed by `cargo run -p cloud-api`. Migrations are explicit and never run on server startup. The command applies Better Auth migrations followed by versioned SQLx Cloud migrations. `GET /health/live` checks the process, `/health/ready` checks database access, Cloud migration versions and checksums, and required auth and Cloud columns, and `/api/v1/me` requires a Better Auth session cookie. Authenticated users can request a pending namespace with `POST /api/v1/publishers` and list their own requests with `GET /api/v1/publishers`; a pending request grants no publishing or signing authority. Auth routes are mounted at `/api/auth/*`. The native handoff backend is experimental and is not yet connected to Desktop.
+- Rust 1.95 or newer (pinned TikTools package crates require it). Minimums
+  are verified with `cargo +1.95.0 check --workspace --locked` and
+  `cargo +1.89.0 check -p cloud-client --all-features --locked`; CI repeats
+  both checks.
+- pgrust (Postgres 18.6-compatible, self-hosted; no external database).
+- Better Auth is pinned to `c6940517155ff9a123221789b1efc89ef48cb19c`
+  with only `axum` and `sqlx` features; provider token retention is not
+  enabled. Google credentials are optional and must be set together. Google
+  JWKS loads at startup using the library's refresh policy (defaults: one
+  hour refresh, 24-hour max stale, one-minute minimum retry; invalid
+  settings stop startup). Production setup and independent security review
+  remain necessary.
 
-Back up the database before migrations. The upstream migration API does not supply an automatic rollback here; restore the backup to roll back. Do not use example credentials outside local development. Never log database URLs, auth secrets, cookies, or OAuth credentials.
+## Quickstart (local development)
 
-## Optional Docker-free database
+```sh
+docker compose up -d            # provides only the database
+cp .env.example .env            # then fill in private values
+export $(grep -v '^#' .env | xargs)
+cargo run -p cloud-api -- migrate   # Better Auth + versioned Cloud migrations
+cargo run -p cloud-api
+```
 
-For local Linux/macOS development without Docker, run `cargo run -p pgrust-local -- up` after initializing the pgrust submodule and configuring `.env`. The launcher builds the pinned source locally. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites and shutdown.
+Without Docker on Linux/macOS: `cargo run -p pgrust-local -- up` after
+initializing the pgrust submodule — see the [local pgrust guide](docs/LOCAL-PGRUST.md).
+
+Migrations are explicit and never run on server startup. Back up the
+database before migrating; there is no automatic rollback, so restore the
+backup to roll back. Never use example credentials outside local
+development, and never log database URLs, auth secrets, cookies, or OAuth
+credentials.
+
+Health and identity:
+
+- `GET /health/live` — process liveness.
+- `GET /health/ready` — database access, Cloud migration versions and
+  checksums, required auth/Cloud columns. Returns 503 when the database is
+  unavailable, a migration is missing/failed/changed/unknown, or required
+  columns/CRUD permissions are absent. It does not prove indexes,
+  constraints, data, providers, or operations healthy, and newer migrations
+  make an older binary unready — account for that when rolling versions.
+- `GET /api/v1/me` — requires a Better Auth session cookie. Auth routes
+  live under `/api/auth/*`.
+
+## What the API covers
+
+- **Publishers** — `POST /api/v1/publishers` requests a pending namespace
+  (grants no publishing or signing authority); `GET /api/v1/publishers`
+  lists your own. Owners manage members via
+  `PUT/DELETE /api/v1/publishers/{id}/members/{user_id}` (`admin`,
+  `publisher`, `viewer`); only the owner changes membership, ownership
+  transfers by recipient-accepted expiring offer, and a non-owner can leave.
+  Membership never bypasses pending status or grants signing keys.
+  Approval and Cloud role management: [publisher approval](docs/PUBLISHER-APPROVAL.md).
+- **Uploads and releases** — S3 quarantine uploads ([object storage](docs/OBJECT-STORAGE.md)),
+  integrity verification with ClamAV ([package verification](docs/PACKAGE-VERIFICATION.md),
+  [release verification](docs/RELEASE-VERIFICATION.md)). Uploaded objects
+  can be verified but not yet published.
+- **Moderation** — independent review decisions, release yanks, and
+  security advisories ([moderation](docs/MODERATION.md)); publication
+  remains unimplemented. Publisher keys enroll via challenge-based proof
+  of possession, but enrollment and approval are disabled until
+  session-bound step-up exists ([publisher keys](docs/PUBLISHER-KEYS.md)).
+- **Registry** — test fixture with disposable keys, never an official
+  registry ([registry operations](docs/REGISTRY-OPERATIONS.md)). The
+  standalone snapshot candidate builder stages private file versions;
+  promotion-readiness decisions are recorded but never deploy.
+- **Sync and desktop** — experimental plugin-selections sync only, not
+  connected to Desktop or ready for sensitive data ([sync](docs/SYNC.md));
+  backend-mediated native sign-in is experimental ([desktop authentication](docs/DESKTOP-AUTH.md)).
+- **Admin web app** — `web/admin` (login, review dashboard, moderation,
+  publisher portal) with read-only admin APIs ([admin web plan](docs/ADMIN-WEB-PLAN.md),
+  [deployment hardening](docs/ADMIN-WEB-DEPLOYMENT.md)).
 
 ## Tests
 
-Run `cargo test --workspace --locked` for tests that do not need external services. For the OAuth and session integration test, create a dedicated disposable pgrust database and run `CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1`. This test applies Better Auth migrations and inserts fixture records; never point it at a production database. CI provisions a separate pgrust service for it. The fixture is not a substitute for a real Google or desktop end-to-end test.
+```sh
+cargo test --workspace --locked   # no external services needed
+```
 
-Publisher owners can manage existing users through `PUT /api/v1/publishers/{id}/members/{user_id}` with a JSON `role` of `admin`, `publisher`, or `viewer`, and remove them with `DELETE` on the same path. Members can list the publisher's members with `GET /api/v1/publishers/{id}/members`. Only the owner can change membership, and ownership cannot yet be transferred or removed. These roles do not bypass pending status or grant signing keys.
+For the OAuth/session integration tests, create a dedicated disposable
+database and run:
 
-Registry test fixture and the proposed key lifecycle are documented in [registry operations](docs/REGISTRY-OPERATIONS.md). The fixture uses disposable keys and is not an official registry.
+```sh
+CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1
+```
 
-Google JWKS refresh defaults to one hour, with keys accepted for at most 24 hours and at least one minute between refresh attempts. `GOOGLE_JWKS_REFRESH_SECONDS`, `GOOGLE_JWKS_MAX_STALE_SECONDS`, and `GOOGLE_JWKS_MIN_RETRY_SECONDS` can adjust these bounds; invalid settings stop startup. Better Auth performs the refresh and rejects tokens once its key snapshot is too old. When configured values differ from its defaults, Cloud reloads Google's JWKS after applying the policy because the library replaces its cache; a failed reload stops startup. Live Google rotation and deployment behavior still require testing.
-
-The experimental sync backend and opt-in client library currently support only plugin selections; see [sync API and limitations](docs/SYNC.md). It is not connected to Desktop or ready for sensitive data.
-
-The experimental backend-mediated native sign-in flow and its limitations are described in [desktop authentication](docs/DESKTOP-AUTH.md).
-
-Readiness returns 503 when the database is unavailable, a migration is missing, failed, changed, or unknown to the running binary, or required columns/CRUD permissions are absent. It does not prove that indexes, constraints, data, external providers, or all operations are healthy. Since newer migration versions make an older binary unready, deployment must account for that when rolling versions; migration upgrade and rollback rehearsals remain required.
-
-Publisher approval and out-of-band Cloud role management are described in [publisher approval](docs/PUBLISHER-APPROVAL.md). Namespace approval does not delegate a signing key.
-
-Archive verification and its boundaries are described in [package verification](docs/PACKAGE-VERIFICATION.md) and [release verification](docs/RELEASE-VERIFICATION.md). Publication is not yet implemented.
-
-The experimental S3 quarantine upload API is documented in [object storage](docs/OBJECT-STORAGE.md). Uploaded objects can be submitted for integrity verification but are not yet published.
-
-Publisher key enrollment and independent approval are described in [publisher keys](docs/PUBLISHER-KEYS.md).
-
-Independent review decisions, release yanks, and security advisories are described in [moderation](docs/MODERATION.md); publication remains unimplemented.
-
-The standalone [snapshot candidate builder](docs/REGISTRY-OPERATIONS.md#private-candidate-builder) uses the pinned registry protocol. An initial-candidate worker stages private file versions, and an operator command records audited promotion-readiness decisions; deployment remains unimplemented.
+This applies Better Auth migrations and inserts fixture records — never
+point it at production. CI provisions a separate pgrust service. The
+fixture is not a substitute for a real Google or desktop end-to-end test.

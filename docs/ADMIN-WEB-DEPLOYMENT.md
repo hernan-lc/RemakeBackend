@@ -71,7 +71,7 @@ Covered against the real server by the Rust suite, not by mocks:
      `GET /api/v1/admin/overview` → 401.
   4. `cd web/admin && npm run build && npm test`.
 - Local database bootstrap without Docker stays as documented in
-  `docs/LOCAL-PGRUST.md`. pgrust remains the Compose default; use official
+  [LOCAL-PGRUST.md](LOCAL-PGRUST.md). pgrust remains the Compose default; use official
   PostgreSQL as the production fallback until pgrust has sufficient
   reliability evidence. The backend never distinguishes the two (same wire
   protocol); the web app must never connect to either directly.
