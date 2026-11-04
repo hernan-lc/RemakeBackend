@@ -66,16 +66,44 @@ main {
 
 h1 { margin: 0; font-size: 1.25rem; line-height: 1.3; letter-spacing: -0.01em; }
 
-.lang { display: flex; gap: 0.2rem; }
+.langselect { position: relative; }
 
-.lang button {
-  padding: 0.3rem 0.45rem;
-  font-size: 0.75rem;
-  font-weight: 700;
-  border-radius: 0.4rem;
-  border-color: transparent;
-  background: transparent;
+#lang-button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  border-radius: 0.5rem;
+  gap: 0.4rem;
 }
+
+#lang-button svg { width: 1rem; height: 1rem; }
+#lang-button svg.chev { width: 0.8rem; height: 0.8rem; color: var(--muted); }
+#lang-button[aria-expanded="true"] svg.chev { transform: rotate(180deg); }
+
+#lang-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
+  min-width: 9rem;
+  z-index: 10;
+}
+
+#lang-menu li {
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.45rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+#lang-menu li:hover { background: var(--tab-bg); }
+
+#lang-menu li.active { font-weight: 700; }
 
 #message { color: var(--muted); margin: 0 0 1rem; font-size: 0.95rem; }
 #account { margin: 0 0 1rem; font-weight: 600; overflow-wrap: anywhere; }
@@ -127,6 +155,32 @@ input {
   padding: 0.65rem 0.8rem 0.65rem 2.4rem;
   width: 100%;
 }
+
+#password-field input { padding-right: 2.6rem; }
+
+.peek {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  border-color: transparent;
+  padding: 0.4rem;
+  border-radius: 0.45rem;
+  color: var(--muted);
+}
+
+.peek:hover { border-color: transparent; color: var(--text); }
+
+.peek svg { width: 1.1rem; height: 1.1rem; display: block; }
+
+.who {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.who:empty { display: none; }
 
 input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 35%, transparent); }
 

@@ -1,7 +1,7 @@
 import "./style.css";
 import {
   LANGUAGES,
-  LANGUAGE_LABELS,
+  NATIVE_NAMES,
   STRINGS,
   detectLanguage,
   persistLanguage,
@@ -44,6 +44,16 @@ class ConsentPage {
   private nameInput = el<HTMLInputElement>("name");
   private password = el<HTMLInputElement>("password");
   private passwordSignIn = el<HTMLButtonElement>("password-sign-in");
+  private idField = el("id-field");
+  private passwordField = el("password-field");
+  private who = el("who");
+  private passwordNext = el<HTMLButtonElement>("password-next");
+  private passwordBack = el<HTMLButtonElement>("password-back");
+  private passwordToggle = el<HTMLButtonElement>("password-toggle");
+  private langButton = el<HTMLButtonElement>("lang-button");
+  private langMenu = el("lang-menu");
+  private langCurrent = el("lang-current");
+  private step: 1 | 2 = 1;
 
   private t(key: MessageKey): string {
     return STRINGS[this.lang][key];
@@ -56,24 +66,53 @@ class ConsentPage {
       const key = node.dataset.i18n as MessageKey | undefined;
       if (key && node.childElementCount === 0) node.textContent = this.t(key);
     });
-    this.langContainer.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
-      button.classList.toggle("active", button.dataset.lang === this.lang);
+    this.langCurrent.textContent = NATIVE_NAMES[this.lang];
+    this.passwordNext.textContent = this.t("next");
+    this.passwordBack.textContent = this.t("back");
+    this.syncToggleLabel();
+    this.langMenu.querySelectorAll<HTMLLIElement>("li").forEach((item) => {
+      const selected = item.dataset.lang === this.lang;
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+      item.classList.toggle("active", selected);
     });
   }
 
-  private langContainer = el("lang");
-
   private renderLanguages(): void {
-    this.langContainer.replaceChildren();
+    this.langMenu.replaceChildren();
     for (const code of LANGUAGES) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.lang = code;
-      button.textContent = LANGUAGE_LABELS[code];
-      button.setAttribute("aria-label", code);
-      button.addEventListener("click", () => this.setLang(code));
-      this.langContainer.append(button);
+      const item = document.createElement("li");
+      item.dataset.lang = code;
+      item.setAttribute("role", "option");
+      item.tabIndex = -1;
+      item.textContent = NATIVE_NAMES[code];
+      item.addEventListener("click", () => {
+        this.setLang(code);
+        this.closeLangMenu();
+      });
+      this.langMenu.append(item);
     }
+    this.langButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.langMenu.hidden ? this.openLangMenu() : this.closeLangMenu();
+    });
+    document.addEventListener("click", (event) => {
+      if (!this.langMenu.hidden && !(event.target instanceof Node && el("langselect").contains(event.target))) {
+        this.closeLangMenu();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !this.langMenu.hidden) this.closeLangMenu();
+    });
+  }
+
+  private openLangMenu(): void {
+    this.langMenu.hidden = false;
+    this.langButton.setAttribute("aria-expanded", "true");
+  }
+
+  private closeLangMenu(): void {
+    this.langMenu.hidden = true;
+    this.langButton.setAttribute("aria-expanded", "false");
   }
 
   private setLang(next: Language): void {
@@ -84,11 +123,55 @@ class ConsentPage {
 
   private setMode(next: "login" | "register"): void {
     this.mode = next;
-    this.nameField.hidden = next !== "register";
     this.tabLogin.classList.toggle("active", next === "login");
     this.tabRegister.classList.toggle("active", next === "register");
     this.passwordSignIn.textContent = this.t(next === "register" ? "createAccount" : "signIn");
+    if (next === "register") {
+      this.nameField.hidden = false;
+      this.idField.hidden = false;
+      this.passwordField.hidden = false;
+      this.passwordNext.hidden = true;
+      this.passwordBack.hidden = true;
+      this.passwordSignIn.hidden = false;
+      this.who.hidden = true;
+    } else {
+      this.nameField.hidden = true;
+      this.showStep(1);
+    }
   }
+
+  private showStep(step: 1 | 2): void {
+    this.step = step;
+    const first = step === 1;
+    this.idField.hidden = !first;
+    this.passwordField.hidden = first;
+    this.passwordNext.hidden = !first;
+    this.passwordSignIn.hidden = first;
+    this.passwordBack.hidden = first;
+    this.who.hidden = first;
+    if (!first) {
+      this.who.textContent = this.identifier.value.trim();
+      this.message.textContent = this.t("enterPassword");
+    }
+    this.syncToggleLabel();
+  }
+
+  private syncToggleLabel(): void {
+    const showing = this.password.type === "text";
+    this.passwordToggle.setAttribute("aria-pressed", showing ? "true" : "false");
+    this.passwordToggle.setAttribute(
+      "aria-label",
+      showing ? this.t("hidePassword") : this.t("showPassword"),
+    );
+    this.passwordToggle.querySelector(".eye")?.toggleAttribute("hidden", showing);
+    this.passwordToggle.querySelector(".eye-off")?.toggleAttribute("hidden", !showing);
+  }
+
+  private onTogglePassword = (): void => {
+    this.password.type = this.password.type === "password" ? "text" : "password";
+    this.syncToggleLabel();
+    this.password.focus();
+  };
 
   private fail(text: string): void {
     this.message.textContent = text;
@@ -105,6 +188,7 @@ class ConsentPage {
     this.signIn.hidden = true;
     this.passwordForm.hidden = true;
     this.modeTabs.hidden = true;
+    this.who.hidden = true;
     this.proceed.hidden = false;
   }
 
@@ -119,6 +203,7 @@ class ConsentPage {
     this.signIn.hidden = !google;
     this.modeTabs.hidden = false;
     this.passwordForm.hidden = false;
+    this.setMode(this.mode);
   }
 
   private loadHandoff(): boolean {
@@ -158,10 +243,34 @@ class ConsentPage {
     location.assign("/api/auth/sign-in/social/google");
   };
 
+  private onNext = (): void => {
+    if (this.mode !== "login" || this.step !== 1) return;
+    if (!this.identifier.value.trim()) {
+      this.identifier.focus();
+      return;
+    }
+    this.showStep(2);
+    this.password.focus();
+  };
+
+  private onBack = (): void => {
+    if (this.mode !== "login" || this.step !== 2) return;
+    this.message.textContent = this.t("signInToContinue");
+    this.showStep(1);
+    this.identifier.focus();
+  };
+
   private onSubmit = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
-    if (this.mode === "register") await this.register();
-    else await this.login();
+    if (this.mode === "register") {
+      await this.register();
+      return;
+    }
+    if (this.step === 1) {
+      this.onNext();
+      return;
+    }
+    await this.login();
   };
 
   private async login(): Promise<void> {
@@ -235,6 +344,9 @@ class ConsentPage {
     this.cancel.addEventListener("click", this.onCancel);
     this.signIn.addEventListener("click", this.onGoogle);
     this.passwordForm.addEventListener("submit", this.onSubmit);
+    this.passwordNext.addEventListener("click", this.onNext);
+    this.passwordBack.addEventListener("click", this.onBack);
+    this.passwordToggle.addEventListener("click", this.onTogglePassword);
     this.proceed.addEventListener("click", this.onContinue);
     fetchMe()
       .then(async (user) => {

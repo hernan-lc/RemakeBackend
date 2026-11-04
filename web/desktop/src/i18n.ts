@@ -1,12 +1,12 @@
 export const LANGUAGES = ["en", "es", "fr", "de", "pt"] as const;
 export type Language = (typeof LANGUAGES)[number];
 
-export const LANGUAGE_LABELS: Record<Language, string> = {
-  en: "EN",
-  es: "ES",
-  fr: "FR",
-  de: "DE",
-  pt: "PT",
+export const NATIVE_NAMES: Record<Language, string> = {
+  en: "English",
+  es: "Español",
+  fr: "Français",
+  de: "Deutsch",
+  pt: "Português",
 };
 
 const en = {
@@ -32,6 +32,11 @@ const en = {
   continueWith: "Continue to TikTools with this account?",
   signedIn: "Signed in",
   handoffFailed: "Could not complete sign-in. Start again in TikTools.",
+  next: "Continue",
+  back: "Back",
+  showPassword: "Show password",
+  hidePassword: "Hide password",
+  enterPassword: "Enter your password to continue.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -59,6 +64,11 @@ const es: Record<MessageKey, string> = {
   continueWith: "¿Continuar a TikTools con esta cuenta?",
   signedIn: "Sesión iniciada",
   handoffFailed: "No se pudo completar. Empieza de nuevo en TikTools.",
+  next: "Continuar",
+  back: "Atrás",
+  showPassword: "Mostrar contraseña",
+  hidePassword: "Ocultar contraseña",
+  enterPassword: "Escribe tu contraseña para continuar.",
 };
 
 const fr: Record<MessageKey, string> = {
@@ -84,6 +94,11 @@ const fr: Record<MessageKey, string> = {
   continueWith: "Continuer vers TikTools avec ce compte ?",
   signedIn: "Connecté",
   handoffFailed: "Connexion incomplète. Recommencez dans TikTools.",
+  next: "Continuer",
+  back: "Retour",
+  showPassword: "Afficher le mot de passe",
+  hidePassword: "Masquer le mot de passe",
+  enterPassword: "Saisissez votre mot de passe pour continuer.",
 };
 
 const de: Record<MessageKey, string> = {
@@ -109,6 +124,11 @@ const de: Record<MessageKey, string> = {
   continueWith: "Mit diesem Konto zu TikTools fortfahren?",
   signedIn: "Angemeldet",
   handoffFailed: "Anmeldung unvollständig. Starten Sie in TikTools neu.",
+  next: "Weiter",
+  back: "Zurück",
+  showPassword: "Passwort anzeigen",
+  hidePassword: "Passwort ausblenden",
+  enterPassword: "Geben Sie Ihr Passwort ein, um fortzufahren.",
 };
 
 const pt: Record<MessageKey, string> = {
@@ -134,6 +154,11 @@ const pt: Record<MessageKey, string> = {
   continueWith: "Continuar para o TikTools com esta conta?",
   signedIn: "Conectado",
   handoffFailed: "Não foi possível concluir. Recomece no TikTools.",
+  next: "Continuar",
+  back: "Voltar",
+  showPassword: "Mostrar senha",
+  hidePassword: "Ocultar senha",
+  enterPassword: "Digite sua senha para continuar.",
 };
 
 export const STRINGS: Record<Language, Record<MessageKey, string>> = { en, es, fr, de, pt };
