@@ -85,7 +85,9 @@ async function showSignedIn(email: string | undefined): Promise<void> {
 }
 
 async function showSignedOut(): Promise<void> {
-  message.value = t("signInToContinue");
+  // No placeholder line: the form explains itself, and the primary
+  // actions carry the context as hover tooltips instead.
+  message.value = "";
   try {
     googleAvailable.value = (await fetchProviders()).google === true;
   } catch {
@@ -151,7 +153,7 @@ async function submit(): Promise<void> {
 }
 
 function goBack(): void {
-  message.value = t("signInToContinue");
+  message.value = "";
   showStep(1);
 }
 
@@ -221,7 +223,6 @@ onMounted(async () => {
           <path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98 6 6 0 0 0-11.7 1.62A4 4 0 0 0 7 19h10.5z"/>
           <path d="M9.5 15.5l2 2 3.5-4"/>
         </svg>
-        <h1>TikTools Cloud</h1>
       </div>
       <LangSelect :lang="lang" @select="setLang" />
     </div>
@@ -277,10 +278,17 @@ onMounted(async () => {
               type="submit"
               id="password-next"
               :disabled="busy"
+              :title="t('signInToContinue')"
             >
               {{ t("next") }}
             </button>
-            <button v-else type="submit" id="password-sign-in" :disabled="busy">
+            <button
+              v-else
+              type="submit"
+              id="password-sign-in"
+              :disabled="busy"
+              :title="mode === 'register' ? t('needRegisterFields') : t('signInToContinue')"
+            >
               {{ mode === "register" ? t("createAccount") : t("signIn") }}
             </button>
             <button
@@ -296,7 +304,13 @@ onMounted(async () => {
         </form>
 
         <div class="actions">
-          <button v-if="googleAvailable" type="button" id="sign-in" @click="signInWithGoogle">
+          <button
+            v-if="googleAvailable"
+            type="button"
+            id="sign-in"
+            :title="t('signInToContinue')"
+            @click="signInWithGoogle"
+          >
             <svg class="g" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="#4285F4" d="M23.5 12.3c0-.9-.1-1.5-.3-2.3H12v4.3h6.5c-.1 1.1-.8 2.7-2.4 3.8l-.1.1 3.5 2.7.2.1c2.2-2 3.8-5 3.8-8.7z"/>
               <path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.8-2.9c-1 .7-2.4 1.2-4.1 1.2-3.1 0-5.8-2.1-6.8-5l-.1.1-3.6 2.8v.1C3.5 21.4 7.5 24 12 24z"/>

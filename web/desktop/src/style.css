@@ -64,8 +64,6 @@ main {
 
 .logo { width: 1.75rem; height: 1.75rem; color: var(--primary); flex: none; }
 
-h1 { margin: 0; font-size: 1.25rem; line-height: 1.3; letter-spacing: -0.01em; }
-
 .langselect { position: relative; }
 
 #lang-button {
@@ -105,7 +103,8 @@ h1 { margin: 0; font-size: 1.25rem; line-height: 1.3; letter-spacing: -0.01em; }
 
 #lang-menu li.active { font-weight: 700; }
 
-#message { color: var(--muted); margin: 0 0 1rem; font-size: 0.95rem; min-height: 2.9em; }
+#message { color: var(--muted); margin: 0 0 1rem; font-size: 0.95rem; }
+#message:empty { display: none; }
 #account { margin: 0 0 1rem; font-weight: 600; overflow-wrap: anywhere; }
 #account:empty { display: none; }
 
