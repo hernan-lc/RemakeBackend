@@ -18,18 +18,18 @@ fn security(mut response: Response) -> Response {
     response
 }
 pub async fn page() -> Response {
-    security(Html(include_str!("../web/desktop-login.html")).into_response())
+    security(Html(include_str!("../web/dist/index.html")).into_response())
 }
 pub async fn script() -> Response {
     asset(
         "text/javascript; charset=utf-8",
-        include_str!("../web/desktop-login.js"),
+        include_str!("../web/dist/login.js"),
     )
 }
 pub async fn style() -> Response {
     asset(
         "text/css; charset=utf-8",
-        include_str!("../web/desktop-login.css"),
+        include_str!("../web/dist/login.css"),
     )
 }
 fn asset(content_type: &'static str, body: &'static str) -> Response {

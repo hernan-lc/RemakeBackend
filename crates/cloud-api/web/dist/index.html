@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTools Cloud sign in</title>
+  <script type="module" crossorigin src="/desktop/login.js"></script>
+  <link rel="stylesheet" crossorigin href="/desktop/login.css">
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>TikTools Cloud</h1>
+      <div class="lang" role="group" aria-label="Language / Idioma">
+        <button id="lang-en" type="button">EN</button>
+        <button id="lang-es" type="button">ES</button>
+      </div>
+    </div>
+    <p id="message" role="status">Checking sign-in…</p>
+    <p id="account"></p>
+    <div class="tabs" id="mode-tabs" hidden>
+      <button id="tab-login" type="button">Sign in</button>
+      <button id="tab-register" type="button">Create account</button>
+    </div>
+    <form id="password-form" hidden>
+      <div class="field">
+        <label for="identifier" data-i18n="identifier">Username or email</label>
+        <input id="identifier" name="identifier" autocomplete="username">
+      </div>
+      <div class="field" id="name-field" hidden>
+        <label for="name" data-i18n="name">Display name</label>
+        <input id="name" name="name" autocomplete="nickname">
+      </div>
+      <div class="field">
+        <label for="password" data-i18n="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password">
+      </div>
+      <div class="actions">
+        <button id="password-sign-in" type="submit" data-i18n="signIn">Sign in</button>
+      </div>
+    </form>
+    <div class="actions">
+      <button id="sign-in" type="button" hidden data-i18n="signInGoogle">Sign in with Google</button>
+      <button id="continue" type="button" hidden data-i18n="continue">Continue to TikTools</button>
+      <button id="cancel" type="button" hidden data-i18n="cancel">Cancel</button>
+    </div>
+  </main>
+</body>
+</html>
