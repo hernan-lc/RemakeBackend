@@ -492,8 +492,16 @@ async fn social_get_rate_limit_applies_to_real_auth_router() {
         .unwrap()
         .with_social_providers(vec![provider(&base, "fixture", "verified")])
         .unwrap();
-    let app = app_with_proxies(ctx.clone(), pool.clone(), auth, None, Vec::new(), None);
-    let second_app = app_with_proxies(ctx, pool, second_auth, None, Vec::new(), None);
+    let app = app_with_proxies(
+        ctx.clone(),
+        pool.clone(),
+        auth,
+        None,
+        Vec::new(),
+        None,
+        false,
+    );
+    let second_app = app_with_proxies(ctx, pool, second_auth, None, Vec::new(), None, false);
     let attempt = |peer: &str| {
         Request::builder()
             .uri("/api/auth/sign-in/social/fixture")
@@ -2344,6 +2352,7 @@ async fn desktop_redeem_rate_limit_keys_trusted_client_ip() {
         None,
         vec!["127.0.0.1/32".parse::<ipnet::IpNet>().unwrap()],
         None,
+        false,
     );
     async fn attempt(app: &Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {
         let mut req = Request::builder()

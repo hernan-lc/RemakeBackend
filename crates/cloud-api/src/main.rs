@@ -12,9 +12,11 @@ mod readiness;
 mod recovery;
 mod releases;
 mod scanner;
+mod security_headers;
 mod snapshot_export;
 mod snapshot_promotion;
 mod snapshot_publish;
+mod snapshot_trust;
 mod snapshot_verify;
 mod snapshot_worker;
 mod step_up;
@@ -198,6 +200,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .ok_or("CLAMAV_ADDR must be configured for verification")?,
             );
             let seed = std::path::PathBuf::from(std::env::var("SNAPSHOT_SEED_DIR")?);
+            snapshot_trust::require_trust(&root, index.key_id.as_str())
+                .map_err(|refused| format!("snapshot trust refused: {refused}"))?;
             snapshot_verify::verify(&pool, &store, &scanner, &seed, id, &root, &index).await?;
             tracing::info!(candidate_id=%id, "private candidate checks passed; not approved for deployment");
             return Ok(());
@@ -246,6 +250,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .ok_or("CLAMAV_ADDR must be configured for verification")?,
             );
             let seed = std::path::PathBuf::from(std::env::var("SNAPSHOT_SEED_DIR")?);
+            snapshot_trust::require_trust(&root, index.key_id.as_str())
+                .map_err(|refused| format!("snapshot trust refused: {refused}"))?;
             let outcome =
                 snapshot_verify::verify(&pool, &store, &scanner, &seed, id, &root, &index).await;
             let (decision, reason) = match &outcome {
@@ -506,6 +512,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .object_storage
         .map(cloud_storage::QuarantineStore::new)
         .transpose()?;
+    let hsts = config.origin.starts_with("https://");
     let app = app_with_proxies(
         context,
         pool,
@@ -513,6 +520,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         object_storage,
         config.trusted_proxy_cidrs,
         step_up_oauth,
+        hsts,
     );
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(address = %config.bind, "cloud API listening");
@@ -539,7 +547,25 @@ fn app_with_storage(
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
 ) -> Router {
-    app_inner(context, pool, auth, object_storage, Vec::new(), None, false)
+    app_inner(
+        context,
+        pool,
+        auth,
+        object_storage,
+        RouterFlags {
+            trusted_proxy_cidrs: Vec::new(),
+            step_up_oauth: None,
+            social_limit_enabled: false,
+            hsts: false,
+        },
+    )
+}
+
+struct RouterFlags {
+    trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+    step_up_oauth: Option<step_up::StepUpOAuth>,
+    social_limit_enabled: bool,
+    hsts: bool,
 }
 
 fn app_with_proxies(
@@ -549,15 +575,19 @@ fn app_with_proxies(
     object_storage: Option<cloud_storage::QuarantineStore>,
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
     step_up_oauth: Option<step_up::StepUpOAuth>,
+    hsts: bool,
 ) -> Router {
     app_inner(
         context,
         pool,
         auth,
         object_storage,
-        trusted_proxy_cidrs,
-        step_up_oauth,
-        true,
+        RouterFlags {
+            trusted_proxy_cidrs,
+            step_up_oauth,
+            social_limit_enabled: true,
+            hsts,
+        },
     )
 }
 
@@ -569,9 +599,7 @@ fn app_inner(
     pool: PgPool,
     auth: AuthRouter,
     object_storage: Option<cloud_storage::QuarantineStore>,
-    trusted_proxy_cidrs: Vec<ipnet::IpNet>,
-    step_up_oauth: Option<step_up::StepUpOAuth>,
-    social_limit_enabled: bool,
+    flags: RouterFlags,
 ) -> Router {
     let social_limiter = context
         .secondary_storage
@@ -851,10 +879,10 @@ fn app_inner(
             auth: context,
             pool,
             object_storage,
-            step_up_oauth,
+            step_up_oauth: flags.step_up_oauth,
         })
         .merge(auth_routes(auth));
-    let router = if social_limit_enabled {
+    let router = if flags.social_limit_enabled {
         router.layer(axum::middleware::from_fn_with_state(
             social_limiter,
             limit_oauth_get,
@@ -862,10 +890,15 @@ fn app_inner(
     } else {
         router
     };
-    router.layer(axum::middleware::from_fn_with_state(
-        trusted_proxy_cidrs,
-        proxy_boundary,
-    ))
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            flags.trusted_proxy_cidrs,
+            proxy_boundary,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            flags.hsts,
+            security_headers::apply,
+        ))
 }
 
 async fn limit_oauth_get(
