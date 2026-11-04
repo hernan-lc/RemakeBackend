@@ -160,11 +160,15 @@ input {
 
 .peek {
   position: absolute;
-  right: 0.35rem;
+  right: 0.3rem;
   top: 50%;
   transform: translateY(-50%);
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
   border-color: transparent;
-  padding: 0.4rem;
+  padding: 0;
   border-radius: 0.45rem;
   color: var(--muted);
 }
@@ -221,5 +225,38 @@ button.ghost { border-color: transparent; color: var(--muted); font-weight: 500;
 button.ghost:hover { border-color: transparent; color: var(--text); text-decoration: underline; }
 
 button:disabled { opacity: 0.55; cursor: default; }
+
+button,
+input,
+.tabs button,
+#lang-menu li {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  input,
+  .tabs button,
+  #lang-menu li,
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: none;
+  }
+  .fade-enter-from,
+  .fade-leave-to {
+    transform: none;
+  }
+}
 
 [hidden] { display: none !important; }

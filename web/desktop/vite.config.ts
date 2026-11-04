@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
 
 // Builds the desktop consent page into the directory the API binary embeds.
 // Output names are fixed (no hashes) so `include_str!` paths stay stable.
 export default defineConfig({
+  plugins: [vue()],
   // Served from /desktop/login* by the API, never from the filesystem root.
   base: "/desktop/",
   build: {
