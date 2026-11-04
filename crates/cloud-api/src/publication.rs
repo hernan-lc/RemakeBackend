@@ -1,11 +1,11 @@
 //! A durable publication request, not a signed snapshot or a deployed release.
+use crate::dual_auth::DualUser;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
-use better_auth::axum_integration::AuthUser;
 use serde::Serialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -21,7 +21,7 @@ pub struct PublicationRequest {
     processing_available: bool,
 }
 pub async fn request(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<PublicationRequest>), StatusCode> {

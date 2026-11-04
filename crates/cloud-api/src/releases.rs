@@ -6,6 +6,8 @@ use axum::{
     Json,
 };
 use better_auth::axum_integration::AuthUser;
+
+use crate::dual_auth::DualUser;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Row, Transaction};
 use tiktools_plugin_api::manifest::{is_plugin_target, is_valid_plugin_id, parse_version};
@@ -129,7 +131,7 @@ fn valid(input: &Submission, namespace: &str) -> bool {
         && (input.target == "any" || is_plugin_target(&input.target))
 }
 pub async fn submit(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Json(input): Json<Submission>,
 ) -> Result<(StatusCode, Json<Release>), StatusCode> {
@@ -227,7 +229,7 @@ pub async fn submit(
     ))
 }
 pub async fn get(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Release>, StatusCode> {

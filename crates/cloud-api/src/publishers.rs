@@ -9,6 +9,8 @@ use better_auth::{
     axum_integration::AuthUser,
     rate_limit::{RateLimitPolicy, RateLimiter},
 };
+
+use crate::dual_auth::DualUser;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Row, Transaction};
 use std::time::Duration;
@@ -51,7 +53,7 @@ fn internal(error: sqlx::Error) -> StatusCode {
 }
 
 pub async fn create(
-    AuthUser(principal): AuthUser,
+    DualUser(principal): DualUser,
     State(state): State<AppState>,
     Json(input): Json<CreatePublisher>,
 ) -> Result<(StatusCode, Json<Publisher>), StatusCode> {
@@ -123,7 +125,7 @@ pub async fn create(
 }
 
 pub async fn list(
-    AuthUser(principal): AuthUser,
+    DualUser(principal): DualUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Publisher>>, StatusCode> {
     let rows = sqlx::query("SELECT p.id, p.namespace, p.status, m.role FROM cloud_publishers p JOIN cloud_publisher_memberships m ON m.publisher_id = p.id WHERE m.user_id = $1 ORDER BY p.namespace")

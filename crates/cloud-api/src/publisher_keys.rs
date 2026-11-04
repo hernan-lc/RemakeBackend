@@ -14,6 +14,8 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use better_auth::axum_integration::AuthUser;
+
+use crate::dual_auth::DualUser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{Postgres, Row, Transaction};
@@ -119,7 +121,7 @@ pub struct Challenge {
     expires_in: u32,
 }
 pub async fn challenge(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(grant): Json<GrantBody>,
@@ -195,7 +197,7 @@ fn record(row: sqlx::postgres::PgRow) -> KeyRecord {
 }
 
 pub async fn request_key(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(input): Json<RequestKey>,
@@ -297,7 +299,7 @@ async fn key_list(tx: &mut Tx<'_>, id: Uuid) -> KeyResult<Json<Vec<KeyRecord>>> 
     Ok(Json(rows.into_iter().map(record).collect()))
 }
 pub async fn list(
-    AuthUser(user): AuthUser,
+    DualUser(user): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> KeyResult<Json<Vec<KeyRecord>>> {

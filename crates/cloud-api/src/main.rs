@@ -2,6 +2,7 @@ mod account;
 mod admin;
 mod config;
 mod desktop;
+mod dual_auth;
 mod moderation;
 mod publication;
 mod publication_worker;

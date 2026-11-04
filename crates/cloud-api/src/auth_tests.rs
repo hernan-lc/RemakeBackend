@@ -1395,6 +1395,110 @@ async fn publisher_requests_are_isolated_and_audited() {
     assert_eq!(count, 1);
 }
 
+/// Native Bearer tokens reach the publisher surface exactly like browser
+/// cookies do; unknown tokens and missing credentials still fail closed.
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn publisher_surface_accepts_native_bearer_tokens() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let result = service
+        .sign_up(
+            SignUpInput {
+                email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                name: "Bearer".into(),
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let bearer = result.session_token.clone();
+    let cookie = format!("{}={}", result.cookie.name, result.cookie.value);
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let namespace = format!("pub{}", uuid::Uuid::new_v4().simple());
+
+    async fn bearer_call(
+        app: &Router,
+        method: &str,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, ORIGIN);
+        if let Some(token) = bearer {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        app.clone()
+            .oneshot(
+                builder
+                    .body(Body::from(
+                        body.unwrap_or(serde_json::Value::Null).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    // No credential at all fails closed.
+    assert_eq!(
+        bearer_call(&app, "GET", "/api/v1/publishers", None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // A forged token fails closed without touching the database.
+    assert_eq!(
+        bearer_call(
+            &app,
+            "GET",
+            "/api/v1/publishers",
+            Some("forged-token"),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // The native token lists (empty) and creates exactly like the cookie.
+    let list = bearer_call(&app, "GET", "/api/v1/publishers", Some(&bearer), None).await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(list.into_body(), 8192).await.unwrap())
+            .unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 0);
+    let created = bearer_call(
+        &app,
+        "POST",
+        "/api/v1/publishers",
+        Some(&bearer),
+        Some(json!({ "namespace": namespace })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    // The cookie flow sees the namespace the Bearer flow created.
+    let listed = request(&app, "GET", "/api/v1/publishers", Some(&cookie), None).await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(listed.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["status"], "pending");
+}
+
 /// A local OIDC provider validates the real callback wiring, not Google's live service.
 /// HS256 is supported only by Better Auth's test-utils feature and is never enabled in production.
 #[tokio::test]

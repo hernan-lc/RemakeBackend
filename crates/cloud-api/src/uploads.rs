@@ -5,11 +5,10 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use better_auth::{
-    axum_integration::AuthUser,
-    rate_limit::{RateLimitPolicy, RateLimiter},
-};
+use better_auth::rate_limit::{RateLimitPolicy, RateLimiter};
 use cloud_storage::{QuarantineStore, MAX_ARTIFACT_SIZE};
+
+use crate::dual_auth::DualUser;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Row, Transaction};
 use std::{collections::BTreeMap, time::Duration};
@@ -113,7 +112,7 @@ fn idem(headers: &HeaderMap) -> Result<&str, StatusCode> {
 }
 
 pub async fn create(
-    AuthUser(principal): AuthUser,
+    DualUser(principal): DualUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CreateInput>,
@@ -182,7 +181,7 @@ pub async fn create(
 }
 
 pub async fn complete(
-    AuthUser(principal): AuthUser,
+    DualUser(principal): DualUser,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<CompleteOutput>, StatusCode> {

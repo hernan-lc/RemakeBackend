@@ -385,7 +385,7 @@ async fn grant_failure_reason(
 /// the `password_unavailable` signal the caller's own client needs to offer
 /// the Google path. The password value is never logged.
 pub async fn password(
-    better_auth::axum_integration::AuthUser(principal): better_auth::axum_integration::AuthUser,
+    crate::dual_auth::DualUser(principal): crate::dual_auth::DualUser,
     State(state): State<AppState>,
     Json(input): Json<PasswordRequest>,
 ) -> Result<(StatusCode, Json<GrantResponse>), (StatusCode, Json<serde_json::Value>)> {
