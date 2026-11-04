@@ -12,6 +12,11 @@
     <h1>TikTools Cloud</h1>
     <p id="message" role="status">Checking sign-in…</p>
     <p id="account"></p>
+    <form id="password-form" hidden>
+      <label>Username or email <input id="identifier" name="identifier" autocomplete="username"></label>
+      <label>Password <input id="password" name="password" type="password" autocomplete="current-password"></label>
+      <button id="password-sign-in" type="submit">Sign in</button>
+    </form>
     <button id="sign-in" type="button" hidden>Sign in with Google</button>
     <button id="continue" type="button" hidden>Continue to TikTools</button>
     <button id="cancel" type="button" hidden>Cancel</button>

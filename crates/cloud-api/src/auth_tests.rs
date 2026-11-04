@@ -8219,3 +8219,187 @@ async fn account_deletion_removes_identity_and_sync_state() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+fn memory_context() -> AuthContext {
+    use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
+    AuthContext::new(
+        AuthOptions {
+            secret: "test-only-secret-32-bytes-long!!".into(),
+            base_url: Some(BaseUrl::Static(ORIGIN.into())),
+            trusted_origins: vec![ORIGIN.into()],
+            ..Default::default()
+        },
+        Arc::new(MemoryDb::default()),
+        Some(Arc::new(MemorySecondaryStorage::default())),
+        vec![],
+    )
+    .unwrap()
+}
+
+fn google_step_up() -> step_up::StepUpOAuth {
+    let url = |path: &str| Url::parse(&format!("http://127.0.0.1:9{path}")).unwrap();
+    let exchange = better_auth::http_oauth::HttpOAuthProvider::insecure_for_testing(
+        "google",
+        "google-client",
+        "google-secret",
+        url("/authorize"),
+        url("/token"),
+        url("/userinfo"),
+        ["openid", "email"],
+    );
+    let verifier = better_auth::jwks::JwksIdTokenVerifier::insecure_for_testing(
+        "https://google.test",
+        "google-client",
+        url("/jwks.json"),
+        better_auth::jwks::JwksRefreshPolicy::default(),
+    )
+    .unwrap();
+    step_up::StepUpOAuth::for_testing(
+        "google",
+        "google-client",
+        url("/authorize"),
+        format!("{ORIGIN}/api/v1/step-up/oauth/callback"),
+        exchange,
+        verifier,
+    )
+}
+
+fn providers_app(oauth: Option<step_up::StepUpOAuth>) -> Router {
+    let ctx = memory_context();
+    let auth = super::configured_auth_router(ctx.clone()).unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://127.0.0.1:1/unused")
+        .unwrap();
+    super::app_inner(
+        ctx,
+        pool,
+        auth,
+        None,
+        super::RouterFlags {
+            trusted_proxy_cidrs: Vec::new(),
+            step_up_oauth: oauth,
+            social_limit_enabled: false,
+            hsts: false,
+        },
+    )
+}
+
+async fn providers_body(app: &Router) -> (StatusCode, serde_json::Value) {
+    let response = request(app, "GET", "/api/v1/auth/providers", None, None).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+async fn auth_providers_hides_google_when_unconfigured() {
+    let app = providers_app(None);
+    let (status, body) = providers_body(&app).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "google": false }));
+}
+
+#[tokio::test]
+async fn auth_providers_advertises_google_when_configured() {
+    let app = providers_app(Some(google_step_up()));
+    let (status, body) = providers_body(&app).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "google": true }));
+}
+
+async fn post_json(
+    app: &Router,
+    path: &str,
+    cookie: Option<&str>,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, ORIGIN);
+    if let Some(cookie) = cookie {
+        req = req.header(header::COOKIE, cookie);
+    }
+    app.clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+fn session_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .find_map(|value| {
+            value.to_str().ok().and_then(|pair| {
+                let cookie = pair.split(';').next().unwrap_or_default().trim();
+                let (name, _) = cookie.split_once('=')?;
+                name.ends_with("session_token").then(|| cookie.to_owned())
+            })
+        })
+        .expect("sign-in must set a session cookie")
+}
+
+/// The linked-providers surface: password sign-in shows its credential link,
+/// the only method cannot be unlinked, unknown providers 404, and anonymous
+/// callers get 401 without enumerating anything.
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn linked_providers_list_and_unlink_guardrails() {
+    let database_url =
+        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let (ctx, pool) = context(&database_url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let (base, fixture_handle) = fixture().await;
+    let app = router(ctx, pool.clone(), &base);
+    let email = format!("link-{}@example.test", uuid::Uuid::new_v4());
+    let signup = post_json(
+        &app,
+        "/api/auth/sign-up/email",
+        None,
+        json!({"email": email, "name": "Link Test", "password": "test password with enough characters"}),
+    )
+    .await;
+    assert_eq!(signup.status(), StatusCode::OK);
+    let cookie = session_cookie(&signup);
+
+    let listed = request(&app, "GET", "/api/v1/me/providers", Some(&cookie), None).await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(listed.into_body(), 4096)
+        .await
+        .unwrap();
+    let providers: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0]["providerId"], "credential");
+
+    let unlink_last = post_json(
+        &app,
+        "/api/v1/me/providers/unlink",
+        Some(&cookie),
+        json!({"providerId": "credential"}),
+    )
+    .await;
+    assert_eq!(unlink_last.status(), StatusCode::CONFLICT);
+
+    let unlink_missing = post_json(
+        &app,
+        "/api/v1/me/providers/unlink",
+        Some(&cookie),
+        json!({"providerId": "google"}),
+    )
+    .await;
+    assert_eq!(unlink_missing.status(), StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        request(&app, "GET", "/api/v1/me/providers", None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    fixture_handle.abort();
+}

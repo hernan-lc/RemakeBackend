@@ -10,6 +10,11 @@ export interface Me {
   roles: string[]
 }
 
+export interface LinkedProvider {
+  providerId: string
+  accountId: string
+}
+
 export interface Overview {
   contractVersion: number
   publishers: { pending: number; approved: number; suspended: number }

@@ -39,6 +39,29 @@ describe('typed API client', () => {
     expect(fetch.mock.calls[0]![0]).toBe('/api/v1/admin/publishers?status=pending&cursor=abc&limit=50')
   })
 
+  it('routes username and email sign-in to their endpoints', async () => {
+    let fetch = mockFetchOnce({})
+    await api.signInUsername('admin', 'pw')
+    expect(fetch.mock.calls[0]![0]).toBe('/api/auth/sign-in/username')
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST' })
+    expect(String(fetch.mock.calls[0]![1]?.body)).toContain('"username":"admin"')
+    fetch = mockFetchOnce({})
+    await api.signInEmail('a@b.c', 'pw')
+    expect(fetch.mock.calls[0]![0]).toBe('/api/auth/sign-in/email')
+  })
+
+  it('reads providers and manages links without tokens', async () => {
+    let fetch = mockFetchOnce({ google: true })
+    await expect(api.authProviders()).resolves.toEqual({ google: true })
+    expect(fetch.mock.calls[0]![0]).toBe('/api/v1/auth/providers')
+    fetch = mockFetchOnce([{ providerId: 'credential', accountId: 'a' }])
+    await expect(api.linkedProviders()).resolves.toEqual([{ providerId: 'credential', accountId: 'a' }])
+    fetch = mockFetchOnce(undefined, 204)
+    await api.unlinkProvider('google')
+    expect(fetch.mock.calls[0]![0]).toBe('/api/v1/me/providers/unlink')
+    expect(String(fetch.mock.calls[0]![1]?.body)).toContain('"providerId":"google"')
+  })
+
   it('never persists anything to web storage', async () => {
     // jsdom provides storage; the assertion is that the client never uses
     // it. Any token-in-storage regression trips these spies.
