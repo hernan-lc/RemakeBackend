@@ -1,5 +1,13 @@
-export const LANGUAGES = ["en", "es"] as const;
+export const LANGUAGES = ["en", "es", "fr", "de", "pt"] as const;
 export type Language = (typeof LANGUAGES)[number];
+
+export const LANGUAGE_LABELS: Record<Language, string> = {
+  en: "EN",
+  es: "ES",
+  fr: "FR",
+  de: "DE",
+  pt: "PT",
+};
 
 const en = {
   title: "TikTools Cloud sign in",
@@ -53,19 +61,96 @@ const es: Record<MessageKey, string> = {
   handoffFailed: "No se pudo completar. Empieza de nuevo en TikTools.",
 };
 
-export const STRINGS: Record<Language, Record<MessageKey, string>> = { en, es };
+const fr: Record<MessageKey, string> = {
+  title: "TikTools Cloud : connexion",
+  checking: "Vérification de la session…",
+  signInToContinue: "Connectez-vous pour continuer vers TikTools.",
+  identifier: "Nom d'utilisateur ou e-mail",
+  name: "Nom affiché",
+  password: "Mot de passe",
+  signIn: "Se connecter",
+  createAccount: "Créer un compte",
+  signInGoogle: "Se connecter avec Google",
+  continue: "Continuer vers TikTools",
+  cancel: "Annuler",
+  cancelled: "Connexion annulée. Vous pouvez fermer cette fenêtre.",
+  badHandoff: "Ouvrez TikTools et recommencez la connexion.",
+  checkFailed: "Impossible de vérifier la session. Réessayez.",
+  signingIn: "Connexion…",
+  signInFailed: "Échec de la connexion. Vérifiez l'identifiant et le mot de passe.",
+  registering: "Création du compte…",
+  registerFailed: "Impossible de créer le compte. L'e-mail est peut-être déjà enregistré.",
+  needRegisterFields: "Saisissez un nom affiché, une adresse e-mail et un mot de passe.",
+  continueWith: "Continuer vers TikTools avec ce compte ?",
+  signedIn: "Connecté",
+  handoffFailed: "Connexion incomplète. Recommencez dans TikTools.",
+};
+
+const de: Record<MessageKey, string> = {
+  title: "TikTools Cloud: Anmeldung",
+  checking: "Sitzung wird geprüft…",
+  signInToContinue: "Melden Sie sich an, um mit TikTools fortzufahren.",
+  identifier: "Benutzername oder E-Mail",
+  name: "Anzeigename",
+  password: "Passwort",
+  signIn: "Anmelden",
+  createAccount: "Konto erstellen",
+  signInGoogle: "Mit Google anmelden",
+  continue: "Weiter zu TikTools",
+  cancel: "Abbrechen",
+  cancelled: "Anmeldung abgebrochen. Sie können dieses Fenster schließen.",
+  badHandoff: "Öffnen Sie TikTools und starten Sie die Anmeldung erneut.",
+  checkFailed: "Sitzung konnte nicht geprüft werden. Versuchen Sie es erneut.",
+  signingIn: "Anmeldung läuft…",
+  signInFailed: "Anmeldung fehlgeschlagen. Prüfen Sie Kennung und Passwort.",
+  registering: "Konto wird erstellt…",
+  registerFailed: "Konto konnte nicht erstellt werden. Die E-Mail ist möglicherweise bereits registriert.",
+  needRegisterFields: "Geben Sie einen Anzeigenamen, eine E-Mail-Adresse und ein Passwort ein.",
+  continueWith: "Mit diesem Konto zu TikTools fortfahren?",
+  signedIn: "Angemeldet",
+  handoffFailed: "Anmeldung unvollständig. Starten Sie in TikTools neu.",
+};
+
+const pt: Record<MessageKey, string> = {
+  title: "TikTools Cloud: entrar",
+  checking: "Verificando a sessão…",
+  signInToContinue: "Entre para continuar no TikTools.",
+  identifier: "Usuário ou e-mail",
+  name: "Nome de exibição",
+  password: "Senha",
+  signIn: "Entrar",
+  createAccount: "Criar conta",
+  signInGoogle: "Entrar com o Google",
+  continue: "Continuar para o TikTools",
+  cancel: "Cancelar",
+  cancelled: "Entrada cancelada. Você pode fechar esta janela.",
+  badHandoff: "Abra o TikTools e inicie a sessão novamente.",
+  checkFailed: "Não foi possível verificar a sessão. Tente de novo.",
+  signingIn: "Entrando…",
+  signInFailed: "Falha na entrada. Verifique o identificador e a senha.",
+  registering: "Criando a conta…",
+  registerFailed: "Não foi possível criar a conta. O e-mail já pode estar registrado.",
+  needRegisterFields: "Digite um nome de exibição, um e-mail e uma senha.",
+  continueWith: "Continuar para o TikTools com esta conta?",
+  signedIn: "Conectado",
+  handoffFailed: "Não foi possível concluir. Recomece no TikTools.",
+};
+
+export const STRINGS: Record<Language, Record<MessageKey, string>> = { en, es, fr, de, pt };
 
 const LANG_KEY = "tiktools.desktop.lang.v1";
 
 export function detectLanguage(): Language {
   try {
     const stored = localStorage.getItem(LANG_KEY);
-    if (stored === "en" || stored === "es") return stored;
+    if (stored && (LANGUAGES as readonly string[]).includes(stored)) return stored as Language;
   } catch {
     /* Private mode: fall through to browser detection without persisting. */
   }
   try {
-    if ((navigator.language || "").toLowerCase().startsWith("es")) return "es";
+    const browser = (navigator.language || "").toLowerCase();
+    const match = LANGUAGES.find((code) => browser === code || browser.startsWith(`${code}-`));
+    if (match) return match;
   } catch {
     /* No navigator language available. */
   }

@@ -1,5 +1,13 @@
 import "./style.css";
-import { STRINGS, detectLanguage, persistLanguage, type Language, type MessageKey } from "./i18n";
+import {
+  LANGUAGES,
+  LANGUAGE_LABELS,
+  STRINGS,
+  detectLanguage,
+  persistLanguage,
+  type Language,
+  type MessageKey,
+} from "./i18n";
 import { ApiError, fetchMe, fetchProviders, postHandoff, signIn, signUp } from "./api";
 import {
   checkCallbackUrl,
@@ -46,10 +54,26 @@ class ConsentPage {
     document.title = this.t("title");
     document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((node) => {
       const key = node.dataset.i18n as MessageKey | undefined;
-      if (key) node.textContent = this.t(key);
+      if (key && node.childElementCount === 0) node.textContent = this.t(key);
     });
-    el("lang-en").classList.toggle("active", this.lang === "en");
-    el("lang-es").classList.toggle("active", this.lang === "es");
+    this.langContainer.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.lang === this.lang);
+    });
+  }
+
+  private langContainer = el("lang");
+
+  private renderLanguages(): void {
+    this.langContainer.replaceChildren();
+    for (const code of LANGUAGES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.lang = code;
+      button.textContent = LANGUAGE_LABELS[code];
+      button.setAttribute("aria-label", code);
+      button.addEventListener("click", () => this.setLang(code));
+      this.langContainer.append(button);
+    }
   }
 
   private setLang(next: Language): void {
@@ -198,10 +222,9 @@ class ConsentPage {
   };
 
   run(): void {
+    this.renderLanguages();
     this.applyStrings();
     this.setMode("login");
-    el("lang-en").addEventListener("click", () => this.setLang("en"));
-    el("lang-es").addEventListener("click", () => this.setLang("es"));
     this.tabLogin.addEventListener("click", () => this.setMode("login"));
     this.tabRegister.addEventListener("click", () => this.setMode("register"));
     if (!this.loadHandoff()) {
