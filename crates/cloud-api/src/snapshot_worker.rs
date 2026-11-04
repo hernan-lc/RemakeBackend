@@ -63,6 +63,8 @@ pub fn inputs_from_env() -> Result<Inputs> {
         .map_err(|_| "invalid root pin")?;
     let index = SigningKey::from_json(&read_file(&index_path, true, 16384)?)
         .map_err(|_| "invalid index signing key")?;
+    crate::snapshot_trust::require_trust(&root, index.key_id().as_str())
+        .map_err(|refused| format!("snapshot trust refused: {refused}"))?;
     Ok(Inputs { seed, root, index })
 }
 #[derive(Clone, PartialEq, Eq, Serialize)]

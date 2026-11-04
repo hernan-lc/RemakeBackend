@@ -283,7 +283,18 @@ fn step_up_app(
             )])
             .unwrap();
     }
-    super::app_inner(ctx, pool, auth, None, Vec::new(), oauth, false)
+    super::app_inner(
+        ctx,
+        pool,
+        auth,
+        None,
+        super::RouterFlags {
+            trusted_proxy_cidrs: Vec::new(),
+            step_up_oauth: oauth,
+            social_limit_enabled: false,
+            hsts: false,
+        },
+    )
 }
 
 fn step_up_oauth_for_testing(base: &str) -> step_up::StepUpOAuth {
