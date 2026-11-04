@@ -105,7 +105,7 @@ h1 { margin: 0; font-size: 1.25rem; line-height: 1.3; letter-spacing: -0.01em; }
 
 #lang-menu li.active { font-weight: 700; }
 
-#message { color: var(--muted); margin: 0 0 1rem; font-size: 0.95rem; }
+#message { color: var(--muted); margin: 0 0 1rem; font-size: 0.95rem; min-height: 2.9em; }
 #account { margin: 0 0 1rem; font-weight: 600; overflow-wrap: anywhere; }
 #account:empty { display: none; }
 
@@ -249,6 +249,8 @@ input,
   input,
   .tabs button,
   #lang-menu li,
+  .collapse,
+  .collapse.open,
   .fade-enter-active,
   .fade-leave-active {
     transition: none;
@@ -256,6 +258,55 @@ input,
   .fade-enter-from,
   .fade-leave-to {
     transform: none;
+  }
+}
+
+.collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 0.28s ease,
+    visibility 0s linear 0.28s;
+}
+
+.collapse.open {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 0.28s ease,
+    visibility 0s;
+}
+
+.collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 0;
+    place-items: stretch start;
+  }
+  main {
+    max-width: none;
+    min-height: 100dvh;
+    border: none;
+    border-radius: 0;
+    padding: 1.25rem 1.25rem 2rem;
+  }
+  /* 16px inputs prevent auto-zoom on focus; 44px+ targets are tappable. */
+  input,
+  button {
+    font-size: 1rem;
+  }
+  button[type="submit"],
+  #continue {
+    min-height: 3rem;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
   }
 }
 

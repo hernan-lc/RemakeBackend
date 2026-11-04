@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watchEffect } from "vue";
+import CollapseTransition from "./components/CollapseTransition.vue";
 import LangSelect from "./components/LangSelect.vue";
 import PasswordField from "./components/PasswordField.vue";
 import TextField from "./components/TextField.vue";
@@ -239,36 +240,36 @@ onMounted(async () => {
         </div>
 
         <form id="password-form" @submit.prevent="submit">
-          <Transition name="fade" mode="out-in">
-            <div v-if="mode === 'register' || step === 1" key="identify">
-              <TextField
-                v-model="identifier"
-                :label="t('identifier')"
-                icon="user"
-                autocomplete="username"
-              />
-            </div>
-            <div v-else key="who">
-              <p class="who">{{ identifier }}</p>
-            </div>
-          </Transition>
+          <CollapseTransition :open="mode === 'register' || step === 1">
+            <TextField
+              v-model="identifier"
+              :label="t('identifier')"
+              icon="user"
+              autocomplete="username"
+            />
+          </CollapseTransition>
+          <CollapseTransition :open="mode === 'login' && step === 2">
+            <p class="who">{{ identifier }}</p>
+          </CollapseTransition>
 
-          <TextField
-            v-if="mode === 'register'"
-            v-model="displayName"
-            :label="t('name')"
-            icon="tag"
-            autocomplete="nickname"
-          />
+          <CollapseTransition :open="mode === 'register'">
+            <TextField
+              v-model="displayName"
+              :label="t('name')"
+              icon="tag"
+              autocomplete="nickname"
+            />
+          </CollapseTransition>
 
-          <PasswordField
-            v-if="mode === 'register' || step === 2"
-            v-model="password"
-            :label="t('password')"
-            autocomplete="current-password"
-            :show-label="t('showPassword')"
-            :hide-label="t('hidePassword')"
-          />
+          <CollapseTransition :open="mode === 'register' || step === 2">
+            <PasswordField
+              v-model="password"
+              :label="t('password')"
+              autocomplete="current-password"
+              :show-label="t('showPassword')"
+              :hide-label="t('hidePassword')"
+            />
+          </CollapseTransition>
 
           <div class="actions">
             <button
