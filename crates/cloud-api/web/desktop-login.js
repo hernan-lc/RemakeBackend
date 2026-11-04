@@ -6,7 +6,20 @@
   const signIn = document.getElementById("sign-in");
   const proceed = document.getElementById("continue");
   const cancel = document.getElementById("cancel");
-  const fail = (text) => { message.textContent = text; signIn.hidden = true; proceed.hidden = true; };
+  const passwordForm = document.getElementById("password-form");
+  const identifier = document.getElementById("identifier");
+  const password = document.getElementById("password");
+  const fail = (text) => { message.textContent = text; signIn.hidden = true; passwordForm.hidden = true; proceed.hidden = true; };
+  const showSignedOut = async () => {
+    message.textContent = "Sign in to continue to TikTools.";
+    let google = false;
+    try {
+      const providers = await fetch("/api/v1/auth/providers", { cache: "no-store" });
+      if (providers.ok) google = (await providers.json()).google === true;
+    } catch (_) { /* Google stays hidden; password sign-in still works. */ }
+    signIn.hidden = !google;
+    passwordForm.hidden = false;
+  };
   const valid = (data) => {
     if (!data || !/^[A-Za-z0-9_-]{43}$/.test(data.codeChallenge) || !/^[A-Za-z0-9._~-]{16,256}$/.test(data.state)) return false;
     try {
@@ -42,6 +55,34 @@
     fail("Sign-in cancelled. You can close this window.");
   });
   signIn.addEventListener("click", () => { location.assign("/api/auth/sign-in/social/google"); });
+  passwordForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const id = identifier.value.trim();
+    if (!id || !password.value) return;
+    message.textContent = "Signing in…";
+    const email = id.includes("@");
+    try {
+      const response = await fetch(email ? "/api/auth/sign-in/email" : "/api/auth/sign-in/username", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(email ? { email: id, password: password.value } : { username: id, password: password.value }),
+      });
+      if (!response.ok) throw new Error();
+      password.value = "";
+      const me = await fetch("/api/v1/me", { credentials: "same-origin", cache: "no-store" });
+      if (!me.ok) throw new Error();
+      const user = await me.json();
+      account.textContent = typeof user.email === "string" ? user.email : "Signed in";
+      message.textContent = "Continue to TikTools with this account?";
+      signIn.hidden = true;
+      passwordForm.hidden = true;
+      proceed.hidden = false;
+    } catch (_) {
+      password.value = "";
+      message.textContent = "Sign-in failed. Check the identifier and password, then try again.";
+    }
+  });
   proceed.addEventListener("click", async () => {
     if (cancelled) return;
     proceed.disabled = true;
@@ -59,7 +100,7 @@
   });
   fetch("/api/v1/me", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
     if (cancelled) return;
-    if (response.status === 401) { message.textContent = "Sign in to continue to TikTools."; signIn.hidden = false; return; }
+    if (response.status === 401) { await showSignedOut(); return; }
     if (!response.ok) throw new Error();
     const user = await response.json();
     if (cancelled) return;

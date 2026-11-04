@@ -17,6 +17,7 @@ import type {
   ReleaseReview,
   UploadReservation,
   PublisherReviewPage,
+  LinkedProvider,
   StepUpAction,
   StepUpGrant,
   StepUpStart,
@@ -61,6 +62,23 @@ export const api = {
     request<unknown>('/api/auth/sign-in/email', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    }),
+  signInUsername: (username: string, password: string) =>
+    request<unknown>('/api/auth/sign-in/username', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  setUsername: (username: string) =>
+    request<unknown>('/api/auth/username/set', {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    }),
+  authProviders: () => request<{ google: boolean }>('/api/v1/auth/providers'),
+  linkedProviders: () => request<LinkedProvider[]>('/api/v1/me/providers'),
+  unlinkProvider: (providerId: string) =>
+    request<unknown>('/api/v1/me/providers/unlink', {
+      method: 'POST',
+      body: JSON.stringify({ providerId }),
     }),
   overview: () => request<Overview>('/api/v1/admin/overview'),
   adminPublishers: (params: { status?: string; cursor?: string; limit?: number }) => {

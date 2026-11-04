@@ -640,6 +640,17 @@ fn app_inner(
                 .layer(axum::extract::DefaultBodyLimit::max(2048))
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
+        .route("/api/v1/auth/providers", get(account::auth_providers))
+        .route(
+            "/api/v1/me/providers",
+            get(account::providers).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/me/providers/unlink",
+            axum::routing::post(account::unlink_provider)
+                .layer(axum::extract::DefaultBodyLimit::max(2048))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
         .route(
             "/api/v1/admin/publishers/{id}/approve",
             axum::routing::post(admin::approve)

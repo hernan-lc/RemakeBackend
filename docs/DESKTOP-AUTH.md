@@ -6,6 +6,28 @@ After authenticating in the system browser, an intentional same-origin POST to `
 
 The app sends `code`, the exact `redirectUri`, and `codeVerifier` to `POST /api/v1/native/handoff/redeem`. The code is valid for at most 60 seconds, bound to the fixed `tiktools-desktop` client ID, callback URI and PKCE challenge, and consumed before verification; failed redemption requires starting again. A successful response includes a bearer `sessionToken` and `expiresAt`. Store the token only in the OS keychain and send it as `Authorization: Bearer …` to the explicitly native routes. Do not log tokens, callback URLs or authorization codes. All handoff responses are marked `Cache-Control: no-store`.
 
+## Login methods
+
+Every login surface (admin UI, desktop consent page) accepts a username or an
+email address in one identifier field: input containing `@` signs in through
+`/api/auth/sign-in/email`, anything else through `/api/auth/sign-in/username`
+(before first use, set a username on the signed-in account with
+`POST /api/auth/username/set`; usernames are unique). Google sign-in is offered
+only when the server is configured with Google credentials, advertised by
+`GET /api/v1/auth/providers` (`{"google": true|false}`). With no Google
+configuration the button is hidden rather than left to fail.
+
+A Google sign-in from the same verified email address lands on the existing
+account automatically (upstream Better Auth verified-email linking); an
+unverified local email keeps its account separate and the Google login creates
+its own. `GET /api/v1/me/providers` lists the caller's linked providers
+(password credential plus social logins, never tokens) and
+`POST /api/v1/me/providers/unlink` removes one, refusing the last remaining
+method so the account stays reachable. Email delivery (verification,
+password reset) is not configured: treat a local email as unverified, so
+Google linking requires the Google side to carry the verified address, and
+document SMTP provisioning before relying on email verification anywhere.
+
 Issuance is limited per authenticated user; redemption is limited per client IP using Better Auth secondary storage. When the TCP peer belongs to `TRUSTED_PROXY_CIDRS`, a single valid `X-Forwarded-For` IP identifies the client. Missing, malformed, duplicate, or multi-hop values fall back to the socket peer. For other peers Cloud discards supplied forwarding headers and inserts the socket IP. Configure the proxy to overwrite `X-Forwarded-For` with one client IP, limit network access so clients cannot impersonate an allowlisted peer, and independently test edge rate limiting and proxy behavior before deployment. Handoff codes already issued by Better Auth are not currently tied to the lifetime of the issuing browser session: signing out does not explicitly invalidate an outstanding code, which can remain redeemable until consumed or expired. The bearer-only native logout endpoint revokes the current session. There is no refresh flow.
 
 The `cloud-client` `LoginAttempt` generates random state and a PKCE verifier, binds Better Auth's loopback receiver, and returns the consent-page URL. With the optional `system-browser` feature the caller can explicitly open it in the system browser. The page stores only the handoff parameters in tab-scoped session storage, resumes after the Better Auth Google callback returns to `/`, displays the signed-in account and asks for explicit consent. It uses a restrictive CSP, no-referrer and no-store headers. The verifier never enters the browser URL. `complete` waits for the callback, redeems the code, and checks the returned bearer session.

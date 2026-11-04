@@ -27,16 +27,16 @@
         <AppIcon name="info" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ t('errors.expired') }}
       </div>
-      <AppButton variant="primary" icon="external" href="/api/auth/sign-in/social/google" class="w-full">
+      <AppButton v-if="googleAvailable" variant="primary" icon="external" href="/api/auth/sign-in/social/google" class="w-full">
         {{ t('auth.signInGoogle') }}
       </AppButton>
-      <div class="my-4 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400" aria-hidden="true">
+      <div v-if="googleAvailable" class="my-4 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400" aria-hidden="true">
         <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
-        {{ t('auth.signInEmail') }}
+        {{ t('auth.signInPassword') }}
         <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
       </div>
       <form class="flex flex-col gap-3" @submit.prevent="submit">
-        <AppInput v-model="email" :label="t('auth.email')" type="email" required autocomplete="username" icon="account" placeholder="admin@example.com" />
+        <AppInput v-model="identifier" :label="t('auth.identifier')" type="text" required autocomplete="username" icon="account" placeholder="admin@example.com" />
         <AppInput v-model="password" :label="t('auth.password')" type="password" required autocomplete="current-password" icon="lock" />
         <p v-if="failed" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
           <AppIcon name="alert" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
@@ -51,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '../api/client'
@@ -69,10 +69,19 @@ const route = useRoute()
 const router = useRouter()
 const invalidate = useInvalidateSession()
 const ui = useUiStore()
-const email = ref('')
+const identifier = ref('')
 const password = ref('')
 const busy = ref(false)
 const failed = ref(false)
+const googleAvailable = ref(false)
+
+onMounted(async () => {
+  try {
+    googleAvailable.value = (await api.authProviders()).google === true
+  } catch {
+    googleAvailable.value = false
+  }
+})
 
 function toggleLang() {
   ui.toggleLocale()
@@ -83,8 +92,11 @@ async function submit() {
   busy.value = true
   failed.value = false
   try {
-    // Upstream Better Auth entry point; no hand-rolled token exchange.
-    await api.signInEmail(email.value, password.value)
+    // Upstream Better Auth entry points; no hand-rolled token exchange.
+    // An @ routes to email sign-in, anything else to username sign-in.
+    const id = identifier.value.trim()
+    if (id.includes('@')) await api.signInEmail(id, password.value)
+    else await api.signInUsername(id, password.value)
     await invalidate()
     await router.replace(safeNextPath(route.query.next))
   } catch (e) {

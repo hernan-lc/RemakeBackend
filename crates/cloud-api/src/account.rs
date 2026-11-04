@@ -20,6 +20,90 @@ use uuid::Uuid;
 
 const MAX_ACCOUNT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
 
+/// Whether the public login surface offers a provider. Google sign-in and
+/// step-up share one configuration: no credentials, no Google anywhere.
+pub async fn auth_providers(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "google": state.step_up_oauth.is_some() }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedProvider {
+    provider_id: String,
+    account_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnlinkProvider {
+    provider_id: String,
+}
+
+fn secure_cookies(state: &AppState) -> bool {
+    state
+        .auth
+        .base_origin()
+        .is_some_and(|origin| origin.starts_with("https://"))
+}
+
+async fn account_service(state: &AppState) -> Result<better_auth::AccountService, StatusCode> {
+    better_auth::AccountService::new(state.auth.clone())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn account_error(error: better_auth_core::error::AuthError) -> StatusCode {
+    use better_auth_core::error::AuthError;
+    match error {
+        AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
+        AuthError::NotFound => StatusCode::NOT_FOUND,
+        AuthError::InvalidRequest(_) => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Provider accounts linked to the caller (password credential and any
+/// social logins). Tokens are never included. A Google login created from
+/// the same verified email lands on the same user, so this list is where a
+/// username account sees its future Google link.
+pub async fn providers(
+    headers: HeaderMap,
+    AuthUser(_): AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<LinkedProvider>>, StatusCode> {
+    let secure = secure_cookies(&state);
+    let linked = account_service(&state)
+        .await?
+        .list_accounts(&headers, secure)
+        .await
+        .map_err(account_error)?;
+    Ok(Json(
+        linked
+            .into_iter()
+            .map(|account| LinkedProvider {
+                provider_id: account.provider_id,
+                account_id: account.account_id,
+            })
+            .collect(),
+    ))
+}
+
+/// Remove one provider link. The last remaining sign-in method is refused so
+/// the account stays reachable.
+pub async fn unlink_provider(
+    headers: HeaderMap,
+    AuthUser(_): AuthUser,
+    State(state): State<AppState>,
+    Json(input): Json<UnlinkProvider>,
+) -> Result<StatusCode, StatusCode> {
+    let secure = secure_cookies(&state);
+    account_service(&state)
+        .await?
+        .unlink_account(&headers, secure, &input.provider_id)
+        .await
+        .map_err(account_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryPage {
