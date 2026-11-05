@@ -2,87 +2,90 @@
 
 This is a staging configuration, not a production publication runbook. The
 image in `deploy/Dockerfile` builds the API and admin UI separately, then runs
-only the API as a non-root user. On Railway the API must listen on
-`0.0.0.0:$PORT`: `PORT` is required, `BIND_ADDR` (if set) must use the same
-port and must not be loopback, and `APP_ORIGIN` must be the public `https://`
-origin. The API refuses to start otherwise, with an error that names the
-variable to fix. The UI is served from `/app`, with the API on the same origin.
-`/health/ready` checks the database schema.
+only the API as a non-root user. The UI is served from `/app`, with the API on
+the same origin. `/health/ready` checks the database schema.
+
+## Repositories
+
+- The canonical repository is `nglmercer/RemakeBackend`. Changes land there
+  through pull requests.
+- The Railway project `robust-charisma` deploys the `RemakeBackend` service from
+  a fork, `hernan-lc/RemakeBackend`. A change reaches Railway only after it is
+  merged into the branch that service builds.
+- The IaC file does not hardcode either repository. Set `RAILWAY_SOURCE_REPO` to
+  the `owner/name` the service is connected to, and optionally
+  `RAILWAY_SOURCE_BRANCH` (default `master`). `railway config plan` refuses to run
+  without `RAILWAY_SOURCE_REPO`.
+
+## Configuration
+
+Set these in the Railway service's Variables tab. Never check credentials into Git.
+
+- `DATABASE_URL`: the PostgreSQL connection string. Use a database dedicated to
+  staging.
+- `AUTH_SECRET`: random, at least 32 bytes.
+- `APP_ORIGIN`: the public `https://` origin of the service.
+- `PORT`: set by Railway. The API listens on `0.0.0.0:$PORT`. If `BIND_ADDR` is
+  set, it must use the same port and must not be loopback.
+
+At startup the API checks these values and refuses to start with an error that
+names the variable to fix, for example `PORT is required on Railway`. `ADMIN_DIST_DIR`
+is set by the image. Set a nonzero Railway deployment draining time so SIGTERM has
+time to finish active requests. Review trusted proxy CIDRs before enabling
+proxy-derived client IPs.
 
 ## Start command, pre-deploy command and healthcheck
 
-Keep the three Railway settings separate:
-
-- **Start command:** `bash /usr/local/bin/start-cloud`. This runs the API on
-  every deployment and restart. It never applies migrations.
+- **Start command:** `bash /usr/local/bin/start-cloud`. It runs the API on every
+  deployment and restart, and never applies migrations.
 - **Pre-deploy command:** `cloud-api migrate`. It runs once per deployment,
-  after the build and before the new container starts. A nonzero exit stops
-  the deployment, so the previous version keeps serving traffic.
-- **Healthcheck:** `/health/ready`. Railway promotes a deployment only after this
-  returns 200. Readiness fails while migrations are missing, failed or changed.
+  before the new container starts. A nonzero exit stops the deployment, so the
+  previous version keeps serving.
+- **Healthcheck:** `/health/ready`, with a 120 second timeout. A deployment is
+  promoted only after this returns 200. It fails while migrations are missing,
+  failed or changed.
 
-### Diagnosing HTTP 502 and migration completion
+## Diagnosing HTTP 502
 
-Each startup step logs one line with `tracing`, so the deploy logs show how far
-the process got:
+Each startup step logs one line. Look for these in the deploy logs:
 
 | Log message | Meaning |
 | --- | --- |
-| `configuration validated` (`railway=true`) | Environment checks passed |
+| `configuration validated` | Environment checks passed |
+| `startup mode` (`mode` = `server`, `migrate`, `worker`, `maintenance`) | Entry point that is running. `rejected` means the arguments were refused |
 | `database connection established` | The database accepted a connection |
-| `startup mode` (`mode="server"` or `mode="migrate"`) | Which entry point is running |
-| `HTTP listener bound; cloud API listening` (`address=0.0.0.0:<PORT>`) | The API is reachable |
-| `migrations applied; exiting without starting the HTTP server` | Pre-deploy migration finished; the process exits 0 |
-| `shutdown signal received; draining in-flight requests` then `HTTP server stopped` | Clean shutdown |
+| `HTTP listener bound` (`address=0.0.0.0:<PORT>`) | The API is reachable |
+| `migrations applied; exiting without starting the HTTP server` | Pre-deploy migration finished with exit 0 |
 
-Use these to diagnose the common failures:
+- **502 on an active deployment, with no `HTTP listener bound`:** startup stopped.
+  Find the `startup configuration rejected` line, which names the variable to fix.
+- **Healthcheck fails with 503 on `/health/ready`:** the database is reachable but
+  migrations are missing or failed. Check that the pre-deploy migration printed
+  `migrations applied`.
+- **Pre-deploy log without `migrations applied`:** the migration did not finish,
+  and the deployment should have stopped. Do not promote it by hand.
+- **Idle service wakes slowly:** a sleeping service answers its first request
+  after waking. A failed wake-up can look like a 502.
 
-- **502 with an active deployment:** the process never reached `HTTP listener
-  bound`. Look for an `Error: ... InvalidInput` line in the deploy logs. The
-  message names the variable to fix (`PORT is required on Railway`, `BIND_ADDR
-  must not be loopback on Railway`, `APP_ORIGIN must ...`).
-- **Healthcheck failing with 503 on `/health/ready`:** the database is reachable
-  but migrations are missing or failed. Run the pre-deploy migration, and check
-  for the `migrations applied` line in the pre-deploy logs.
-- **Pre-deploy log without `migrations applied`:** the migration did not
-  finish. The deployment should have stopped; do not promote it by hand.
-- **`DATABASE_URL is required`** in the deploy logs: the service variable is
-  missing. Set it in the Railway service's Variables tab.
+## Railway Infrastructure as Code
 
-Never store `DATABASE_URL`, `AUTH_SECRET` or other credentials in version control.
-The API logs do not print them.
+`.railway/railway.ts` declares the start command, pre-deploy command, healthcheck
+and variable names. Variable values stay in Railway (`preserve()`). Config as
+Code (`railway.toml`) is deprecated and stops being read on **2026-12-01**.
 
-### Railway Infrastructure as Code migration
+Roll out in this order, stopping at any unexpected change:
 
-Railway's Config as Code files (`railway.toml`, `railway.json`) are deprecated.
-Railway stops reading them on **2026-12-01**. The replacement is
-`.railway/railway.ts`, which uses `defineRailway` from `railway/iac`.
+1. `railway login`, `railway link`, and `RAILWAY_SOURCE_REPO` set to the connected repository.
+2. `railway config migrate status`: shows whether any service still reads Config
+   as Code. If one does, run `railway config migrate cutover` first.
+3. `railway config plan`: read-only. Continue only when the changes match this document.
+4. `railway config apply`: changes the live service. Run it only with explicit
+   approval, then deploy and check the startup logs above.
+5. Remove `railway.toml` only after a clean plan and apply.
 
-Migrate in this order, checking each step before the next:
-
-1. Install the CLI (`npm i -g @railway/cli`) and sign in with `railway login`.
-2. `railway config migrate` writes `.railway/railway.ts` from the current file.
-   It does not change the live service.
-3. Review the generated file. The start command, pre-deploy command, healthcheck
-   path and timeout must match the list above.
-4. `railway config plan` compares the file with the live environment without
-   changing anything. Proceed only when it shows no unexpected updates or deletes.
-5. `railway config apply` changes the live service. Run it only with explicit
-   approval, then deploy and check the logs for the lines listed above.
-6. Remove `railway.toml` after a clean plan (`railway config migrate --delete-files`
-   removes it when migrating).
-
-`railway config migrate --apply` also clears the service's Config File setting,
-so run it only after the plan is clean.
-
-
-
-Configure a separate PostgreSQL database and set `DATABASE_URL`, a random
-`AUTH_SECRET` of at least 32 bytes, and the public HTTPS `APP_ORIGIN` in the
-service environment. Never check credentials into Git. `ADMIN_DIST_DIR` is
-set by the image. Review trusted proxy CIDRs for the actual ingress before
-enabling proxy-derived client IPs. Set a nonzero Railway deployment draining
-time so SIGTERM has time to finish active requests.
+Rollback: `railway config migrate undo` restores the Config as Code paths saved by
+a cutover. To revert a setting applied from `.railway/railway.ts`, restore the
+previous file, run `railway config plan`, and apply only after reviewing it.
 
 ## Publication scanner requirement
 

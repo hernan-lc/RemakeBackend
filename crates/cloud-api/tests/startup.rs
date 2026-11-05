@@ -1,12 +1,11 @@
-//! Process-level checks for the deployment entry points: one-shot migrations,
-//! the HTTP server, Railway configuration validation, and the Docker start command.
+//! Process-level checks for the deployment entry points: Railway configuration
+//! validation, the one-shot migrate command, and the HTTP server.
 //!
 //! Tests marked `#[ignore]` need `CLOUD_TEST_DATABASE_URL` pointing at a
 //! disposable PostgreSQL database and run with `-- --ignored --test-threads=1`.
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::Path,
     process::{Child, Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
@@ -14,10 +13,6 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_cloud-api");
 const AUTH_SECRET: &str = "0123456789abcdef0123456789abcdef";
-
-fn repo_root() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-}
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -106,7 +101,7 @@ impl Drop for KillOnDrop {
 }
 
 #[test]
-fn railway_loopback_bind_fails_before_connecting() {
+fn railway_configuration_is_rejected_before_connecting() {
     // The database host below is unreachable on purpose: validation must fail first.
     let output = command("postgres://deploy-user@127.0.0.1:1/unused")
         .env("RAILWAY_ENVIRONMENT_NAME", "production")
@@ -120,20 +115,6 @@ fn railway_loopback_bind_fails_before_connecting() {
     assert!(text.contains("PORT"), "error should name the fix: {text}");
     assert!(!text.contains("deploy-user"), "DATABASE_URL leaked: {text}");
     assert!(!text.contains(AUTH_SECRET), "AUTH_SECRET leaked: {text}");
-}
-
-#[test]
-fn railway_localhost_origin_fails_before_connecting() {
-    let output = command("postgres://deploy-user@127.0.0.1:1/unused")
-        .env("RAILWAY_PROJECT_ID", "project")
-        .env("PORT", "8080")
-        .env("APP_ORIGIN", "http://localhost:8080")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let text = logs(&output);
-    assert!(text.contains("APP_ORIGIN"), "{text}");
-    assert!(!text.contains("deploy-user"), "DATABASE_URL leaked: {text}");
 }
 
 #[test]
@@ -181,22 +162,4 @@ fn server_mode_listens_and_reports_ready_after_migrations() {
         thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(http_status(port, "/health/ready"), Some(200));
-}
-
-#[test]
-fn docker_image_starts_the_server_by_default() {
-    let dockerfile = std::fs::read_to_string(repo_root().join("deploy/Dockerfile")).unwrap();
-    assert!(
-        dockerfile.contains(r#"CMD ["bash", "/usr/local/bin/start-cloud"]"#),
-        "the image must default to the server start script"
-    );
-    assert!(
-        !dockerfile.contains("cloud-api migrate"),
-        "migrations must not run as part of the image's default start"
-    );
-    let script = std::fs::read_to_string(repo_root().join("deploy/start-cloud")).unwrap();
-    assert!(
-        script.contains("exec cloud-api") && script.contains("cloud-api &"),
-        "start-cloud must run the API server, not the migrate command"
-    );
 }

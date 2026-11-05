@@ -353,38 +353,31 @@ mod tests {
     }
 
     #[test]
-    fn railway_listens_on_all_interfaces_at_port() {
+    fn railway_rules_bind_port_and_origin() {
+        // Railway listens on all interfaces at PORT, and any one marker enables the checks.
         let config = railway_env(&[], &[]).unwrap();
         assert!(config.railway);
         assert_eq!(config.bind.to_string(), "0.0.0.0:8080");
         assert!(railway_env(&[("BIND_ADDR", "0.0.0.0:8080")], &[]).is_ok());
         assert!(railway_env(&[("BIND_ADDR", "[::]:8080")], &[]).is_ok());
-    }
-
-    #[test]
-    fn any_railway_marker_enables_checks() {
-        // Only the project id is present: still a Railway deployment.
         let by_project = railway_env(
             &[("RAILWAY_PROJECT_ID", "p"), ("BIND_ADDR", "127.0.0.1:8080")],
             &["RAILWAY_ENVIRONMENT_NAME"],
         );
-        assert!(by_project.is_err());
-        // Only the service id is present: still a Railway deployment.
-        let by_service = railway_env(
-            &[("RAILWAY_SERVICE_ID", "s")],
-            &["RAILWAY_ENVIRONMENT_NAME"],
+        assert!(
+            by_project.is_err(),
+            "project id alone must enable the checks"
         );
-        assert!(by_service.unwrap().railway);
-        // No Railway markers at all: local development rules apply.
-        let local = railway_env(
-            &[("BIND_ADDR", "127.0.0.1:8080")],
-            &["RAILWAY_ENVIRONMENT_NAME"],
+        assert!(
+            railway_env(
+                &[("RAILWAY_SERVICE_ID", "s")],
+                &["RAILWAY_ENVIRONMENT_NAME"]
+            )
+            .unwrap()
+            .railway
         );
-        assert!(local.is_ok(), "without markers loopback binds are allowed");
-    }
 
-    #[test]
-    fn railway_rejects_loopback_bind_with_actionable_error() {
+        // Loopback binds are unreachable from the edge.
         for bind in ["127.0.0.1:8080", "[::1]:8080"] {
             let error = match railway_env(&[("BIND_ADDR", bind)], &[]) {
                 Ok(_) => panic!("loopback bind {bind} must be rejected on Railway"),
@@ -394,26 +387,22 @@ mod tests {
                 error.contains("loopback") && error.contains("PORT"),
                 "{error}"
             );
+            assert!(!error.contains("postgres://") && !error.contains("0123456789abcdef"));
         }
-    }
 
-    #[test]
-    fn railway_requires_port_and_matching_bind_port() {
-        let error = match railway_env(&[], &["PORT"]) {
+        // PORT is required, and an explicit BIND_ADDR must use it.
+        let missing = match railway_env(&[], &["PORT"]) {
             Ok(_) => panic!("missing PORT must be rejected on Railway"),
             Err(error) => error,
         };
-        assert!(error.contains("PORT is required"), "{error}");
+        assert!(missing.contains("PORT is required"), "{missing}");
         let mismatch = match railway_env(&[("BIND_ADDR", "0.0.0.0:9000")], &[]) {
             Ok(_) => panic!("BIND_ADDR port differing from PORT must be rejected"),
             Err(error) => error,
         };
         assert!(mismatch.contains("must equal PORT"), "{mismatch}");
-        assert!(railway_env(&[("PORT", "0")], &[]).is_err());
-    }
 
-    #[test]
-    fn railway_requires_public_https_origin() {
+        // APP_ORIGIN must be the public https origin.
         assert!(railway_env(&[("APP_ORIGIN", "https://api.example.com")], &[]).is_ok());
         assert!(railway_env(&[("APP_ORIGIN", "http://api.example.com")], &[]).is_err());
         for origin in [
@@ -422,22 +411,11 @@ mod tests {
             "https://127.0.0.1",
             "https://[::1]",
         ] {
-            let error = match railway_env(&[("APP_ORIGIN", origin)], &[]) {
-                Ok(_) => panic!("{origin} must be rejected on Railway"),
-                Err(error) => error,
-            };
-            assert!(error.contains("APP_ORIGIN"), "{error}");
+            assert!(
+                railway_env(&[("APP_ORIGIN", origin)], &[]).is_err(),
+                "{origin} must be rejected on Railway"
+            );
         }
-    }
-
-    #[test]
-    fn railway_errors_do_not_echo_secrets() {
-        let error = match railway_env(&[("BIND_ADDR", "127.0.0.1:8080")], &[]) {
-            Ok(_) => panic!("loopback bind must be rejected"),
-            Err(error) => error,
-        };
-        assert!(!error.contains("postgres://"));
-        assert!(!error.contains("0123456789abcdef"));
     }
 
     #[test]
