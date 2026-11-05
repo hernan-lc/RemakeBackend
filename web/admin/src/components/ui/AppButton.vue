@@ -57,7 +57,7 @@ const variantClasses: Record<Variant, string> = {
 }
 
 const classes = computed(() => [
-  'inline-flex max-w-full min-h-9 items-center justify-center gap-2 rounded-xl font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500',
+  'inline-flex max-w-full min-h-9 items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500',
   'disabled:cursor-not-allowed disabled:opacity-50',
   props.size === 'sm' ? 'px-3 py-1.5 text-xs sm:text-sm' : 'px-4 py-2.5 text-sm',
   compact.value ? (props.size === 'sm' ? 'size-8 !px-0' : 'size-10 !px-0') : undefined,

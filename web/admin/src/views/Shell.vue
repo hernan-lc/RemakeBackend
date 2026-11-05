@@ -4,22 +4,20 @@
     <div class="flex min-h-screen">
       <!-- Desktop workspace navigation. On mobile, the full content width is preserved. -->
       <aside :aria-label="t('app.menu')"
-        :class="['sticky top-0 hidden h-screen shrink-0 flex-col border-r border-slate-200/80 bg-white/90 transition-[width] duration-200 lg:flex dark:border-slate-800 dark:bg-slate-900/80', sidebarOpen ? 'w-64' : 'w-[76px]']">
-        <div class="flex h-[72px] items-center gap-3 border-b border-slate-100 px-4 dark:border-slate-800">
-          <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" aria-hidden="true">
+        :class="['sticky top-0 hidden h-screen shrink-0 flex-col border-r border-slate-200/80 bg-white/90 transition-[width] duration-200 lg:flex dark:border-slate-800 dark:bg-slate-900/80', sidebarOpen ? 'w-56' : 'w-[68px]']">
+        <div class="flex h-16 items-center gap-3 border-b border-slate-100 px-4 dark:border-slate-800">
+          <span class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" aria-hidden="true">
             <AppIcon name="dashboard" :size="21" />
           </span>
           <div v-if="sidebarOpen" class="min-w-0">
             <p class="truncate text-sm font-bold tracking-tight">{{ t('app.title') }}</p>
-            <p class="truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">{{ t('app.workspace') }}</p>
           </div>
         </div>
-        <div v-if="sidebarOpen" class="px-5 pb-2 pt-7 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{{ t('app.navigation') }}</div>
-        <nav class="scroll-thin flex-1 overflow-y-auto px-3 py-3" :aria-label="t('app.navigation')">
-          <ul class="space-y-1">
+        <nav class="scroll-thin flex-1 overflow-y-auto px-2.5 py-4" :aria-label="t('app.navigation')">
+          <ul class="space-y-0.5">
             <li v-for="link in links" :key="link.to">
               <RouterLink :to="link.to" :title="link.label" :aria-label="link.label"
-                class="group flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+                class="group flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
                 exact-active-class="!bg-indigo-50 !text-indigo-700 dark:!bg-indigo-500/15 dark:!text-indigo-300">
                 <AppIcon :name="link.icon" :size="19" class="shrink-0" aria-hidden="true" />
                 <span v-if="sidebarOpen" class="truncate">{{ link.label }}</span>
@@ -28,42 +26,35 @@
           </ul>
         </nav>
         <div class="space-y-2 border-t border-slate-100 p-3 dark:border-slate-800">
-          <RouterLink v-if="me && sidebarOpen" to="/app/account" class="flex items-center gap-3 rounded-xl bg-slate-50 p-3 transition-colors hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800">
+          <RouterLink v-if="me && sidebarOpen" to="/app/account" class="flex items-center gap-3 rounded-lg bg-slate-50 px-2 py-2 transition-colors hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800">
             <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-indigo-100 font-bold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200">{{ me.name?.charAt(0).toUpperCase() || 'A' }}</span>
-            <span class="min-w-0"><span class="block truncate text-xs font-semibold">{{ me.name }}</span><span class="block truncate text-[11px] text-slate-500 dark:text-slate-400">{{ me.email }}</span></span>
+            <span class="min-w-0 block truncate text-xs font-semibold">{{ me.name }}</span>
           </RouterLink>
           <button type="button" :aria-label="t(sidebarOpen ? 'app.collapseNav' : 'app.expandNav')" :title="t(sidebarOpen ? 'app.collapseNav' : 'app.expandNav')"
-            class="flex min-h-10 w-full items-center gap-3 rounded-xl px-3 text-sm text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+            class="flex min-h-10 w-full items-center gap-3 rounded-lg px-3 text-sm text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
             @click="ui.toggleSidebar()">
-            <AppIcon name="menu" :size="19" aria-hidden="true" /><span v-if="sidebarOpen">{{ t('app.collapseNav') }}</span>
+            <AppIcon name="menu" :size="19" aria-hidden="true" /><span v-if="sidebarOpen" class="text-xs">{{ t('app.collapseNav') }}</span>
           </button>
         </div>
       </aside>
 
       <div class="flex min-w-0 flex-1 flex-col">
-        <header class="sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-xl sm:px-6 lg:h-[72px] lg:px-9 dark:border-slate-800 dark:bg-slate-900/85">
+        <header class="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-slate-200/80 bg-white/90 px-4 backdrop-blur-xl sm:px-6 lg:px-8 dark:border-slate-800 dark:bg-slate-900/85">
           <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white lg:hidden" aria-hidden="true">
             <AppIcon name="dashboard" :size="19" />
           </span>
-          <div class="min-w-0 flex-1">
-            <p class="hidden text-[11px] font-semibold uppercase tracking-widest text-slate-400 lg:block">{{ t('app.workspace') }}</p>
-            <p class="truncate text-sm font-bold sm:text-base">{{ currentLabel }}</p>
-          </div>
+          <p class="min-w-0 flex-1 truncate text-sm font-semibold lg:sr-only">{{ currentLabel }}</p>
+          <div class="hidden flex-1 lg:block" aria-hidden="true" />
           <div class="flex shrink-0 items-center gap-0.5 sm:gap-1">
             <ThemeToggle />
             <button type="button" :aria-label="'EN/ES'" title="EN/ES"
               class="inline-flex size-10 items-center justify-center gap-1 rounded-xl text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800" @click="toggleLang">
               <AppIcon name="globe" :size="18" aria-hidden="true" /><span class="hidden text-xs font-bold uppercase sm:inline">{{ ui.locale }}</span>
             </button>
-            <span class="mx-1 hidden h-6 w-px bg-slate-200 sm:block dark:bg-slate-700" aria-hidden="true" />
-            <RouterLink to="/logout" :aria-label="t('app.logout')" :title="t('app.logout')"
-              class="flex size-10 items-center justify-center rounded-xl text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">
-              <AppIcon name="logout" :size="18" aria-hidden="true" />
-            </RouterLink>
           </div>
         </header>
 
-        <main id="content" class="mx-auto w-full max-w-[1440px] flex-1 px-4 pb-28 pt-6 sm:px-6 sm:pt-8 lg:px-9 lg:pb-12">
+        <main id="content" class="mx-auto w-full max-w-[1320px] flex-1 px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-12">
           <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
             <RouterView v-if="me" />
           </StateBlock>
