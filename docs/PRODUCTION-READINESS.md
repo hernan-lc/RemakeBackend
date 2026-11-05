@@ -55,9 +55,11 @@ record the evidence; do not improvise a shorter version.
 
 ## Staging deployment runbook
 
-1. Provision loopback-only pgrust (`docs/LOCAL-PGRUST.md`), versioned
-   object storage, and a ClamAV daemon. The scanner fails closed on all
-   ambiguity; `CLAMAV_ADDR` must be loopback.
+1. Provision a PostgreSQL-compatible database, either versioned object
+   storage or a private single-instance local volume, and a ClamAV daemon.
+   pgrust (`docs/LOCAL-PGRUST.md`) is for local development; the scanner
+   fails closed on ambiguity and `CLAMAV_ADDR` must be loopback. See
+   `docs/RAILWAY-STAGING.md` for the single-instance configuration.
 2. Copy `.env.example` to `.env`, set `AUTH_SECRET` (32+ bytes),
    `APP_ORIGIN` (https in production, loopback http only for dev), storage
    settings as a complete set, and `TRUSTED_PROXY_CIDRS` covering the proxy
@@ -81,7 +83,7 @@ record the evidence; do not improvise a shorter version.
   No tokens, secrets, or key material are logged.
 - Resource limits: 2-4 KiB body limits on JSON routes, Better Auth
   rate limiting on social-login GET/callback paths, connection pool capped
-  at 5, graceful shutdown on SIGINT.
+  at 5, graceful shutdown on SIGINT and SIGTERM.
 - Security headers: the backend sets `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a restrictive
   `Permissions-Policy` on every response, plus HSTS when `APP_ORIGIN` is
@@ -101,17 +103,22 @@ Validated locally:
 - New suites: `snapshot_trust` (5 tests: default staging, invalid env,
   fixture refusal, fingerprint match/mismatch, missing fingerprint) and
   `security_headers` (2 tests: baseline headers, HSTS https-only).
-- Disposable pgrust database-backed suites via `CLOUD_TEST_DATABASE_URL`
-  (FakeS3 + fake ClamAV in-process): 60 passed, 0 failed. The live-Google
-  JWKS smoke test was skipped (no outbound network); it is unrelated to
-  this PR.
+- Disposable PostgreSQL 18 and source-built pgrust database-backed suites
+  via `CLOUD_TEST_DATABASE_URL`: 64 passed on each, with the live Google and
+  separately configured staging checks excluded. Most tests use FakeS3 and
+  fake ClamAV; a local-volume publication test exercises filesystem storage.
+- An independently pinned staging registry with nine packages was published,
+  backed up with 86 local objects, restored into a fresh PostgreSQL database
+  and volume, and installed using the TikTools client. A separate empty-object
+  backup and restore succeeded on pgrust. Staging signing keys and the scanner
+  signature were disposable test material.
 
 Explicitly NOT validated and NOT claimed:
 
 - Real S3-compatible storage, real ClamAV daemon behavior under load, real
   Google OAuth callbacks, real OS credential stores, KMS/HSM index signing
-  (not integrated), key rotation/revocation against live clients, backup and
-  point-in-time restore of a populated system, concurrent-request and worker-
+  (not integrated), key rotation/revocation against live clients, offsite
+  recovery or point-in-time restore of a production system, concurrent-request and worker-
   failure load behavior, or cache behavior behind a real CDN.
 - Mocked S3/OAuth/scanner coverage does not validate production
   infrastructure.
