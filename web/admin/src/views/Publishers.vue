@@ -17,6 +17,10 @@
         {{ t('errors.notAdmin') }}
       </div>
       <template v-else>
+        <p v-if="visibleItems.some(p => isMember(p.id))" class="mb-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
+          <AppIcon name="info" :size="16" class="shrink-0" aria-hidden="true" />
+          {{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}
+        </p>
         <AppCard v-if="visibleItems.length > 0 || membershipsError" :padded="false" label="publisher-requests">
           <p v-if="membershipsError" class="p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">{{ t('publishers.membershipsUnavailable') }} <button class="underline" @click="refetchMemberships()">{{ t('states.retry') }}</button></p>
           <div class="scroll-thin overflow-x-auto">
@@ -47,7 +51,6 @@
                       {{ t('dashboard.approve') }}
                     </AppButton>
                     <AppButton v-if="p.status === 'pending' && isMember(p.id) && temporaryEnabled" size="sm" variant="secondary" @click="openTemporary(p.id, p.namespace, null)">{{ t('temporaryApproval.button') }}</AppButton>
-                    <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}</p>
                     <AppButton size="sm" variant="ghost" icon="key" :aria-expanded="!!keys[p.id]" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
