@@ -6,6 +6,8 @@
     :type="to || href ? undefined : (type ?? 'button')"
     :disabled="to || href ? undefined : (disabled || loading)"
     :aria-busy="loading || undefined"
+    :aria-label="iconOnly ? label : undefined"
+    :title="iconOnly ? label : undefined"
     :aria-disabled="disabled || loading || undefined"
     :class="classes"
   >
