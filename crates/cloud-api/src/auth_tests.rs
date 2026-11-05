@@ -3933,6 +3933,98 @@ async fn publisher_request_limits_serialize_and_rate_limit() {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn unused_publisher_deletion_requires_owner_and_preserves_audit() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&url, false).await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let mut users = Vec::new();
+    let mut cookies = Vec::new();
+    for _ in 0..2 {
+        let result = service
+            .sign_up(
+                SignUpInput {
+                    email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                    name: "Deletion Test".into(),
+                    password: "test password with enough characters".into(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        users.push(result.user.id);
+        cookies.push(format!("{}={}", result.cookie.name, result.cookie.value));
+    }
+    let id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publishers(id,namespace,status) VALUES($1,$2,'pending')")
+        .bind(id)
+        .bind(format!("p{}", id.simple()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships(publisher_id,user_id,role) VALUES($1,$2,'owner'),($1,$3,'viewer')")
+        .bind(id).bind(&users[0]).bind(&users[1]).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,publisher_id,action) VALUES($1,$2,$3,'publisher.requested')")
+        .bind(uuid::Uuid::new_v4()).bind(&users[0]).bind(id).execute(&pool).await.unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = app(ctx, pool.clone(), auth);
+    let path = format!("/api/v1/publishers/{id}");
+    assert_eq!(
+        request(&app, "DELETE", &path, None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[1]), None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(id)
+        .bind(&users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let challenge = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_key_challenges(id,publisher_id,actor_user_id,nonce,expires_at) VALUES($1,$2,$3,$4,now()+interval '1 minute')")
+        .bind(challenge).bind(id).bind(&users[0]).bind("a".repeat(64)).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_publisher_key_challenges WHERE id=$1")
+        .bind(challenge)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE deleted_publisher_id=$1 AND publisher_id IS NULL")
+        .bind(id).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_transfer_requires_owner_offer_and_recipient_acceptance() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();

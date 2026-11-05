@@ -901,6 +901,11 @@ fn app_inner(
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
+            "/api/v1/publishers/{id}",
+            axum::routing::delete(publishers::delete)
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/publishers/{id}/transfer",
             get(publishers::current_transfer)
                 .post(publishers::offer_transfer)

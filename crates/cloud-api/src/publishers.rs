@@ -187,6 +187,51 @@ async fn lock_publisher<'a>(
     }
 }
 
+/// Remove an unused namespace while retaining its audit history.
+pub async fn delete(
+    DualUser(principal): DualUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_publisher(&mut tx, id, &principal.user.id, true).await?;
+    let blocked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id<>$2)
+          OR EXISTS(SELECT 1 FROM cloud_publisher_keys WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_publisher_key_challenges WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_upload_sessions WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_plugin_releases WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_publisher_transfers WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_step_up_grants WHERE publisher_id=$1)
+          OR EXISTS(SELECT 1 FROM cloud_step_up_oauth_states WHERE publisher_id=$1)",
+    )
+    .bind(id)
+    .bind(&principal.user.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if blocked {
+        return Err(StatusCode::CONFLICT);
+    }
+    sqlx::query("UPDATE cloud_audit_events SET deleted_publisher_id=publisher_id, publisher_id=NULL WHERE publisher_id=$1")
+        .bind(id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("INSERT INTO cloud_audit_events(id,actor_user_id,deleted_publisher_id,action) VALUES($1,$2,$3,'publisher.deleted')")
+        .bind(Uuid::new_v4()).bind(&principal.user.id).bind(id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("DELETE FROM cloud_publisher_memberships WHERE publisher_id=$1 AND user_id=$2")
+        .bind(id)
+        .bind(&principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    sqlx::query("DELETE FROM cloud_publishers WHERE id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn members(
     AuthUser(principal): AuthUser,
     State(state): State<AppState>,

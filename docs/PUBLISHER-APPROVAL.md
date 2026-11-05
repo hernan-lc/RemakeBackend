@@ -17,7 +17,12 @@ The former owner becomes an admin, the recipient becomes owner, and the offer is
 consumed in one transaction with audit events. Any non-owner, including the former owner, may leave using
 `DELETE /api/v1/publishers/{id}/membership`. Leaving records an audit event and
 invalidates an outstanding offer to that member. An owner must first transfer ownership. Replaced, expired, removed-member and replayed offers
-cannot be accepted.
+cannot be accepted. An owner can instead delete an unused namespace using
+`DELETE /api/v1/publishers/{id}` with a browser or native session. Deletion returns
+204 on success, 403 for a non-owner member, and 409 if another member, key,
+key challenge, upload, release, transfer, or step-up record exists. Historical
+audit records retain the deleted publisher ID in `deleted_publisher_id`; the
+deletion itself is also audited. The namespace becomes available for reuse.
 
 Migration `20261102000016_publisher_transfers.sql` rejects existing multiple-owner
 records and adds the single-owner index; investigate conflicts before applying it.
