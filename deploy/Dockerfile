@@ -1,8 +1,8 @@
 # Build with the repository root as the context. No database is bundled.
-FROM node:22-bookworm-slim AS admin
+FROM node:22.23.4-bookworm-slim AS admin
 WORKDIR /src/web/admin
 COPY web/admin/package.json web/admin/package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY web/admin/ ./
 RUN npm run build
 

@@ -138,7 +138,9 @@ must not be substituted without verifying equivalent immutable storage.
 Scanning, review, root trust, key management and promotion remain required. See `PRODUCTION-READINESS.md` and
 `REGISTRY-OPERATIONS.md` for current gates.
 
-The image and Railway deployment have not yet been exercised on Railway. Size,
+The admin dependencies were installed with `npm ci --ignore-scripts` and the
+build and 40 tests passed locally with Node 22.23.4, the version specified in
+the image. The image and Railway deployment have not yet been exercised on Railway. Size,
 CPU, memory, build dependencies, backups and real provider behavior must be
 measured in staging. A 1 GB limit is a target, not a demonstrated capacity.
 
