@@ -1,7 +1,7 @@
 import { en } from './en'
 
 export const es: typeof en = {
-  app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
+  app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', skipContent: 'Ir al contenido', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
   auth: {
     signIn: 'Iniciar sesión',
     signInGoogle: 'Iniciar sesión con Google',
@@ -41,7 +41,7 @@ export const es: typeof en = {
     approve: 'Aprobar',
     approveConfirm: '¿Aprobar este espacio de nombres? Esto otorga el espacio, nunca una clave de firma.',
   },
-  publishers: { title: 'Solicitudes de publicador', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella', independentReviewer: 'Perteneces a este publicador. Otro administrador que no sea miembro debe aprobar el espacio y revisar sus claves.', membershipsUnavailable: 'No se pudieron comprobar tus membresías. Las acciones de revisión estarán disponibles cuando se complete la comprobación.', approvalForbidden: 'Se denegó la aprobación. Tu rol de administrador o membresía puede haber cambiado; actualiza y solicita la revisión de otro administrador independiente.' },
+  publishers: { title: 'Solicitudes de publicador', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', noPendingKeys: 'No hay claves pendientes de aprobación.', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella', compareFingerprint: 'Antes de aprobar, compara la huella completa con el publicador por un canal de confianza.', independentReviewer: 'Perteneces a este publicador. Otro administrador que no sea miembro debe aprobar el espacio y revisar sus claves.', membershipsUnavailable: 'No se pudieron comprobar tus membresías. Las acciones de revisión estarán disponibles cuando se complete la comprobación.', approvalForbidden: 'Se denegó la aprobación. Tu rol de administrador o membresía puede haber cambiado; actualiza y solicita la revisión de otro administrador independiente.' },
   moderation: {
     title: 'Cola de moderación',
     inspect: 'Obtener enlace de inspección',
@@ -65,7 +65,19 @@ export const es: typeof en = {
   audit: { title: 'Eventos de auditoría', action: 'Acción', actor: 'Actor', target: 'Objetivo', when: 'Cuándo' },
   portal: {
     title: 'Mis publicadores',
-    notOwnerAdmin: 'Solo los propietarios gestionan miembros; otros roles son de solo lectura aquí.',
+    description: 'Administra tus espacios, claves de firma, miembros y versiones en un solo lugar.',
+    yourNamespaces: 'Tus espacios',
+    namespaceDescription: 'Elige un espacio para administrar sus miembros, claves, propiedad y versiones.',
+    emptyDescription: 'Solicita un espacio para empezar a publicar plugins.',
+    deleteNamespace: 'Eliminar espacio',
+    deleteConfirm: '¿Eliminar {namespace}? El espacio quedará disponible para reutilizarse. Solo se pueden eliminar publicadores sin uso, sin otros miembros ni registros dependientes.',
+    deletePrompt: 'Escribe el espacio para confirmar',
+    deleteBlocked: 'No se puede eliminar este espacio mientras tenga otros miembros, claves, desafíos de clave, cargas, versiones, transferencias o registros de verificación adicional.',
+    deleteForbidden: 'Solo el propietario actual puede eliminar este espacio.',
+    deleteMissing: 'Este espacio ya no existe o ya no tienes acceso. Actualiza la lista.',
+    deleted: 'Espacio eliminado.',
+    namespaceTaken: 'Ese espacio ya está en uso.',
+    notOwnerAdmin: 'Los propietarios gestionan miembros y pueden eliminar espacios sin uso.',
     members: 'Miembros',
     keys: 'Claves de firma',
     enrollKey: 'Inscribir clave de firma',
@@ -130,6 +142,8 @@ export const es: typeof en = {
     fileHint: 'Un paquete TikTools firmado localmente, hasta 128 MiB. Su SHA-256 se calcula en tu navegador; el archivo se sube directo al almacenamiento privado de cuarentena. Tu clave privada nunca sale de tu máquina.',
     pluginId: 'ID de plugin',
     pluginIdHint: 'Debe empezar con «{namespace}.».',
+    officialPluginIdHint: 'Usa «tiktools.» seguido de un nombre, o un ID oficial anterior aprobado como «textintel» o «sonicboom.server».',
+    officialPluginIdMismatch: 'Usa un ID del espacio tiktools o un ID oficial anterior aprobado.',
     version: 'Versión',
     versionHint: 'Versión semántica normalizada, por ejemplo 1.2.3.',
     target: 'Destino',

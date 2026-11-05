@@ -11,7 +11,7 @@
         <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
       </template>
     </PageHeader>
-    <StateBlock :loading="isPending" :error="!!error" :detail="errorDetail" :retry="true" @retry="refetch">
+    <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <div v-if="forbidden" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200" role="alert">
         <AppIcon name="alert" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ t('errors.notAdmin') }}
@@ -20,8 +20,8 @@
         <AppCard :padded="false" label="publisher-requests">
           <p v-if="membershipsError" class="p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">{{ t('publishers.membershipsUnavailable') }} <button class="underline" @click="refetchMemberships()">{{ t('states.retry') }}</button></p>
           <div class="scroll-thin overflow-x-auto">
-            <table class="w-full min-w-[36rem] text-left text-sm">
-              <thead>
+            <table class="block w-full text-left text-sm md:table">
+              <thead class="sr-only md:not-sr-only md:table-header-group">
                 <tr class="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.namespace') }}</th>
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.status') }}</th>
@@ -29,12 +29,12 @@
                   <th scope="col" class="px-4 py-2.5 font-semibold"><span class="sr-only">{{ t('publishers.actions') }}</span></th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                <tr v-for="p in items" :key="p.id">
-                  <td class="px-4 py-2.5 font-mono">{{ p.namespace }}</td>
-                  <td class="px-4 py-2.5"><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
-                  <td class="whitespace-nowrap px-4 py-2.5 text-slate-600 tabular-nums dark:text-slate-400">{{ p.createdAt }}</td>
-                  <td class="flex flex-col items-end gap-2 px-4 py-2.5 text-right">
+              <tbody class="block divide-y divide-slate-100 md:table-row-group dark:divide-slate-800">
+                <tr v-for="p in items" :key="p.id" class="block py-3 md:table-row md:py-0">
+                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5">{{ p.namespace }}</td>
+                  <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-500 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
+                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span>{{ p.createdAt }}</td>
+                  <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-col items-start gap-2 md:items-end md:text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
                       size="sm"
@@ -50,9 +50,13 @@
                     <AppButton size="sm" variant="ghost" :disabled="!memberships || isMember(p.id)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
+                    <p v-if="keys[p.id] && pendingKeys(p.id).length === 0" class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.noPendingKeys') }}</p>
                     <ul v-if="keys[p.id]" class="flex w-full flex-col gap-2 text-left">
-                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 dark:border-slate-700">
-                        <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ k.keyId }}</span>
+                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-col items-start gap-2 rounded-md border border-slate-200 px-3 py-2 dark:border-slate-700">
+                        <span class="break-all font-mono text-xs font-semibold">{{ k.keyId }}</span>
+                        <span class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.fingerprint') }} (SHA-256)</span>
+                        <code class="break-all font-mono text-xs">{{ k.fingerprint }}</code>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.compareFingerprint') }}</p>
                         <AppButton
                           size="sm"
                           variant="secondary"
@@ -64,7 +68,7 @@
                         </AppButton>
                       </li>
                     </ul>
-                  </td>
+                  </div></td>
                 </tr>
               </tbody>
             </table>

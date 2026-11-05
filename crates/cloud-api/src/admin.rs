@@ -420,7 +420,7 @@ pub async fn audit(
         None => (None, None),
     };
     let rows = sqlx::query(
-        "SELECT id, action, actor_user_id, target_user_id, publisher_id, subject_id, old_role, new_role, created_at FROM cloud_audit_events WHERE (($1::timestamptz IS NULL AND $2::uuid IS NULL) OR (created_at, id) < ($1, $2)) ORDER BY created_at DESC, id DESC LIMIT $3",
+        "SELECT id, action, actor_user_id, target_user_id, COALESCE(publisher_id, deleted_publisher_id) AS publisher_id, subject_id, old_role, new_role, created_at FROM cloud_audit_events WHERE (($1::timestamptz IS NULL AND $2::uuid IS NULL) OR (created_at, id) < ($1, $2)) ORDER BY created_at DESC, id DESC LIMIT $3",
     )
     .bind(cursor_at)
     .bind(cursor_id)

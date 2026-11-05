@@ -1,13 +1,14 @@
 <template>
-  <AppCard :label="t('releases.submitTitle')">
-    <div class="flex flex-col gap-3">
+  <AppCard :label="t('releases.submitTitle')" :title="t('releases.submitTitle')">
+    <p v-if="eligiblePublishers.length === 0" class="text-sm text-slate-600 dark:text-slate-400">{{ t('releases.selectPublisherHint') }}</p>
+    <div v-else class="flex flex-col gap-3">
       <AppSelect v-model="publisherId" :label="t('releases.selectPublisher')">
         <option value="" disabled>{{ t('releases.selectPublisher') }}</option>
         <option v-for="p in eligiblePublishers" :key="p.id" :value="p.id">{{ p.namespace }}</option>
       </AppSelect>
       <p v-if="publisherId" class="text-xs text-slate-500 dark:text-slate-400">{{ t('releases.selectPublisherHint') }}</p>
 
-      <StateBlock :loading="keysPending" :error="!!keysError" :retry="true" @retry="refetchKeys">
+      <StateBlock v-if="publisherId" :loading="keysPending" :error="!!keysError" :retry="true" @retry="refetchKeys">
         <AppSelect v-model="keyId" :label="t('releases.selectKey')">
           <option value="" disabled>{{ t('releases.selectKey') }}</option>
           <option v-for="k in approvedKeys" :key="k.id" :value="k.id">{{ k.keyId }}</option>
@@ -33,7 +34,7 @@
       </dl>
 
       <AppInput v-model="pluginId" :label="t('releases.pluginId')" required :maxlength="256" />
-      <p v-if="publisherId" class="text-xs text-slate-500 dark:text-slate-400">{{ t('releases.pluginIdHint', { namespace: namespaceOf(publisherId) }) }}</p>
+      <p v-if="publisherId" class="text-xs text-slate-500 dark:text-slate-400">{{ t(namespaceOf(publisherId) === 'tiktools' ? 'releases.officialPluginIdHint' : 'releases.pluginIdHint', { namespace: namespaceOf(publisherId) }) }}</p>
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <AppInput v-model="version" :label="t('releases.version')" required :maxlength="128" />
         <AppInput v-model="target" :label="t('releases.target')" required :maxlength="128" />
@@ -72,6 +73,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useQuery } from '@tanstack/vue-query'
 import { ApiError, api } from '../../api/client'
+import { publisherAllowsPlugin } from '../../api/publisher-scope'
 import { canPublish } from '../../api/types'
 import type { MyPublisher } from '../../api/types'
 import StateBlock from '../StateBlock.vue'
@@ -178,8 +180,8 @@ async function run() {
   error.value = ''
   notice.value = ''
   const namespace = namespaceOf(publisherId.value)
-  if (!pluginId.value.startsWith(`${namespace}.`)) {
-    error.value = t('releases.pluginIdMismatch', { namespace })
+  if (!publisherAllowsPlugin(namespace, pluginId.value.trim())) {
+    error.value = t(namespace === 'tiktools' ? 'releases.officialPluginIdMismatch' : 'releases.pluginIdMismatch', { namespace })
     return
   }
   if (!validVersion(version.value.trim())) {

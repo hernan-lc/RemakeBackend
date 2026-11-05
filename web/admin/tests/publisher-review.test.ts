@@ -15,6 +15,9 @@ async function render(membershipStatus: number) {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/app/publishers', component: Publishers }] })
   await router.push('/app/publishers')
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/v1/admin/publishers/other/keys') {
+      return new Response(JSON.stringify([{ id: 'k1', keyId: 'review-key', fingerprint: 'ab'.repeat(32), status: 'pending', publicKey: 'eA==' }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
     const membership = url === '/api/v1/publishers'
     const body = membership
       ? [{ id: 'own', namespace: 'own', status: 'pending', role: 'owner' }]
@@ -46,6 +49,16 @@ describe('publisher review eligibility', () => {
     const wrapper = await render(500)
     await vi.waitFor(() => expect(wrapper.text()).toContain('Could not check your publisher memberships'))
     expect(wrapper.find('tbody tr button').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('shows the complete fingerprint to an independent reviewer', async () => {
+    const wrapper = await render(200)
+    await vi.waitFor(() => expect(wrapper.text()).toContain('different admin'))
+    const other = wrapper.findAll('tbody tr')[1]!
+    await other.findAll('button').find((button) => button.text() === 'Keys')!.trigger('click')
+    await vi.waitFor(() => expect(other.text()).toContain('ab'.repeat(32)))
+    expect(other.text()).toContain('compare the full fingerprint')
     wrapper.unmount()
   })
 })

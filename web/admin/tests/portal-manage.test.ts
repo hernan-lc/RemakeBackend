@@ -168,6 +168,7 @@ describe('signing key list and revocation', () => {
       global: { plugins: plugins(router) },
     })
     await vi.waitFor(() => expect(wrapper.text()).toContain('key-one'))
+    expect(wrapper.text()).toContain('ab'.repeat(32))
     expect(wrapper.text()).toContain('Approved')
     expect(wrapper.text()).toContain('Pending')
     const revoke = wrapper.findAll('button').find((b) => b.text() === 'Revoke')!
@@ -301,6 +302,21 @@ describe('release submission wizard', () => {
     await texts[1]!.setValue('01.2.3')
     await submit.trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('normalized semantic version'))
+  })
+
+  it('allows the official legacy IDs through to upload', async () => {
+    stubCrypto()
+    const calls: string[] = []
+    const wrapper = mountWizard(async (url: string) => {
+      calls.push(url)
+      if (url === '/api/v1/publishers/p1/keys') return json(keys)
+      return json({}, 500)
+    })
+    await wrapper.setProps({ publishers: [{ id: 'p1', namespace: 'tiktools', status: 'approved', role: 'owner' }] })
+    await fillValid(wrapper)
+    await wrapper.findAll('input[type="text"]')[0]!.setValue('sonicboom.server')
+    await wrapper.findAll('button').find((b) => b.text() === 'Submit release')!.trigger('click')
+    await vi.waitFor(() => expect(calls).toContain('/api/v1/plugins/uploads'))
   })
 
   it('runs reserve, upload, complete, and submit in order', async () => {

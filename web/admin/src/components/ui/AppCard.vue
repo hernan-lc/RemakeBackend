@@ -20,8 +20,8 @@ const props = withDefaults(defineProps<{ title?: string; label?: string; padded?
 })
 
 const classes = computed(() => [
-  'rounded-lg border border-slate-200 bg-white text-slate-900',
-  'dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100',
+  'rounded-2xl border border-slate-200/80 bg-white text-slate-900 shadow-sm',
+  'dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100',
   props.padded ? 'p-4 sm:p-5' : undefined,
 ])
 </script>

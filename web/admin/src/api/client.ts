@@ -120,6 +120,8 @@ export const api = {
       body: JSON.stringify({ severity, message, url: url || null }),
     }),
   myPublishers: () => request<MyPublisher[]>('/api/v1/publishers'),
+  deletePublisher: (id: string) =>
+    request<void>(`/api/v1/publishers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createPublisher: (namespace: string) =>
     request<MyPublisher>('/api/v1/publishers', {
       method: 'POST',
