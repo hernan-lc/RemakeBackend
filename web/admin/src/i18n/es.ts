@@ -72,6 +72,7 @@ export const es: typeof en = {
     url: 'URL (https, opcional)',
     advisorySaved: 'Aviso registrado.',
     conflictNote: 'No puedes revisar tus propias versiones ni las de tus publicadores.',
+    details: 'Detalles del archivo', moreActions: 'Más acciones',
   },
   audit: { title: 'Eventos de auditoría', searchPage: 'Buscar eventos en esta página', action: 'Acción', actor: 'Actor', target: 'Objetivo', when: 'Cuándo' },
   portal: {

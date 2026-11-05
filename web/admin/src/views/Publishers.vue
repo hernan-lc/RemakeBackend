@@ -1,20 +1,16 @@
 <template>
   <div class="flex flex-col gap-4">
-    <PageHeader :title="t('publishers.title')" icon="publishers">
-      <template #actions>
-        <AppSelect v-model="status" :label="t('publishers.filter')">
+    <PageHeader :title="t('publishers.title')" />
+    <AppToolbar v-model="search" :search-label="t('publishers.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch">
+      <template #filters>
+        <AppSelect v-model="status" :label="t('publishers.filter')" class="[&>span:first-child]:sr-only">
           <option value="pending">{{ t('publishers.pending') }}</option>
           <option value="approved">{{ t('publishers.approved') }}</option>
           <option value="suspended">{{ t('publishers.suspended') }}</option>
           <option value="">{{ t('publishers.all') }}</option>
         </AppSelect>
-        <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
       </template>
-    </PageHeader>
-    <div class="flex flex-col items-start gap-2">
-      <AppSearch v-model="search" :label="t('publishers.searchPage')" />
-      <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('states.searchPageHint') }}</p>
-    </div>
+    </AppToolbar>
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <div v-if="forbidden" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200" role="alert">
         <AppIcon name="alert" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
@@ -35,9 +31,9 @@
               </thead>
               <tbody class="block divide-y divide-slate-100 md:table-row-group dark:divide-slate-800">
                 <tr v-for="p in visibleItems" :key="p.id" class="block py-3 transition-colors hover:bg-slate-50 md:table-row md:py-0 dark:hover:bg-slate-800/40">
-                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5"><span class="inline-flex items-center gap-2"><AppIcon name="publishers" :size="16" class="shrink-0 text-indigo-500" aria-hidden="true" />{{ p.namespace }}</span></td>
+                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5">{{ p.namespace }}</td>
                   <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-500 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
-                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span class="inline-flex items-center gap-1.5"><AppIcon name="clock" :size="15" aria-hidden="true" />{{ formatDateTime(p.createdAt, locale) }}</span></td>
+                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span>{{ formatDateTime(p.createdAt, locale) }}</span></td>
                   <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-col items-start gap-2 md:items-end md:text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
@@ -122,7 +118,7 @@ import AppBadge from '../components/ui/AppBadge.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppCard from '../components/ui/AppCard.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
-import AppSearch from '../components/ui/AppSearch.vue'
+import AppToolbar from '../components/ui/AppToolbar.vue'
 import { formatDateTime } from '../utils/format'
 import EmptyState from '../components/ui/EmptyState.vue'
 import PageHeader from '../components/ui/PageHeader.vue'

@@ -1,14 +1,7 @@
 <template>
   <div class="flex flex-col gap-4">
-    <PageHeader :title="t('moderation.title')" :description="t('moderation.conflictNote')" icon="moderation">
-      <template #actions>
-        <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
-      </template>
-    </PageHeader>
-    <div class="flex flex-col items-start gap-2">
-      <AppSearch v-model="search" :label="t('moderation.searchPage')" />
-      <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('states.searchPageHint') }}</p>
-    </div>
+    <PageHeader :title="t('moderation.title')" :description="t('moderation.conflictNote')" />
+    <AppToolbar v-model="search" :search-label="t('moderation.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch" />
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <template v-if="forbidden">
         <div role="alert" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
@@ -27,7 +20,10 @@
             <p class="mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
               {{ c.target }} · {{ (c.size / 1024).toFixed(1) }} KiB
             </p>
-            <p class="mt-3 break-all rounded-xl bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
+            <details class="mt-3 rounded-lg text-xs text-slate-500 dark:text-slate-400">
+              <summary class="cursor-pointer py-1 font-medium">{{ t('moderation.details') }}</summary>
+              <p class="mt-2 break-all rounded-lg bg-slate-50 p-3 font-mono leading-5 dark:bg-slate-800/60">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
+            </details>
             <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
               <AppButton size="sm" variant="secondary" icon="eye" @click="inspect(c.id)">
                 {{ t('moderation.inspect') }}
@@ -38,12 +34,13 @@
               <AppButton size="sm" variant="secondary" icon="close" :disabled="c.yanked" @click="askDecide(c.id, 'reject')">
                 {{ t('moderation.reject') }}
               </AppButton>
-              <AppButton size="sm" variant="danger" icon="ban" :disabled="c.yanked" @click="askYank(c.id)">
-                {{ t('moderation.yank') }}
-              </AppButton>
-              <AppButton size="sm" variant="ghost" icon="flag" @click="openAdvisory(c.id)">
-                {{ t('moderation.advisory') }}
-              </AppButton>
+              <details class="w-full sm:w-auto">
+                <summary class="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">{{ t('moderation.moreActions') }}</summary>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <AppButton size="sm" variant="danger" icon="ban" :disabled="c.yanked" @click="askYank(c.id)">{{ t('moderation.yank') }}</AppButton>
+                  <AppButton size="sm" variant="ghost" icon="flag" @click="openAdvisory(c.id)">{{ t('moderation.advisory') }}</AppButton>
+                </div>
+              </details>
             </div>
             <p v-if="links[c.id]" class="mt-2 break-all text-xs text-slate-600 dark:text-slate-400">
               {{ t('moderation.inspectionReady') }}
@@ -102,7 +99,7 @@ import AppCard from '../components/ui/AppCard.vue'
 import AppInput from '../components/ui/AppInput.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
-import AppSearch from '../components/ui/AppSearch.vue'
+import AppToolbar from '../components/ui/AppToolbar.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 
 const { t } = useI18n()
