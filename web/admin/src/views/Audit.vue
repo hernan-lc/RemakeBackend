@@ -1,15 +1,7 @@
 <template>
-  <div class="flex flex-col gap-5">
-    <PageHeader :title="t('audit.title')" icon="audit">
-      <template #actions>
-        <AppButton size="sm" variant="secondary" icon="refresh" @click="refetch">{{ t('states.refresh') }}</AppButton>
-      </template>
-    </PageHeader>
-
-    <div class="flex flex-col items-start gap-2">
-      <AppSearch v-model="search" :label="t('audit.searchPage')" />
-      <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('states.searchPageHint') }}</p>
-    </div>
+  <div class="flex flex-col gap-4">
+    <PageHeader :title="t('audit.title')" />
+    <AppToolbar v-model="search" :search-label="t('audit.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch" />
 
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <AppNotice v-if="forbidden" tone="warn">{{ t('errors.notAdmin') }}</AppNotice>
@@ -18,18 +10,18 @@
           <table class="w-full table-fixed text-left text-sm">
             <thead class="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
               <tr>
-                <th scope="col" class="w-[23%] px-5 py-4">{{ t('audit.when') }}</th>
-                <th scope="col" class="w-[29%] px-5 py-4">{{ t('audit.action') }}</th>
-                <th scope="col" class="w-[24%] px-5 py-4">{{ t('audit.actor') }}</th>
-                <th scope="col" class="w-[24%] px-5 py-4">{{ t('audit.target') }}</th>
+                <th scope="col" class="w-[23%] px-4 py-2.5">{{ t('audit.when') }}</th>
+                <th scope="col" class="w-[29%] px-4 py-2.5">{{ t('audit.action') }}</th>
+                <th scope="col" class="w-[24%] px-4 py-2.5">{{ t('audit.actor') }}</th>
+                <th scope="col" class="w-[24%] px-4 py-2.5">{{ t('audit.target') }}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
               <tr v-for="e in filteredEvents" :key="e.id" class="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                <td class="px-5 py-4 text-xs tabular-nums text-slate-600 dark:text-slate-400">{{ formatDateTime(e.createdAt, locale) }}</td>
-                <td class="px-5 py-4"><code class="break-all text-xs font-semibold text-indigo-700 dark:text-indigo-300">{{ e.action }}</code></td>
-                <td class="px-5 py-4"><code class="text-xs text-slate-700 dark:text-slate-300" :title="e.actorUserId">{{ compactId(e.actorUserId) }}</code></td>
-                <td class="px-5 py-4"><code class="text-xs text-slate-700 dark:text-slate-300" :title="targetOf(e)">{{ compactId(targetOf(e)) }}</code></td>
+                <td class="px-4 py-2.5 text-xs tabular-nums text-slate-600 dark:text-slate-400">{{ formatDateTime(e.createdAt, locale) }}</td>
+                <td class="px-4 py-2.5"><code class="break-all text-xs font-semibold text-indigo-700 dark:text-indigo-300">{{ e.action }}</code></td>
+                <td class="px-4 py-2.5"><code class="text-xs text-slate-700 dark:text-slate-300" :title="e.actorUserId">{{ compactId(e.actorUserId) }}</code></td>
+                <td class="px-4 py-2.5"><code class="text-xs text-slate-700 dark:text-slate-300" :title="targetOf(e)">{{ compactId(targetOf(e)) }}</code></td>
               </tr>
             </tbody>
           </table>
@@ -37,8 +29,7 @@
         <ul class="divide-y divide-slate-100 md:hidden dark:divide-slate-800">
           <li v-for="e in filteredEvents" :key="e.id" class="space-y-3 p-4">
             <div class="flex items-start gap-3">
-              <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300"><AppIcon name="audit" :size="17" /></span>
-              <div class="min-w-0 flex-1">
+                            <div class="min-w-0 flex-1">
                 <p class="break-all font-mono text-xs font-semibold text-slate-900 dark:text-white">{{ e.action }}</p>
                 <p class="mt-1 text-xs tabular-nums text-slate-500 dark:text-slate-400">{{ formatDateTime(e.createdAt, locale) }}</p>
               </div>
@@ -72,11 +63,10 @@ import { ApiError, api } from '../api/client'
 import { compactId, formatDateTime } from '../utils/format'
 import type { AuditEventView } from '../api/types'
 import StateBlock from '../components/StateBlock.vue'
-import AppIcon from '../components/icons/AppIcon.vue'
 import AppNotice from '../components/ui/AppNotice.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppCard from '../components/ui/AppCard.vue'
-import AppSearch from '../components/ui/AppSearch.vue'
+import AppToolbar from '../components/ui/AppToolbar.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 

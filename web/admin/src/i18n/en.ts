@@ -70,6 +70,7 @@ export const en = {
     url: 'URL (https, optional)',
     advisorySaved: 'Advisory recorded.',
     conflictNote: 'You cannot review your own or your publishers’ releases.',
+    details: 'File details', moreActions: 'More actions',
   },
   audit: { title: 'Audit events', searchPage: 'Search audit events on this page', action: 'Action', actor: 'Actor', target: 'Target', when: 'When' },
   portal: {

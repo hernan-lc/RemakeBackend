@@ -22,7 +22,7 @@ defineProps<{ modelValue: string; label?: string }>()
 defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const selectClasses = computed(() => [
-  'min-h-11 w-full appearance-none rounded-xl border border-slate-200 bg-white py-2.5 pl-3 pr-9 text-sm text-slate-900 transition-colors',
+  'min-h-10 w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 transition-colors',
   'hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/15',
   'dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:border-slate-600 dark:focus:border-indigo-400',
   '[&>option]:bg-white dark:[&>option]:bg-slate-800',

@@ -1,12 +1,8 @@
 <template>
-  <div class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 py-14 text-center dark:border-slate-800 dark:bg-slate-900/45">
-    <span class="flex size-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-indigo-500 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-indigo-300">
-      <AppIcon :name="icon" :size="25" aria-hidden="true" />
-    </span>
-    <div class="max-w-md">
-      <p class="text-sm font-semibold text-slate-800 dark:text-slate-100">{{ title }}</p>
-      <p v-if="hint" class="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">{{ hint }}</p>
-    </div>
+  <div class="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 px-5 py-9 text-center dark:border-slate-800">
+    <AppIcon :name="icon" :size="21" class="text-slate-400 dark:text-slate-500" aria-hidden="true" />
+    <p class="text-sm font-medium text-slate-700 dark:text-slate-200">{{ title }}</p>
+    <p v-if="hint" class="max-w-md text-xs leading-5 text-slate-500 dark:text-slate-400">{{ hint }}</p>
     <div v-if="$slots.actions" class="mt-2 flex flex-wrap justify-center gap-2"><slot name="actions" /></div>
   </div>
 </template>

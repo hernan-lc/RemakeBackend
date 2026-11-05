@@ -1,57 +1,46 @@
 <template>
-  <div class="flex flex-col gap-6">
-    <PageHeader :title="t('portal.title')" :description="t('portal.description')" icon="portal" />
+  <div class="flex flex-col gap-5">
+    <PageHeader :title="t('portal.title')" />
 
     <AppCard :label="t('portal.requestTitle')">
-      <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] lg:items-center">
-      <AppSectionHeader :title="t('portal.requestTitle')" :description="t('portal.namespaceHint')" icon="plus" />
-      <form class="flex flex-col gap-2" @submit.prevent="requestNamespace">
-        <AppInput v-model="namespace" :label="t('portal.namespace')" required :maxlength="63" />
-        <p v-if="requestError" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
-          <AppIcon name="alert" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
-          {{ requestError }}
-        </p>
-        <div>
-          <AppButton type="submit" size="sm" variant="primary" icon="plus" :loading="requesting" :disabled="requesting || !validNamespace">
-            {{ t('portal.requestButton') }}
-          </AppButton>
-        </div>
+      <AppSectionHeader :title="t('portal.requestTitle')" />
+      <form class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end" @submit.prevent="requestNamespace">
+        <AppInput v-model="namespace" :label="t('portal.namespace')" required :maxlength="63" class="min-w-0 flex-1" />
+        <AppButton type="submit" size="sm" variant="primary" icon="plus" :loading="requesting" :disabled="requesting || !validNamespace">
+          {{ t('portal.requestButton') }}
+        </AppButton>
       </form>
-      </div>
+      <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ t('portal.namespaceHint') }}</p>
+      <p v-if="requestError" role="alert" class="mt-2 text-sm text-red-700 dark:text-red-300">{{ requestError }}</p>
     </AppCard>
 
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
-      <div class="mb-4"><AppSectionHeader :title="t('portal.yourNamespaces')" :description="t('portal.namespaceDescription')" icon="portal"><template #actions><AppBadge tone="neutral">{{ publishers.length }}</AppBadge></template></AppSectionHeader></div>
-      <ul class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+      <div class="mb-3">
+        <AppSectionHeader :title="t('portal.yourNamespaces')">
+          <template #actions><AppBadge tone="neutral">{{ publishers.length }}</AppBadge></template>
+        </AppSectionHeader>
+      </div>
+      <ul class="grid grid-cols-1 gap-3">
         <li v-for="p in publishers" :key="p.id">
           <AppCard :label="p.namespace">
-            <div class="flex min-w-0 items-center gap-3">
-              <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"><AppIcon name="portal" :size="20" /></span>
-              <span class="min-w-0 break-all font-mono text-base font-semibold">{{ p.namespace }}</span>
-            </div>
-            <div class="mt-3 flex flex-wrap items-center gap-2">
-              <AppBadge :tone="p.status === 'approved' ? 'success' : p.status === 'pending' ? 'warn' : 'neutral'" :icon="p.status === 'approved' ? 'checkCircle' : p.status === 'pending' ? 'clock' : 'info'">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 class="mr-2 min-w-0 break-all font-mono text-base font-semibold">{{ p.namespace }}</h2>
+              <AppBadge :tone="p.status === 'approved' ? 'success' : p.status === 'pending' ? 'warn' : 'neutral'">
                 {{ statusLabel(p.status) }}
               </AppBadge>
-              <AppBadge tone="info" icon="account">{{ p.role }}</AppBadge>
+              <AppBadge tone="neutral">{{ p.role }}</AppBadge>
             </div>
-            <div class="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
-              <div class="grid grid-cols-2 gap-2">
-                <AppButton size="sm" :variant="open[p.id] === 'members' ? 'primary' : 'secondary'" icon="portal" class="!justify-start" :aria-expanded="open[p.id] === 'members'" @click="toggle(p.id, 'members')">{{ t('portal.members') }}</AppButton>
-                <AppButton size="sm" :variant="open[p.id] === 'keys' ? 'primary' : 'secondary'" icon="key" class="!justify-start" :aria-expanded="open[p.id] === 'keys'" @click="toggle(p.id, 'keys')">{{ t('portal.keys') }}</AppButton>
-                <AppButton size="sm" :variant="open[p.id] === 'transfer' ? 'primary' : 'secondary'" icon="arrowRight" class="!justify-start" :aria-expanded="open[p.id] === 'transfer'" @click="toggle(p.id, 'transfer')">{{ t('portal.transfer') }}</AppButton>
-                <AppButton size="sm" :variant="open[p.id] === 'releases' ? 'primary' : 'secondary'" icon="package" class="!justify-start" :aria-expanded="open[p.id] === 'releases'" @click="toggle(p.id, 'releases')">{{ t('releases.title') }}</AppButton>
-              </div>
-              <div v-if="open[p.id]" class="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-3 dark:border-slate-800 dark:bg-slate-800/40">
-                <MemberManager v-if="open[p.id] === 'members'" :publisher-id="p.id" :role="p.role" @changed="refetch" />
-                <KeyManager v-if="open[p.id] === 'keys'" :publisher-id="p.id" :role="p.role" :status="p.status" @changed="refetch" />
-                <TransferPanel v-if="open[p.id] === 'transfer'" :publisher-id="p.id" :role="p.role" @changed="refetch" />
-                <ReleaseList v-if="open[p.id] === 'releases'" :publisher-id="p.id" :refresh-key="releaseRefresh" />
-              </div>
+            <div class="mt-3">
+              <AppActionTabs :model-value="open[p.id] ?? ''" :items="namespaceTabs" :label="p.namespace" @update:model-value="setOpen(p.id, $event)" />
             </div>
-            <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 dark:border-slate-800">
-              <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('portal.notOwnerAdmin') }}</p>
-              <AppButton v-if="p.role === 'owner'" size="sm" variant="danger" icon="trash" @click="askDelete(p)">{{ t('portal.deleteNamespace') }}</AppButton>
+            <div v-if="open[p.id]" class="mt-3 rounded-lg border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-800 dark:bg-slate-800/30">
+              <MemberManager v-if="open[p.id] === 'members'" :publisher-id="p.id" :role="p.role" @changed="refetch" />
+              <KeyManager v-if="open[p.id] === 'keys'" :publisher-id="p.id" :role="p.role" :status="p.status" @changed="refetch" />
+              <TransferPanel v-if="open[p.id] === 'transfer'" :publisher-id="p.id" :role="p.role" @changed="refetch" />
+              <ReleaseList v-if="open[p.id] === 'releases'" :publisher-id="p.id" :refresh-key="releaseRefresh" />
+            </div>
+            <div v-if="p.role === 'owner'" class="mt-3 flex justify-end border-t border-slate-100 pt-3 dark:border-slate-800">
+              <AppButton size="sm" variant="danger" icon="trash" @click="askDelete(p)">{{ t('portal.deleteNamespace') }}</AppButton>
             </div>
           </AppCard>
         </li>
@@ -59,7 +48,7 @@
       <EmptyState v-if="publishers.length === 0" :title="t('portal.emptyDescription')" icon="portal" />
     </StateBlock>
 
-    <ReleaseWizard v-if="publishers.length > 0" :publishers="publishers" @submitted="releaseRefresh++" />
+    <ReleaseWizard v-if="publishers.some((p) => p.status === 'approved' && canPublish(p.role))" :publishers="publishers" @submitted="releaseRefresh++" />
     <ConfirmDialog :open="!!deleteTarget" :title="t('portal.deleteNamespace')" :body="t('portal.deleteConfirm', { namespace: deleteTarget?.namespace ?? '' })" :busy="deleting" :error="deleteError" :prompt-label="t('portal.deletePrompt')" v-model:prompt-value="deleteText" :confirm-match="deleteTarget?.namespace" @confirm="deleteNamespace" @cancel="cancelDelete" />
   </div>
 </template>
@@ -71,15 +60,16 @@ import { useRoute } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ApiError, api } from '../api/client'
 import { useUiStore } from '../stores/ui'
+import { canPublish } from '../api/types'
 import type { MyPublisher } from '../api/types'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import StateBlock from '../components/StateBlock.vue'
-import AppIcon from '../components/icons/AppIcon.vue'
 import AppBadge from '../components/ui/AppBadge.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppCard from '../components/ui/AppCard.vue'
 import AppSectionHeader from '../components/ui/AppSectionHeader.vue'
 import AppInput from '../components/ui/AppInput.vue'
+import AppActionTabs from '../components/ui/AppActionTabs.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import MemberManager from '../components/portal/MemberManager.vue'
@@ -147,8 +137,14 @@ watch(publishers, (list) => {
   }
 }, { immediate: true })
 
-function toggle(id: string, section: string) {
-  if (open[id] === section) delete open[id]
+const namespaceTabs = computed(() => [
+  { value: 'members', label: t('portal.members'), icon: 'portal' as const },
+  { value: 'keys', label: t('portal.keys'), icon: 'key' as const },
+  { value: 'transfer', label: t('portal.transfer'), icon: 'arrowRight' as const },
+  { value: 'releases', label: t('releases.title'), icon: 'package' as const },
+])
+function setOpen(id: string, section: string) {
+  if (!section) delete open[id]
   else open[id] = section
 }
 

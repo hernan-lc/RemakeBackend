@@ -57,7 +57,7 @@ async function confirmDelete(wrapper: ReturnType<typeof mount>) {
 describe('publisher namespace deletion', () => {
   it('deletes only after the owner confirms the exact namespace', async () => {
     const { wrapper, fetchMock } = await setup(204)
-    expect(wrapper.text()).toContain('Only approved publishers accept releases.')
+    expect(wrapper.text()).not.toContain('Submit a signed release')
     expect(wrapper.text()).not.toContain('Loading…')
     await confirmDelete(wrapper)
     await vi.waitFor(() => expect(wrapper.text()).not.toContain('owner-space'))
