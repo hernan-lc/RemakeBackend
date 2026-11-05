@@ -150,6 +150,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let config =
         Config::from_env().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    // Logs never include DATABASE_URL, AUTH_SECRET or other credentials.
+    tracing::info!(railway = config.railway, bind = %config.bind, "configuration validated");
     if let [command, path] = startup_args.as_slice() {
         if command == "backup-local" {
             local_backup::backup(
@@ -185,6 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let adapter = Arc::new(SqlxDbAdapter::postgres(&config.database_url).await?);
     let storage = Arc::new(SqlxSecondaryStorage::postgres(&config.database_url).await?);
+    tracing::info!("database connection established");
     let context = AuthContext::new(
         AuthOptions {
             secret: config.auth_secret,
@@ -202,6 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["migrate"] {
+        tracing::info!(mode = "migrate", "startup mode");
         adapter
             .apply_migrations(&context.migration_plan(), SqlDialect::Postgres)
             .await?;
@@ -211,9 +215,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .connect(&config.database_url)
             .await?;
         readiness::MIGRATOR.run(&pool).await?;
-        tracing::info!("auth and cloud migrations applied");
+        // One-shot completion: the process exits 0 here and never binds the HTTP listener.
+        tracing::info!("migrations applied; exiting without starting the HTTP server");
         return Ok(());
     }
+    tracing::info!(mode = "server", "startup mode");
     if let [command, candidate] = args.as_slice() {
         if command == "verify-candidate" {
             let id = uuid::Uuid::parse_str(candidate)?;
@@ -568,13 +574,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app = admin_static::mount(app, &dist, hsts)?;
     }
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
-    tracing::info!(address = %config.bind, "cloud API listening");
+    tracing::info!(address = %config.bind, railway = config.railway, "HTTP listener bound; cloud API listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async {
+        shutdown_signal().await;
+        tracing::info!("shutdown signal received; draining in-flight requests");
+    })
     .await?;
+    tracing::info!("HTTP server stopped");
     Ok(())
 }
 
