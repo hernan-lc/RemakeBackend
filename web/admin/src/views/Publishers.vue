@@ -11,18 +11,22 @@
         <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
       </template>
     </PageHeader>
+    <div class="flex flex-col items-start gap-2">
+      <AppSearch v-model="search" :label="t('publishers.searchPage')" />
+      <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('states.searchPageHint') }}</p>
+    </div>
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <div v-if="forbidden" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200" role="alert">
         <AppIcon name="alert" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ t('errors.notAdmin') }}
       </div>
       <template v-else>
-        <AppCard :padded="false" label="publisher-requests">
+        <AppCard v-if="visibleItems.length > 0 || membershipsError" :padded="false" label="publisher-requests">
           <p v-if="membershipsError" class="p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">{{ t('publishers.membershipsUnavailable') }} <button class="underline" @click="refetchMemberships()">{{ t('states.retry') }}</button></p>
           <div class="scroll-thin overflow-x-auto">
             <table class="block w-full text-left text-sm md:table">
               <thead class="sr-only md:not-sr-only md:table-header-group">
-                <tr class="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
+                <tr class="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-400">
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.namespace') }}</th>
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.status') }}</th>
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.created') }}</th>
@@ -30,10 +34,10 @@
                 </tr>
               </thead>
               <tbody class="block divide-y divide-slate-100 md:table-row-group dark:divide-slate-800">
-                <tr v-for="p in items" :key="p.id" class="block py-3 md:table-row md:py-0">
-                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5">{{ p.namespace }}</td>
+                <tr v-for="p in visibleItems" :key="p.id" class="block py-3 transition-colors hover:bg-slate-50 md:table-row md:py-0 dark:hover:bg-slate-800/40">
+                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5"><span class="inline-flex items-center gap-2"><AppIcon name="publishers" :size="16" class="shrink-0 text-indigo-500" aria-hidden="true" />{{ p.namespace }}</span></td>
                   <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-500 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
-                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span>{{ p.createdAt }}</td>
+                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span class="inline-flex items-center gap-1.5"><AppIcon name="clock" :size="15" aria-hidden="true" />{{ formatDateTime(p.createdAt, locale) }}</span></td>
                   <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-col items-start gap-2 md:items-end md:text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
@@ -48,12 +52,12 @@
                     </AppButton>
                     <AppButton v-if="p.status === 'pending' && isMember(p.id) && temporaryEnabled" size="sm" variant="secondary" @click="openTemporary(p.id, p.namespace, null)">{{ t('temporaryApproval.button') }}</AppButton>
                     <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}</p>
-                    <AppButton size="sm" variant="ghost" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
+                    <AppButton size="sm" variant="ghost" icon="key" :aria-expanded="!!keys[p.id]" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
                     <p v-if="keys[p.id] && pendingKeys(p.id).length === 0" class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.noPendingKeys') }}</p>
                     <ul v-if="keys[p.id]" class="flex w-full flex-col gap-2 text-left">
-                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-col items-start gap-2 rounded-md border border-slate-200 px-3 py-2 dark:border-slate-700">
+                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-col items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
                         <span class="break-all font-mono text-xs font-semibold">{{ k.keyId }}</span>
                         <span class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.fingerprint') }} (SHA-256)</span>
                         <code class="break-all font-mono text-xs">{{ k.fingerprint }}</code>
@@ -77,7 +81,7 @@
             </table>
           </div>
         </AppCard>
-        <EmptyState v-if="items.length === 0" :title="t('states.empty')" icon="publishers" />
+        <EmptyState v-if="visibleItems.length === 0" :title="search ? t('states.noMatches') : t('states.empty')" icon="publishers" />
         <div v-if="data?.nextCursor" class="flex justify-center">
           <AppButton variant="secondary" icon="chevronDown" @click="cursor = data.nextCursor">
             {{ t('states.next') }}
@@ -118,15 +122,18 @@ import AppBadge from '../components/ui/AppBadge.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppCard from '../components/ui/AppCard.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
+import AppSearch from '../components/ui/AppSearch.vue'
+import { formatDateTime } from '../utils/format'
 import EmptyState from '../components/ui/EmptyState.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 const client = useQueryClient()
 const status = ref('pending')
+const search = ref('')
 const cursor = ref<string | undefined>(undefined)
 watch(status, () => { cursor.value = undefined })
 
@@ -135,6 +142,10 @@ const { data, isPending, error, refetch } = useQuery({
   queryFn: () => api.adminPublishers({ status: status.value || undefined, cursor: cursor.value, limit: 50 }),
 })
 const items = computed(() => data.value?.items ?? [])
+const visibleItems = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return query ? items.value.filter((p) => [p.namespace, p.status].some((text) => text.toLowerCase().includes(query))) : items.value
+})
 const { data: temporaryAvailability } = useQuery({
   queryKey: ['admin', 'temporary-approval-availability'],
   queryFn: api.temporaryApprovalAvailability,

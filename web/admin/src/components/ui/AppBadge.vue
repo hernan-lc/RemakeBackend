@@ -27,7 +27,7 @@ const tones: Record<Tone, string> = {
 }
 
 const classes = computed(() => [
-  'inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+  'inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold tracking-wide',
   tones[props.tone],
 ])
 </script>

@@ -2,7 +2,7 @@ import { en } from './en'
 
 export const es: typeof en = {
   temporaryApproval: { title: 'Aprobación temporal del operador', button: 'Aprobar con código del registro', generate: 'Generar código', code: 'Código de ocho dígitos', description: 'Esta excepción temporal aprueba {namespace} sin revisión independiente. Cualquier persona con acceso a los registros del servicio puede leer el código.', instructions: 'Busca el código del desafío {id} en los registros de Railway. Caduca en cinco minutos y solo se puede usar una vez.', overrideNotice: 'Se requiere revisión independiente salvo que uses explícitamente la excepción temporal del código en el registro.', invalid: 'El código es incorrecto. Consulta los registros e inténtalo de nuevo.', failed: 'No se pudo completar la aprobación. El código puede haber caducado, haberse usado o la solicitud ya no ser válida.' },
-  app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', skipContent: 'Ir al contenido', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
+  app: { title: 'Administración Cloud', workspace: 'Espacio de operaciones', navigation: 'Navegación', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', skipContent: 'Ir al contenido', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
   auth: {
     signIn: 'Iniciar sesión',
     signInGoogle: 'Iniciar sesión con Google',
@@ -22,7 +22,7 @@ export const es: typeof en = {
     signOutDone: 'Sesión cerrada. Los datos de sesión en caché fueron eliminados.',
     anonymous: 'Sin sesión',
   },
-  states: { loading: 'Cargando…', empty: 'Nada aquí todavía.', retry: 'Reintentar', refresh: 'Actualizar', next: 'Página siguiente', back: 'Atrás', confirm: 'Confirmar', cancel: 'Cancelar', close: 'Cerrar' },
+  states: { loading: 'Cargando…', noMatches: 'No hay resultados coincidentes en esta página.', searchPageHint: 'La búsqueda solo filtra la página cargada.', empty: 'Nada aquí todavía.', retry: 'Reintentar', refresh: 'Actualizar', next: 'Página siguiente', back: 'Atrás', confirm: 'Confirmar', cancel: 'Cancelar', close: 'Cerrar' },
   errors: {
     title: 'Algo salió mal',
     forbidden: 'No tienes acceso. Pide a un administrador Cloud el rol adecuado.',
@@ -33,6 +33,15 @@ export const es: typeof en = {
   },
   dashboard: {
     title: 'Carga de revisión',
+    description: 'Supervisa aprobaciones, verificación de versiones y actividad reciente en un solo lugar.',
+    publisherHint: 'Espacios pendientes de revisión',
+    queueHint: 'Versiones visibles en la cola actual',
+    keysHint: 'Claves de firma por aprobar',
+    auditHint: 'Operaciones y cambios registrados',
+    releasesHint: 'Distribución actual de los estados de verificación y revisión.',
+    activityHint: 'Últimas acciones registradas en la auditoría.',
+    noActivity: 'No hay eventos de auditoría recientes.',
+    awaitingVerification: 'Esperando verificación', integrityPassed: 'Integridad aprobada', antivirusPassed: 'Antivirus aprobado', reviewApproved: 'Revisión aprobada', reviewRejected: 'Revisión rechazada', rejected: 'Rechazado',
     pendingPublishers: 'Publicadores pendientes',
     pendingKeys: 'Claves de firma pendientes',
     releases: 'Versiones por estado',
@@ -42,9 +51,10 @@ export const es: typeof en = {
     approve: 'Aprobar',
     approveConfirm: '¿Aprobar este espacio de nombres? Esto otorga el espacio, nunca una clave de firma.',
   },
-  publishers: { title: 'Solicitudes de publicador', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', noPendingKeys: 'No hay claves pendientes de aprobación.', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella', compareFingerprint: 'Antes de aprobar, compara la huella completa con el publicador por un canal de confianza.', independentReviewer: 'Perteneces a este publicador. Otro administrador que no sea miembro debe aprobar el espacio y revisar sus claves.', membershipsUnavailable: 'No se pudieron comprobar tus membresías. Las acciones de revisión estarán disponibles cuando se complete la comprobación.', approvalForbidden: 'Se denegó la aprobación. Tu rol de administrador o membresía puede haber cambiado; actualiza y solicita la revisión de otro administrador independiente.' },
+  publishers: { title: 'Solicitudes de publicador', searchPage: 'Buscar espacios en esta página', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', noPendingKeys: 'No hay claves pendientes de aprobación.', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella', compareFingerprint: 'Antes de aprobar, compara la huella completa con el publicador por un canal de confianza.', independentReviewer: 'Perteneces a este publicador. Otro administrador que no sea miembro debe aprobar el espacio y revisar sus claves.', membershipsUnavailable: 'No se pudieron comprobar tus membresías. Las acciones de revisión estarán disponibles cuando se complete la comprobación.', approvalForbidden: 'Se denegó la aprobación. Tu rol de administrador o membresía puede haber cambiado; actualiza y solicita la revisión de otro administrador independiente.' },
   moderation: {
     title: 'Cola de moderación',
+    searchPage: 'Buscar versiones en esta página',
     inspect: 'Obtener enlace de inspección',
     inspectionReady: 'Enlace de inspección listo (expira pronto, una sola versión).',
     approve: 'Aprobar',
@@ -63,7 +73,7 @@ export const es: typeof en = {
     advisorySaved: 'Aviso registrado.',
     conflictNote: 'No puedes revisar tus propias versiones ni las de tus publicadores.',
   },
-  audit: { title: 'Eventos de auditoría', action: 'Acción', actor: 'Actor', target: 'Objetivo', when: 'Cuándo' },
+  audit: { title: 'Eventos de auditoría', searchPage: 'Buscar eventos en esta página', action: 'Acción', actor: 'Actor', target: 'Objetivo', when: 'Cuándo' },
   portal: {
     title: 'Mis publicadores',
     description: 'Administra tus espacios, claves de firma, miembros y versiones en un solo lugar.',
@@ -135,6 +145,7 @@ export const es: typeof en = {
     title: 'Versiones',
     noReleases: 'Aún no hay versiones. Envía un paquete firmado para empezar.',
     submitTitle: 'Enviar una versión firmada',
+    sourceDetails: 'Publicador y paquete firmado', packageMetadata: 'Metadatos de la versión', uploadProgress: 'Progreso del envío',
     selectPublisher: 'Publicador',
     selectPublisherHint: 'Solo los publicadores aprobados aceptan versiones.',
     selectKey: 'Clave de firma',

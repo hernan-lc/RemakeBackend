@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col gap-4">
+  <div class="flex flex-col gap-6">
     <PageHeader :title="t('app.account')" icon="account" />
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
       <AppCard v-if="me" label="account-details">
@@ -18,12 +18,12 @@
         </dl>
       </AppCard>
     </StateBlock>
-    <AppCard label="linked-providers">
-      <h2 class="mb-1 text-sm font-semibold text-slate-900 dark:text-white">{{ t('auth.linkedProviders') }}</h2>
+    <div class="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
+    <AppCard label="linked-providers" :title="t('auth.linkedProviders')">
       <p class="mb-3 text-sm text-slate-600 dark:text-slate-400">{{ t('auth.googleLinkNote') }}</p>
       <StateBlock :loading="providersPending" :error="providersFailed" :retry="true" @retry="refetchProviders">
         <ul v-if="providers" class="flex flex-col gap-2">
-          <li v-for="provider in providers" :key="provider.providerId" class="flex items-center gap-2 text-sm">
+          <li v-for="provider in providers" :key="provider.providerId" class="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60">
             <AppBadge tone="info" icon="account">{{ provider.providerId }}</AppBadge>
             <span class="min-w-0 flex-1 break-words text-slate-500 dark:text-slate-400">{{ provider.accountId }}</span>
             <AppButton
@@ -42,8 +42,7 @@
         </p>
       </StateBlock>
     </AppCard>
-    <AppCard label="set-username">
-      <h2 class="mb-1 text-sm font-semibold text-slate-900 dark:text-white">{{ t('auth.setUsername') }}</h2>
+    <AppCard label="set-username" :title="t('auth.setUsername')">
       <p class="mb-3 text-sm text-slate-600 dark:text-slate-400">{{ t('auth.usernameNote') }}</p>
       <form class="flex flex-col gap-3 sm:flex-row sm:items-end" @submit.prevent="saveUsername">
         <AppInput v-model="username" :label="t('auth.username')" type="text" autocomplete="username" icon="account" class="flex-1" />
@@ -58,6 +57,7 @@
         {{ t('auth.usernameSaved') }}
       </p>
     </AppCard>
+    </div>
     <div>
       <AppButton variant="secondary" icon="logout" to="/logout">
         {{ t('app.logout') }}

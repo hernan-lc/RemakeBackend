@@ -39,9 +39,9 @@ const props = withDefaults(
 defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const inputClasses = computed(() => [
-  'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400',
-  'hover:border-slate-400 focus:border-slate-500 focus:outline-none',
-  'dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-slate-500 dark:focus:border-slate-400',
+  'min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 transition-colors',
+  'hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/15',
+  'dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-indigo-400',
   props.icon ? 'pl-9' : undefined,
 ])
 </script>

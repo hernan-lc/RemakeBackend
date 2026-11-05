@@ -5,6 +5,10 @@
         <AppButton size="sm" variant="secondary" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
       </template>
     </PageHeader>
+    <div class="flex flex-col items-start gap-2">
+      <AppSearch v-model="search" :label="t('moderation.searchPage')" />
+      <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('states.searchPageHint') }}</p>
+    </div>
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <template v-if="forbidden">
         <div role="alert" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
@@ -12,10 +16,10 @@
           {{ t('errors.notAdmin') }}
         </div>
       </template>
-      <ul v-else class="flex flex-col gap-3">
-        <li v-for="c in items" :key="c.id">
+      <ul v-else class="grid grid-cols-1 gap-4 2xl:grid-cols-2">
+        <li v-for="c in visibleItems" :key="c.id">
           <AppCard :label="`${c.namespace}/${c.pluginId}@${c.version}`">
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
               <span class="break-all font-mono text-sm font-semibold">{{ c.namespace }}/{{ c.pluginId }}@{{ c.version }}</span>
               <AppBadge v-if="c.yanked" tone="danger" icon="ban">yanked</AppBadge>
               <AppBadge v-if="c.advisory" tone="warn" icon="flag">{{ c.advisory.severity }}</AppBadge>
@@ -23,8 +27,8 @@
             <p class="mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
               {{ c.target }} · {{ (c.size / 1024).toFixed(1) }} KiB
             </p>
-            <p class="mt-1 break-all font-mono text-xs text-slate-500 dark:text-slate-400">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
-            <div class="mt-3 flex flex-wrap gap-2">
+            <p class="mt-3 break-all rounded-xl bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
+            <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
               <AppButton size="sm" variant="secondary" icon="eye" @click="inspect(c.id)">
                 {{ t('moderation.inspect') }}
               </AppButton>
@@ -62,7 +66,7 @@
           </AppCard>
         </li>
       </ul>
-      <EmptyState v-if="!forbidden && items.length === 0" :title="t('states.empty')" icon="moderation" />
+      <EmptyState v-if="!forbidden && visibleItems.length === 0" :title="search ? t('states.noMatches') : t('states.empty')" icon="moderation" />
       <div v-if="data?.nextCursor" class="mt-3 flex justify-center">
         <AppButton variant="secondary" icon="chevronDown" @click="after = data.nextCursor ?? undefined">
           {{ t('states.next') }}
@@ -98,18 +102,24 @@ import AppCard from '../components/ui/AppCard.vue'
 import AppInput from '../components/ui/AppInput.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import AppSearch from '../components/ui/AppSearch.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 
 const { t } = useI18n()
 const ui = useUiStore()
 const client = useQueryClient()
 const after = ref<string | undefined>(undefined)
+const search = ref('')
 
 const { data, isPending, error, refetch } = useQuery({
   queryKey: computed(() => ['moderation', 'queue', after.value]),
   queryFn: () => api.moderationQueue(after.value),
 })
 const items = computed(() => data.value?.items ?? [])
+const visibleItems = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return query ? items.value.filter((c) => [c.namespace, c.pluginId, c.version, c.target, c.sha256].some((text) => text.toLowerCase().includes(query))) : items.value
+})
 const forbidden = computed(() => error.value instanceof ApiError && error.value.status === 403)
 const errorDetail = computed(() =>
   error.value instanceof ApiError && error.value.status !== 403 ? `HTTP ${error.value.status}` : undefined,

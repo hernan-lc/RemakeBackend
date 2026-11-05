@@ -40,3 +40,16 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Safe-area padding for the compact mobile workspace navigation. */
+.mobile-tabbar {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Clear text selection and scroll treatments across light/dark modes. */
+::selection {
+  background: rgb(99 102 241 / 0.22);
+}
+.dark ::selection {
+  background: rgb(129 140 248 / 0.28);
+}
