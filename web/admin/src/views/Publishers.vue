@@ -35,9 +35,9 @@
               </thead>
               <tbody class="block divide-y divide-slate-100 md:table-row-group dark:divide-slate-800">
                 <tr v-for="p in visibleItems" :key="p.id" class="block py-3 transition-colors hover:bg-slate-50 md:table-row md:py-0 dark:hover:bg-slate-800/40">
-                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5">{{ p.namespace }}</td>
+                  <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5"><span class="inline-flex items-center gap-2"><AppIcon name="publishers" :size="16" class="shrink-0 text-indigo-500" aria-hidden="true" />{{ p.namespace }}</span></td>
                   <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-500 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
-                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span>{{ formatDateTime(p.createdAt, locale) }}</td>
+                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span class="inline-flex items-center gap-1.5"><AppIcon name="clock" :size="15" aria-hidden="true" />{{ formatDateTime(p.createdAt, locale) }}</span></td>
                   <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-col items-start gap-2 md:items-end md:text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
@@ -52,7 +52,7 @@
                     </AppButton>
                     <AppButton v-if="p.status === 'pending' && isMember(p.id) && temporaryEnabled" size="sm" variant="secondary" @click="openTemporary(p.id, p.namespace, null)">{{ t('temporaryApproval.button') }}</AppButton>
                     <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}</p>
-                    <AppButton size="sm" variant="ghost" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
+                    <AppButton size="sm" variant="ghost" icon="key" :aria-expanded="!!keys[p.id]" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
                     <p v-if="keys[p.id] && pendingKeys(p.id).length === 0" class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.noPendingKeys') }}</p>

@@ -4,7 +4,7 @@
 
     <AppCard :label="t('portal.requestTitle')">
       <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)] lg:items-center">
-      <AppSectionHeader :title="t('portal.requestTitle')" :description="t('portal.namespaceHint')" />
+      <AppSectionHeader :title="t('portal.requestTitle')" :description="t('portal.namespaceHint')" icon="plus" />
       <form class="flex flex-col gap-2" @submit.prevent="requestNamespace">
         <AppInput v-model="namespace" :label="t('portal.namespace')" required :maxlength="63" />
         <p v-if="requestError" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
@@ -21,7 +21,7 @@
     </AppCard>
 
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
-      <div class="mb-4"><AppSectionHeader :title="t('portal.yourNamespaces')" :description="t('portal.namespaceDescription')"><template #actions><AppBadge tone="neutral">{{ publishers.length }}</AppBadge></template></AppSectionHeader></div>
+      <div class="mb-4"><AppSectionHeader :title="t('portal.yourNamespaces')" :description="t('portal.namespaceDescription')" icon="portal"><template #actions><AppBadge tone="neutral">{{ publishers.length }}</AppBadge></template></AppSectionHeader></div>
       <ul class="grid grid-cols-1 gap-3 xl:grid-cols-2">
         <li v-for="p in publishers" :key="p.id">
           <AppCard :label="p.namespace">
@@ -30,7 +30,7 @@
               <span class="min-w-0 break-all font-mono text-base font-semibold">{{ p.namespace }}</span>
             </div>
             <div class="mt-3 flex flex-wrap items-center gap-2">
-              <AppBadge :tone="p.status === 'approved' ? 'success' : p.status === 'pending' ? 'warn' : 'neutral'">
+              <AppBadge :tone="p.status === 'approved' ? 'success' : p.status === 'pending' ? 'warn' : 'neutral'" :icon="p.status === 'approved' ? 'checkCircle' : p.status === 'pending' ? 'clock' : 'info'">
                 {{ statusLabel(p.status) }}
               </AppBadge>
               <AppBadge tone="info" icon="account">{{ p.role }}</AppBadge>
@@ -51,7 +51,7 @@
             </div>
             <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 dark:border-slate-800">
               <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('portal.notOwnerAdmin') }}</p>
-              <AppButton v-if="p.role === 'owner'" size="sm" variant="danger" @click="askDelete(p)">{{ t('portal.deleteNamespace') }}</AppButton>
+              <AppButton v-if="p.role === 'owner'" size="sm" variant="danger" icon="trash" @click="askDelete(p)">{{ t('portal.deleteNamespace') }}</AppButton>
             </div>
           </AppCard>
         </li>

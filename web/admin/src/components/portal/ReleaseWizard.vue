@@ -1,5 +1,6 @@
 <template>
-  <AppCard :label="t('releases.submitTitle')" :title="t('releases.submitTitle')">
+  <AppCard :label="t('releases.submitTitle')">
+    <div class="mb-3"><AppSectionHeader :title="t('releases.submitTitle')" icon="package" /></div>
     <p v-if="eligiblePublishers.length === 0" class="text-sm text-slate-600 dark:text-slate-400">{{ t('releases.selectPublisherHint') }}</p>
     <div v-else class="flex flex-col gap-6">
       <section class="space-y-4">
