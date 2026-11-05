@@ -1,5 +1,6 @@
-//! Publisher keys are scoped to one approved publisher and require independent approval.
-//! Enrollment and approval additionally require a session-bound step-up
+//! Publisher keys are scoped to one approved publisher. Normal approval requires
+//! independent review; the opt-in temporary log-code path is separately audited.
+//! Enrollment and normal approval require a session-bound step-up
 //! grant (see `crate::step_up`): the challenge endpoint validates the grant
 //! without spending it, and registration/approval consume it atomically with
 //! the mutation in the same transaction.

@@ -8,7 +8,7 @@ Cloud account roles are separate from Better Auth identity roles. The explicit d
 
 The reviewer must be a different trusted person with a Cloud `admin` role and
 must not be a member of the publisher, regardless of their membership role.
-An admin who owns the namespace cannot approve it or review its keys. Have the
+Under the normal review path, an admin who owns the namespace cannot approve it or review its keys. Have the
 reviewer sign up or sign in, obtain their user ID through their account, and ask
 an authorized database operator to grant that ID the admin role using the command
 above. The reviewer signs in through the browser and approves the pending
@@ -25,6 +25,28 @@ retrying. Do not use a second account controlled by the requester as a substitut
 for an independent reviewer.
 
 Auth-user deletion is blocked while Cloud roles or publisher memberships remain; roles can be self-revoked with `DELETE /api/v1/me/roles/{role}` or revoked through the operator command before calling `DELETE /api/v1/me`. Audit events are retained under the opaque user id. Approval is serialized with role revocation and membership changes, but it is not a replacement for independent security review or a complete approval UI.
+
+## Temporary Railway log-code override
+
+For a temporary single-operator deployment, an operator can explicitly set
+`TEMPORARY_LOG_APPROVALS=true` in the service environment and redeploy. It is
+disabled by default; omit the setting or set it to `false` to turn it off.
+When enabled, a signed-in Cloud admin who belongs to a publisher can select
+**Approve with log code**. Generate a code, find the matching challenge ID and
+eight-digit code in the service logs, and enter it in the same browser session.
+For a key, first compare the complete fingerprint shown in the dialog with the
+publisher's key. A separate code is required for each namespace or key.
+
+Codes expire after five minutes, are single-use, and are bound to the issuing
+account, session, and target. Attempts and issuance are rate limited. The
+approval and code consumption are atomic and use distinct audit actions
+`publisher.temporary_operator_approved` and
+`publisher_key.temporary_operator_approved`. This bypasses independent review
+and key-approval step-up; log readers who also control the signed-in admin
+session can approve. Restrict log access and retention, and disable the flag
+once it is no longer needed. Ensure logging includes warnings. All replicas
+must share the database and authentication secret. Only code digests are stored
+in the database; generated plaintext codes are intentionally written to logs.
 
 ## Ownership transfer
 

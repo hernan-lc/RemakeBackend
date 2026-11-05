@@ -46,8 +46,9 @@
                     >
                       {{ t('dashboard.approve') }}
                     </AppButton>
-                    <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t('publishers.independentReviewer') }}</p>
-                    <AppButton size="sm" variant="ghost" :disabled="!memberships || isMember(p.id)" @click="toggleKeys(p.id)">
+                    <AppButton v-if="p.status === 'pending' && isMember(p.id) && temporaryEnabled" size="sm" variant="secondary" @click="openTemporary(p.id, p.namespace, null)">{{ t('temporaryApproval.button') }}</AppButton>
+                    <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}</p>
+                    <AppButton size="sm" variant="ghost" :disabled="!memberships || (isMember(p.id) && !temporaryEnabled)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
                     <p v-if="keys[p.id] && pendingKeys(p.id).length === 0" class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.noPendingKeys') }}</p>
@@ -58,6 +59,7 @@
                         <code class="break-all font-mono text-xs">{{ k.fingerprint }}</code>
                         <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.compareFingerprint') }}</p>
                         <AppButton
+                          v-if="!isMember(p.id)"
                           size="sm"
                           variant="secondary"
                           icon="check"
@@ -66,6 +68,7 @@
                         >
                           {{ t('publishers.approveKey') }}
                         </AppButton>
+                        <AppButton v-if="isMember(p.id) && temporaryEnabled" size="sm" variant="secondary" @click="openTemporary(p.id, p.namespace, k.id)">{{ t('temporaryApproval.button') }}</AppButton>
                       </li>
                     </ul>
                   </div></td>
@@ -83,6 +86,7 @@
       </template>
     </StateBlock>
     <ConfirmDialog :danger="false" :open="confirmOpen" :title="t('dashboard.approve')" :body="t('dashboard.approveConfirm')" :busy="busyId !== null" @confirm="doApprove" @cancel="confirmOpen = false" />
+    <TemporaryApprovalDialog :open="!!temporaryTarget" :publisher-id="temporaryTarget?.publisherId ?? ''" :namespace="temporaryTarget?.namespace ?? ''" :key-id="temporaryTarget?.keyId ?? null" @cancelled="temporaryTarget = null" @approved="temporaryApproved" />
     <StepUpDialog
       :open="keyDialogOpen"
       action="publisher.key.approve"
@@ -108,6 +112,7 @@ import type { PublisherKey } from '../api/types'
 import StateBlock from '../components/StateBlock.vue'
 import StepUpDialog from '../components/StepUpDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import TemporaryApprovalDialog from '../components/TemporaryApprovalDialog.vue'
 import AppIcon from '../components/icons/AppIcon.vue'
 import AppBadge from '../components/ui/AppBadge.vue'
 import AppButton from '../components/ui/AppButton.vue'
@@ -130,6 +135,26 @@ const { data, isPending, error, refetch } = useQuery({
   queryFn: () => api.adminPublishers({ status: status.value || undefined, cursor: cursor.value, limit: 50 }),
 })
 const items = computed(() => data.value?.items ?? [])
+const { data: temporaryAvailability } = useQuery({
+  queryKey: ['admin', 'temporary-approval-availability'],
+  queryFn: api.temporaryApprovalAvailability,
+  retry: false,
+})
+const temporaryEnabled = computed(() => temporaryAvailability.value?.enabled === true)
+const temporaryTarget = ref<{ publisherId: string; namespace: string; keyId: string | null } | null>(null)
+function openTemporary(publisherId: string, namespace: string, keyId: string | null) {
+  temporaryTarget.value = { publisherId, namespace, keyId }
+}
+async function temporaryApproved() {
+  if (temporaryTarget.value) {
+    delete keys[temporaryTarget.value.publisherId]
+    if (!temporaryTarget.value.keyId) status.value = 'approved'
+  }
+  temporaryTarget.value = null
+  ui.toast(t('publishers.approvedMsg'), 'ok')
+  await client.invalidateQueries({ queryKey: ['admin'] })
+  await refetch()
+}
 const { data: memberships, error: membershipsError, refetch: refetchMemberships } = useQuery({
   queryKey: ['my-publishers', 'review-eligibility'],
   queryFn: api.myPublishers,
@@ -153,7 +178,7 @@ async function toggleKeys(publisherId: string) {
     return
   }
   try {
-    keys[publisherId] = await api.adminPublisherKeys(publisherId)
+    keys[publisherId] = isMember(publisherId) ? await api.publisherKeys(publisherId) : await api.adminPublisherKeys(publisherId)
   } catch {
     ui.toast(t('errors.loadFailed'), 'err')
   }

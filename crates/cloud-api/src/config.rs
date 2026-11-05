@@ -25,6 +25,8 @@ pub struct Config {
     pub object_storage: Option<StorageConfig>,
     pub clamav_addr: Option<SocketAddr>,
     pub admin_dist_dir: Option<std::path::PathBuf>,
+    /// Temporary operator override: emits short-lived confirmation codes to logs.
+    pub temporary_log_approvals: bool,
 }
 
 pub enum StorageConfig {
@@ -249,6 +251,11 @@ impl Config {
             admin_dist_dir: get("ADMIN_DIST_DIR")
                 .filter(|v| !v.trim().is_empty())
                 .map(Into::into),
+            temporary_log_approvals: match get("TEMPORARY_LOG_APPROVALS").as_deref() {
+                None | Some("false") => false,
+                Some("true") => true,
+                Some(_) => return Err("TEMPORARY_LOG_APPROVALS must be true or false".into()),
+            },
         })
     }
 }
@@ -274,6 +281,21 @@ fn is_loopback_host(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_log_approval_is_explicit_and_disabled_by_default() {
+        assert!(!config(&[]).unwrap().temporary_log_approvals);
+        assert!(
+            config(&[("TEMPORARY_LOG_APPROVALS", "true")])
+                .unwrap()
+                .temporary_log_approvals
+        );
+        assert!(
+            !config(&[("TEMPORARY_LOG_APPROVALS", "false")])
+                .unwrap()
+                .temporary_log_approvals
+        );
+        assert!(config(&[("TEMPORARY_LOG_APPROVALS", "1")]).is_err());
+    }
     fn config(overrides: &[(&str, &str)]) -> Result<Config, String> {
         Config::from_lookup(|key| {
             overrides

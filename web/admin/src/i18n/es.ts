@@ -1,6 +1,7 @@
 import { en } from './en'
 
 export const es: typeof en = {
+  temporaryApproval: { title: 'Aprobación temporal del operador', button: 'Aprobar con código del registro', generate: 'Generar código', code: 'Código de ocho dígitos', description: 'Esta excepción temporal aprueba {namespace} sin revisión independiente. Cualquier persona con acceso a los registros del servicio puede leer el código.', instructions: 'Busca el código del desafío {id} en los registros de Railway. Caduca en cinco minutos y solo se puede usar una vez.', overrideNotice: 'Se requiere revisión independiente salvo que uses explícitamente la excepción temporal del código en el registro.', invalid: 'El código es incorrecto. Consulta los registros e inténtalo de nuevo.', failed: 'No se pudo completar la aprobación. El código puede haber caducado, haberse usado o la solicitud ya no ser válida.' },
   app: { title: 'Administración Cloud', dashboard: 'Panel', publishers: 'Publicadores', moderation: 'Moderación', audit: 'Auditoría', portal: 'Mis publicadores', account: 'Cuenta', logout: 'Cerrar sesión', menu: 'Menú', skipContent: 'Ir al contenido', toggleTheme: 'Cambiar tema de color', themeLight: 'Cambiar a tema claro', themeDark: 'Cambiar a tema oscuro', collapseNav: 'Contraer navegación', expandNav: 'Expandir navegación' },
   auth: {
     signIn: 'Iniciar sesión',

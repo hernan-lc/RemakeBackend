@@ -91,6 +91,15 @@ export const api = {
   },
   approvePublisher: (id: string) =>
     request<unknown>(`/api/v1/admin/publishers/${id}/approve`, { method: 'POST' }),
+  temporaryApprovalAvailability: () => request<{ enabled: boolean }>('/api/v1/admin/temporary-log-approvals'),
+  startTemporaryApproval: (publisherId: string, keyId: string | null) =>
+    request<{ challengeId: string; expiresIn: number; fingerprint: string | null }>('/api/v1/admin/temporary-log-approvals', {
+      method: 'POST', body: JSON.stringify({ publisherId, keyId }),
+    }),
+  confirmTemporaryApproval: (challengeId: string, code: string) =>
+    request<void>(`/api/v1/admin/temporary-log-approvals/${encodeURIComponent(challengeId)}/confirm`, {
+      method: 'POST', body: JSON.stringify({ code }),
+    }),
   audit: (params: { cursor?: string; limit?: number }) => {
     const q = new URLSearchParams()
     if (params.cursor) q.set('cursor', params.cursor)

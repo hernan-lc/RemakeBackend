@@ -93,9 +93,10 @@ challenge, upload, release, transfer, or step-up record exists. Audit records
 retain the deleted publisher ID. For an existing publisher, transfer ownership
 instead when its records must be retained.
 
-Signing-key enrollment and approval require fresh, session-bound step-up
-authentication. A different Cloud administrator who is not a publisher member
-must approve the namespace and its keys. Before approving a key, compare the
+Signing-key enrollment and normal approval require fresh, session-bound step-up
+authentication. Normally a different Cloud administrator who is not a publisher member
+must approve the namespace and its keys; an explicitly enabled temporary log-code
+operator override is also available. Before approving a key, compare the
 full SHA-256 fingerprint displayed in the portal and review page using a trusted
 channel. See [Publisher approval](../../docs/PUBLISHER-APPROVAL.md).
 

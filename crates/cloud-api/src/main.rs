@@ -25,6 +25,7 @@ mod snapshot_verify;
 mod snapshot_worker;
 mod step_up;
 mod sync;
+mod temporary_log_approval;
 mod uploads;
 mod web;
 mod worker;
@@ -59,6 +60,7 @@ struct AppState {
     /// OAuth material for the step-up flow. `None` when Google sign-in is not
     /// configured; password step-up still works, Google step-up answers 503.
     step_up_oauth: Option<step_up::StepUpOAuth>,
+    temporary_log_approvals: bool,
 }
 
 fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
@@ -612,6 +614,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.trusted_proxy_cidrs,
         step_up_oauth,
         hsts,
+        config.temporary_log_approvals,
     );
     if let Some(dist) = config.admin_dist_dir {
         app = admin_static::mount(app, &dist, hsts)?;
@@ -673,6 +676,7 @@ fn app_with_storage(
             step_up_oauth: None,
             social_limit_enabled: false,
             hsts: false,
+            temporary_log_approvals: false,
         },
     )
 }
@@ -682,6 +686,7 @@ struct RouterFlags {
     step_up_oauth: Option<step_up::StepUpOAuth>,
     social_limit_enabled: bool,
     hsts: bool,
+    temporary_log_approvals: bool,
 }
 
 fn app_with_proxies(
@@ -692,6 +697,7 @@ fn app_with_proxies(
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
     step_up_oauth: Option<step_up::StepUpOAuth>,
     hsts: bool,
+    temporary_log_approvals: bool,
 ) -> Router {
     app_inner(
         context,
@@ -703,13 +709,13 @@ fn app_with_proxies(
             step_up_oauth,
             social_limit_enabled: true,
             hsts,
+            temporary_log_approvals,
         },
     )
 }
 
-// Step-up grants replaced the old disabled-by-default enrollment gate: key
-// enrollment and approval always require a fresh grant, in every
-// configuration. There is no bypass flag.
+// Normal key enrollment and approval require fresh step-up grants. The
+// separately audited temporary log-code override is opt-in.
 fn app_inner(
     context: AuthContext,
     pool: PgPool,
@@ -1012,6 +1018,19 @@ fn app_inner(
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
+            "/api/v1/admin/temporary-log-approvals",
+            get(temporary_log_approval::availability)
+                .post(temporary_log_approval::start)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/admin/temporary-log-approvals/{id}/confirm",
+            axum::routing::post(temporary_log_approval::confirm)
+                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/step-up/oauth/callback",
             axum::routing::get(step_up::oauth_callback),
         )
@@ -1020,6 +1039,7 @@ fn app_inner(
             pool,
             object_storage,
             step_up_oauth: flags.step_up_oauth,
+            temporary_log_approvals: flags.temporary_log_approvals,
         })
         .merge(auth_routes(auth));
     let router = if flags.social_limit_enabled {

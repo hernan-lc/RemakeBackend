@@ -293,6 +293,7 @@ fn step_up_app(
             step_up_oauth: oauth,
             social_limit_enabled: false,
             hsts: false,
+            temporary_log_approvals: false,
         },
     )
 }
@@ -486,6 +487,281 @@ async fn grant_id(
 
 fn unique_ns(prefix: &str) -> String {
     format!("{}{}", prefix, uuid::Uuid::new_v4().simple())
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn temporary_log_codes_are_bound_limited_single_use_and_audited() {
+    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = step_up_context(&url).await;
+    let email = format!("{}@example.test", uuid::Uuid::new_v4());
+    let (user, cookie) =
+        signup_password_user(&ctx, &email, "test password with enough characters").await;
+    let (other, other_cookie) = signup_password_user(
+        &ctx,
+        &format!("{}@example.test", uuid::Uuid::new_v4()),
+        "test password with enough characters",
+    )
+    .await;
+    sqlx::query("INSERT INTO cloud_account_roles(user_id,role) VALUES($1,'admin'),($2,'admin')")
+        .bind(&user)
+        .bind(&other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let publisher = create_publisher(&pool, &unique_ns("tmp"), &user, "owner").await;
+    sqlx::query("UPDATE cloud_publishers SET status='pending' WHERE id=$1")
+        .bind(publisher)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let auth = AuthRouter::new(ctx.clone()).unwrap();
+    let app = super::app_inner(
+        ctx.clone(),
+        pool.clone(),
+        auth,
+        None,
+        super::RouterFlags {
+            trusted_proxy_cidrs: Vec::new(),
+            step_up_oauth: None,
+            social_limit_enabled: false,
+            hsts: false,
+            temporary_log_approvals: true,
+        },
+    );
+    let path = "/api/v1/admin/temporary-log-approvals";
+    let response = post_json(
+        &app,
+        path,
+        Some(&cookie),
+        ORIGIN,
+        json!({"publisherId":publisher,"keyId":null}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data = body_json(response).await;
+    assert!(data.get("code").is_none());
+    let id = uuid::Uuid::parse_str(data["challengeId"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE cloud_temporary_log_approvals SET code_digest=$1 WHERE id=$2")
+        .bind(crate::temporary_log_approval::digest(
+            &ctx.options.secret,
+            id,
+            "12345678",
+        ))
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let confirm = format!("{path}/{id}/confirm");
+    let second = EmailPasswordService::new(ctx.clone())
+        .unwrap()
+        .sign_in(
+            better_auth::email_password::SignInInput {
+                email,
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let second_cookie = format!("{}={}", second.cookie.name, second.cookie.value);
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&second_cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&other_cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"87654321"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE publisher_id=$1 AND actor_user_id=$2 AND action='publisher.temporary_operator_approved'").bind(publisher).bind(&user).fetch_one(&pool).await.unwrap();
+    assert_eq!(audit, 1);
+    let key = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys(id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES($1,$2,$3,'test',$4,'pending',$5)")
+        .bind(key).bind(publisher).bind(format!("key-{}", key.simple())).bind(format!("{}{}",key.simple(),key.simple())).bind(&user).execute(&pool).await.unwrap();
+    let response = post_json(
+        &app,
+        path,
+        Some(&cookie),
+        ORIGIN,
+        json!({"publisherId":publisher,"keyId":key}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data = body_json(response).await;
+    assert_eq!(
+        data["fingerprint"],
+        format!("{}{}", key.simple(), key.simple())
+    );
+    let id = uuid::Uuid::parse_str(data["challengeId"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE cloud_temporary_log_approvals SET code_digest=$1 WHERE id=$2")
+        .bind(crate::temporary_log_approval::digest(
+            &ctx.options.secret,
+            id,
+            "12345678",
+        ))
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let confirm = format!("{path}/{id}/confirm");
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM cloud_publisher_keys WHERE id=$1")
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "approved");
+    let key_audit: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE publisher_id=$1 AND subject_id=$2 AND actor_user_id=$3 AND action='publisher_key.temporary_operator_approved'")
+        .bind(publisher).bind(key).bind(&user).fetch_one(&pool).await.unwrap();
+    assert_eq!(key_audit, 1);
+    let pending = create_publisher(&pool, &unique_ns("tmp"), &user, "owner").await;
+    sqlx::query("UPDATE cloud_publishers SET status='pending' WHERE id=$1")
+        .bind(pending)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let response = post_json(
+        &app,
+        path,
+        Some(&cookie),
+        ORIGIN,
+        json!({"publisherId":pending,"keyId":null}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let data = body_json(response).await;
+    let id = uuid::Uuid::parse_str(data["challengeId"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE cloud_temporary_log_approvals SET code_digest=$1,expires_at=now()-interval '1 second' WHERE id=$2")
+        .bind(crate::temporary_log_approval::digest(&ctx.options.secret, id, "12345678")).bind(id).execute(&pool).await.unwrap();
+    let confirm = format!("{path}/{id}/confirm");
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query(
+        "UPDATE cloud_temporary_log_approvals SET expires_at=now()+interval '1 minute' WHERE id=$1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for _ in 0..5 {
+        assert_eq!(
+            post_json(
+                &app,
+                &confirm,
+                Some(&cookie),
+                ORIGIN,
+                json!({"code":"87654321"})
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let attempts: i32 =
+        sqlx::query_scalar("SELECT attempts FROM cloud_temporary_log_approvals WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 5);
+    assert_eq!(
+        post_json(
+            &app,
+            &confirm,
+            Some(&cookie),
+            ORIGIN,
+            json!({"code":"12345678"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let disabled = step_up_app(ctx.clone(), pool.clone(), None, None);
+    assert_eq!(
+        post_json(
+            &disabled,
+            path,
+            Some(&cookie),
+            ORIGIN,
+            json!({"publisherId":publisher,"keyId":null})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
