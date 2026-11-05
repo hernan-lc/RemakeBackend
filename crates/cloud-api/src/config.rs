@@ -3,9 +3,19 @@ use ipnet::IpNet;
 use std::{env, net::SocketAddr, time::Duration};
 use url::Url;
 
+// Railway sets these in every build and deployment. Any one of them marks a
+// managed Railway deployment, where stricter bind and origin checks apply.
+const RAILWAY_MARKERS: [&str; 3] = [
+    "RAILWAY_ENVIRONMENT_NAME",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+];
+
 // Deliberately no Debug: this type contains credentials.
 pub struct Config {
     pub bind: SocketAddr,
+    /// True when running on Railway (see `RAILWAY_MARKERS`).
+    pub railway: bool,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub database_url: String,
     pub auth_secret: String,
@@ -49,18 +59,43 @@ impl Config {
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| format!("{key} is required"))
         };
+        let railway = RAILWAY_MARKERS
+            .iter()
+            .any(|key| get(key).is_some_and(|value| !value.trim().is_empty()));
+        // PORT is validated only when it selects the listener or Railway requires it,
+        // so an explicit BIND_ADDR outside Railway keeps its previous behavior.
+        let port = if railway || get("BIND_ADDR").is_none() {
+            parse_port(get("PORT"))?
+        } else {
+            None
+        };
+        if railway && port.is_none() {
+            return Err(
+                "PORT is required on Railway: the service must listen on 0.0.0.0:$PORT".into(),
+            );
+        }
         // An explicit bind address wins for local development. Railway and
         // similar platforms supply PORT and require a listener on all interfaces.
+        // On Railway a loopback listener is unreachable from the edge (502), so
+        // BIND_ADDR must be a non-loopback address on the PORT that Railway routes to.
         let bind: SocketAddr = match get("BIND_ADDR") {
-            Some(value) => value.parse().map_err(|_| "invalid BIND_ADDR")?,
-            None => match get("PORT") {
-                Some(value) => {
-                    let port: u16 = value.parse().map_err(|_| "invalid PORT")?;
-                    if port == 0 {
-                        return Err("invalid PORT".into());
+            Some(value) => {
+                let bind: SocketAddr = value.parse().map_err(|_| "invalid BIND_ADDR")?;
+                if railway {
+                    if bind.ip().is_loopback() {
+                        return Err(
+                            "BIND_ADDR must not be loopback on Railway: unset BIND_ADDR so the service listens on 0.0.0.0:$PORT"
+                                .into(),
+                        );
                     }
-                    SocketAddr::from(([0, 0, 0, 0], port))
+                    if port != Some(bind.port()) {
+                        return Err("BIND_ADDR port must equal PORT on Railway".into());
+                    }
                 }
+                bind
+            }
+            None => match port {
+                Some(port) => SocketAddr::from(([0, 0, 0, 0], port)),
                 None => SocketAddr::from(([127, 0, 0, 1], 3000)),
             },
         };
@@ -110,6 +145,17 @@ impl Config {
             return Err(
                 "APP_ORIGIN must be an HTTPS origin (HTTP is allowed only on loopback)".into(),
             );
+        }
+        if railway {
+            if url.scheme() != "https" {
+                return Err("APP_ORIGIN must use https on Railway".into());
+            }
+            if is_loopback_host(&url) {
+                return Err(
+                    "APP_ORIGIN must be the public https URL of this service on Railway, not localhost"
+                        .into(),
+                );
+            }
         }
         let google = match (get("GOOGLE_CLIENT_ID"), get("GOOGLE_CLIENT_SECRET")) {
             (None, None) => None,
@@ -191,6 +237,7 @@ impl Config {
         };
         Ok(Self {
             bind,
+            railway,
             trusted_proxy_cidrs,
             database_url,
             auth_secret,
@@ -203,6 +250,24 @@ impl Config {
                 .filter(|v| !v.trim().is_empty())
                 .map(Into::into),
         })
+    }
+}
+
+fn parse_port(value: Option<String>) -> Result<Option<u16>, String> {
+    value
+        .map(|value| match value.parse::<u16>() {
+            Ok(port) if port != 0 => Ok(port),
+            _ => Err("invalid PORT".to_string()),
+        })
+        .transpose()
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(domain)) => domain == "localhost" || domain.ends_with(".localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
     }
 }
 
@@ -264,6 +329,104 @@ mod tests {
         );
         assert!(config(&[("PORT", "0")]).is_err());
         assert!(config(&[("PORT", "abc")]).is_err());
+    }
+
+    // Environment for a managed Railway deployment. `set` overrides `base`;
+    // `unset` removes a variable entirely.
+    fn railway_env(set: &[(&str, &str)], unset: &[&str]) -> Result<Config, String> {
+        let base = [
+            ("DATABASE_URL", "postgres://db.example.com/cloud"),
+            ("AUTH_SECRET", "0123456789abcdef0123456789abcdef"),
+            ("APP_ORIGIN", "https://api.example.com"),
+            ("RAILWAY_ENVIRONMENT_NAME", "production"),
+            ("PORT", "8080"),
+        ];
+        Config::from_lookup(|key| {
+            if unset.contains(&key) {
+                return None;
+            }
+            set.iter()
+                .chain(base.iter())
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+        })
+    }
+
+    #[test]
+    fn railway_rules_bind_port_and_origin() {
+        // Railway listens on all interfaces at PORT, and any one marker enables the checks.
+        let config = railway_env(&[], &[]).unwrap();
+        assert!(config.railway);
+        assert_eq!(config.bind.to_string(), "0.0.0.0:8080");
+        assert!(railway_env(&[("BIND_ADDR", "0.0.0.0:8080")], &[]).is_ok());
+        assert!(railway_env(&[("BIND_ADDR", "[::]:8080")], &[]).is_ok());
+        let by_project = railway_env(
+            &[("RAILWAY_PROJECT_ID", "p"), ("BIND_ADDR", "127.0.0.1:8080")],
+            &["RAILWAY_ENVIRONMENT_NAME"],
+        );
+        assert!(
+            by_project.is_err(),
+            "project id alone must enable the checks"
+        );
+        assert!(
+            railway_env(
+                &[("RAILWAY_SERVICE_ID", "s")],
+                &["RAILWAY_ENVIRONMENT_NAME"]
+            )
+            .unwrap()
+            .railway
+        );
+
+        // Loopback binds are unreachable from the edge.
+        for bind in ["127.0.0.1:8080", "[::1]:8080"] {
+            let error = match railway_env(&[("BIND_ADDR", bind)], &[]) {
+                Ok(_) => panic!("loopback bind {bind} must be rejected on Railway"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("loopback") && error.contains("PORT"),
+                "{error}"
+            );
+            assert!(!error.contains("postgres://") && !error.contains("0123456789abcdef"));
+        }
+
+        // PORT is required, and an explicit BIND_ADDR must use it.
+        let missing = match railway_env(&[], &["PORT"]) {
+            Ok(_) => panic!("missing PORT must be rejected on Railway"),
+            Err(error) => error,
+        };
+        assert!(missing.contains("PORT is required"), "{missing}");
+        let mismatch = match railway_env(&[("BIND_ADDR", "0.0.0.0:9000")], &[]) {
+            Ok(_) => panic!("BIND_ADDR port differing from PORT must be rejected"),
+            Err(error) => error,
+        };
+        assert!(mismatch.contains("must equal PORT"), "{mismatch}");
+
+        // APP_ORIGIN must be the public https origin.
+        assert!(railway_env(&[("APP_ORIGIN", "https://api.example.com")], &[]).is_ok());
+        assert!(railway_env(&[("APP_ORIGIN", "http://api.example.com")], &[]).is_err());
+        for origin in [
+            "https://localhost",
+            "https://api.localhost",
+            "https://127.0.0.1",
+            "https://[::1]",
+        ] {
+            assert!(
+                railway_env(&[("APP_ORIGIN", origin)], &[]).is_err(),
+                "{origin} must be rejected on Railway"
+            );
+        }
+    }
+
+    #[test]
+    fn local_development_keeps_loopback_defaults() {
+        let local = config(&[]).unwrap();
+        assert!(!local.railway);
+        assert_eq!(local.bind.to_string(), "127.0.0.1:3000");
+        assert!(config(&[("BIND_ADDR", "127.0.0.1:4000")]).is_ok());
+        // Outside Railway an explicit BIND_ADDR ignores PORT, as before.
+        assert!(config(&[("BIND_ADDR", "127.0.0.1:4000"), ("PORT", "abc")]).is_ok());
+        assert!(config(&[("APP_ORIGIN", "http://localhost:3000")]).is_ok());
     }
 
     #[test]

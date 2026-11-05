@@ -133,6 +133,44 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
     }
 }
 
+/// The role this process plays, logged once at startup so deploy logs show it.
+/// `rejected` covers arguments the usage check refuses before the listener starts.
+fn startup_mode(args: &[String]) -> &'static str {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => "server",
+        ["migrate"] => "migrate",
+        ["verify-once"] | ["prepare-publication-once"] | ["build-initial-candidate"] => "worker",
+        [command, ..]
+            if matches!(
+                *command,
+                "backup-local"
+                    | "restore-local"
+                    | "verify-local-backup"
+                    | "export-candidate"
+                    | "verify-candidate"
+                    | "list-promotion-checks"
+                    | "check-promotion-readiness"
+                    | "publish-generation"
+                    | "rollback-generation"
+                    | "list-generations"
+                    | "gc-registry-artifacts"
+                    | "retry-verification"
+                    | "retry-publication"
+                    | "grant-role"
+                    | "revoke-role"
+            ) =>
+        {
+            "maintenance"
+        }
+        _ => "rejected",
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt()
@@ -148,8 +186,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
     }
-    let config =
-        Config::from_env().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            // The message names the variable at fault and never prints its value.
+            tracing::error!(%error, "startup configuration rejected");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error).into());
+        }
+    };
+    // Logs never include DATABASE_URL, AUTH_SECRET or other credentials.
+    tracing::info!(railway = config.railway, bind = %config.bind, "configuration validated");
+    tracing::info!(mode = startup_mode(&startup_args), "startup mode");
     if let [command, path] = startup_args.as_slice() {
         if command == "backup-local" {
             local_backup::backup(
@@ -185,6 +232,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let adapter = Arc::new(SqlxDbAdapter::postgres(&config.database_url).await?);
     let storage = Arc::new(SqlxSecondaryStorage::postgres(&config.database_url).await?);
+    tracing::info!("database connection established");
     let context = AuthContext::new(
         AuthOptions {
             secret: config.auth_secret,
@@ -211,7 +259,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .connect(&config.database_url)
             .await?;
         readiness::MIGRATOR.run(&pool).await?;
-        tracing::info!("auth and cloud migrations applied");
+        // One-shot completion: the process exits 0 here and never binds the HTTP listener.
+        tracing::info!("migrations applied; exiting without starting the HTTP server");
         return Ok(());
     }
     if let [command, candidate] = args.as_slice() {
@@ -568,13 +617,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app = admin_static::mount(app, &dist, hsts)?;
     }
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
-    tracing::info!(address = %config.bind, "cloud API listening");
+    tracing::info!(address = %config.bind, railway = config.railway, "HTTP listener bound; cloud API listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async {
+        shutdown_signal().await;
+        tracing::info!("shutdown signal received; draining in-flight requests");
+    })
     .await?;
+    tracing::info!("HTTP server stopped");
     Ok(())
 }
 
