@@ -73,7 +73,7 @@ cargo run -p cloud-api
 - `src/views/` — `/login`, `/auth/callback`, `/app/*` (dashboard,
   publishers, moderation, audit, portal, account), `/403`, `/logout`.
   Layout is responsive: the nav rail is icon-only below `md`, full labels
-  from `md` up; tables scroll horizontally inside cards on small screens.
+  from `md` up; publisher and audit records stack on small screens.
 - `src/components/icons/` — reusable SVG icon library (`AppIcon` +
   `icons.ts` registry; add a path there, use it by name anywhere).
 - `src/components/ui/` — shared components: `AppButton` (variants, icons,
@@ -87,9 +87,17 @@ cargo run -p cloud-api
   (session, admin data) lives in TanStack Query and is invalidated on
   sign-out.
 
-Signing-key enrollment is intentionally rendered **disabled**: key approval
-needs session-bound step-up the backend does not offer yet, and this UI
-must not bypass that gate.
+Publisher owners can delete an unused namespace from **My publishers** after
+typing its name. The server refuses deletion while another member, key,
+challenge, upload, release, transfer, or step-up record exists. Audit records
+retain the deleted publisher ID. For an existing publisher, transfer ownership
+instead when its records must be retained.
+
+Signing-key enrollment and approval require fresh, session-bound step-up
+authentication. A different Cloud administrator who is not a publisher member
+must approve the namespace and its keys. Before approving a key, compare the
+full SHA-256 fingerprint displayed in the portal and review page using a trusted
+channel. See [Publisher approval](../../docs/PUBLISHER-APPROVAL.md).
 
 ## Checks
 

@@ -1,5 +1,5 @@
 <template>
-  <main class="flex min-h-screen w-full items-center justify-center bg-slate-100 px-4 py-8 dark:bg-slate-950">
+  <main class="flex min-h-screen w-full items-center justify-center bg-gradient-to-br from-slate-100 via-white to-indigo-100 px-4 py-16 dark:from-slate-950 dark:via-slate-950 dark:to-indigo-950">
     <div class="absolute right-3 top-3 flex items-center gap-1">
       <ThemeToggle />
       <button
@@ -13,9 +13,9 @@
         <span class="ml-1 uppercase">{{ ui.locale }}</span>
       </button>
     </div>
-    <AppCard class="w-full max-w-md" label="sign-in">
+    <AppCard class="w-full max-w-md !p-6 shadow-xl shadow-slate-200/50 sm:!p-8 dark:shadow-black/20" label="sign-in">
       <div class="mb-5 flex items-center gap-3">
-        <span class="inline-flex items-center justify-center rounded-md bg-slate-900 p-2 text-white dark:bg-slate-100 dark:text-slate-900" aria-hidden="true">
+        <span class="inline-flex items-center justify-center rounded-xl bg-indigo-100 p-3 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" aria-hidden="true">
           <AppIcon name="dashboard" :size="20" />
         </span>
         <div>

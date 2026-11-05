@@ -7,7 +7,7 @@
         </AppButton>
       </template>
     </PageHeader>
-    <StateBlock :loading="ovPending || auditPending || queuePending" :error="!!ovError" :retry="true" @retry="refetchAll">
+    <StateBlock :loading="isAdmin && (ovPending || auditPending || queuePending)" :error="isAdmin && !!ovError" :retry="true" @retry="refetchAll">
       <div v-if="!isAdmin" role="alert" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
         <AppIcon name="alert" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ t('errors.notAdmin') }}

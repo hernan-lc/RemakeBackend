@@ -1,6 +1,6 @@
 <template>
-  <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-    <a href="#content" class="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-1.5 focus:text-sm">{{ t('states.next') }}</a>
+  <div class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <a href="#content" class="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-1.5 focus:text-sm">{{ t('app.skipContent') }}</a>
     <div class="flex min-h-screen">
       <!-- Navigation rail: icons only on mobile, labels from md up. -->
       <aside
@@ -24,7 +24,8 @@
                 :title="link.label"
                 :aria-label="link.label"
                 class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-                active-class="!bg-slate-900 !text-white dark:!bg-slate-100 dark:!text-slate-900"
+                active-class=""
+                exact-active-class="!bg-indigo-50 !text-indigo-800 dark:!bg-indigo-950 dark:!text-indigo-200"
               >
                 <AppIcon :name="link.icon" :size="19" class="shrink-0" aria-hidden="true" />
                 <span v-if="sidebarOpen" class="hidden truncate md:inline">{{ link.label }}</span>
@@ -79,7 +80,7 @@
           </div>
         </header>
 
-        <main id="content" class="mx-auto w-full max-w-6xl flex-1 px-3 py-4 sm:px-4 sm:py-6">
+        <main id="content" class="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-8 sm:py-9">
           <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
             <RouterView v-if="me" />
           </StateBlock>

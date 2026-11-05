@@ -11,6 +11,7 @@
           {{ title }}
         </DialogTitle>
         <DialogDescription class="mt-2 text-sm text-slate-600 dark:text-slate-400">{{ body }}</DialogDescription>
+        <p v-if="error" role="alert" class="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">{{ error }}</p>
         <label v-if="promptLabel" class="mt-4 flex flex-col gap-1 text-sm">
           <span class="font-medium text-slate-700 dark:text-slate-300">{{ promptLabel }}</span>
           <input
@@ -25,7 +26,7 @@
           <AppButton variant="secondary" @click="$emit('cancel')">
             {{ t('states.cancel') }}
           </AppButton>
-          <AppButton :variant="danger ? 'dangerFill' : 'primary'" :loading="busy" :disabled="busy || (promptLabel != null && !promptValue.trim())" @click="$emit('confirm')">
+          <AppButton :variant="danger ? 'dangerFill' : 'primary'" :loading="busy" :disabled="busy || (promptLabel != null && !promptValue.trim()) || (confirmMatch != null && promptValue !== confirmMatch)" @click="$emit('confirm')">
             {{ t('states.confirm') }}
           </AppButton>
         </div>
@@ -50,8 +51,10 @@ withDefaults(
     promptLabel?: string
     promptValue?: string
     promptPlaceholder?: string
+    confirmMatch?: string
+    error?: string
   }>(),
-  { busy: false, danger: true, promptLabel: undefined, promptValue: '', promptPlaceholder: undefined },
+  { busy: false, danger: true, promptLabel: undefined, promptValue: '', promptPlaceholder: undefined, confirmMatch: undefined, error: undefined },
 )
 
 const emit = defineEmits<{

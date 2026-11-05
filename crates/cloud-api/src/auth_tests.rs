@@ -4006,6 +4006,48 @@ async fn unused_publisher_deletion_requires_owner_and_preserves_audit() {
         .execute(&pool)
         .await
         .unwrap();
+    let grant = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_step_up_grants(id,user_id,session_id,action,publisher_id,method,expires_at) VALUES($1,$2,'test-session','publisher.key.enroll',$3,'password',now()-interval '1 minute')")
+        .bind(grant).bind(&users[0]).bind(id).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_step_up_grants WHERE id=$1")
+        .bind(grant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let key = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publisher_keys(id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES($1,$2,$3,'test',$4,'revoked',$5)")
+        .bind(key).bind(id).bind(format!("key-{}", key.simple())).bind(format!("{}{}", key.simple(), key.simple())).bind(&users[0]).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_publisher_keys WHERE id=$1")
+        .bind(key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let upload = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_upload_sessions(id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at) VALUES($1,$2,$3,$4,1,$5,$6,'pending',now()-interval '1 minute')")
+        .bind(upload).bind(id).bind(&users[0]).bind(upload.to_string()).bind("b".repeat(64)).bind(upload.to_string()).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "DELETE", &path, Some(&cookies[0]), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM cloud_upload_sessions WHERE id=$1")
+        .bind(upload)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         request(&app, "DELETE", &path, Some(&cookies[0]), None)
             .await
@@ -4015,6 +4057,29 @@ async fn unused_publisher_deletion_requires_owner_and_preserves_audit() {
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_audit_events WHERE deleted_publisher_id=$1 AND publisher_id IS NULL")
         .bind(id).fetch_one(&pool).await.unwrap();
     assert_eq!(count, 2);
+    sqlx::query("INSERT INTO cloud_account_roles(user_id,role) VALUES($1,'admin')")
+        .bind(&users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let response = request(
+        &app,
+        "GET",
+        "/api/v1/admin/audit?limit=50",
+        Some(&cookies[0]),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let audit: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(audit["events"].as_array().unwrap().iter().any(|event| {
+        event["action"] == "publisher.deleted" && event["publisherId"] == id.to_string()
+    }));
     assert_eq!(
         request(&app, "DELETE", &path, Some(&cookies[0]), None)
             .await

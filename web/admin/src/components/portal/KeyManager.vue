@@ -3,8 +3,7 @@
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
       <ul v-if="keys.length > 0" class="divide-y divide-slate-100 rounded-md border border-slate-200 text-sm dark:divide-slate-800 dark:border-slate-700">
         <li v-for="k in keys" :key="k.id" class="flex flex-wrap items-center gap-2 px-3 py-1.5">
-          <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="k.fingerprint">{{ k.keyId }}</span>
-          <span class="hidden font-mono text-[11px] text-slate-500 lg:inline dark:text-slate-400">{{ short(k.fingerprint) }}</span>
+          <span class="min-w-0 flex-1 break-all font-mono text-xs">{{ k.keyId }}</span>
           <AppBadge :tone="k.status === 'approved' ? 'success' : k.status === 'pending' ? 'warn' : 'neutral'">
             {{ keyStatus(k.status) }}
           </AppBadge>
@@ -17,6 +16,7 @@
           >
             {{ t('portal.revoke') }}
           </AppButton>
+          <div class="w-full text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.fingerprint') }} (SHA-256): <code class="break-all font-mono text-slate-700 dark:text-slate-300">{{ k.fingerprint }}</code></div>
         </li>
       </ul>
       <EmptyState v-else :title="t('portal.noKeys')" icon="key" />
@@ -100,9 +100,6 @@ const { data, isPending, error, refetch } = useQuery({
 })
 const keys = computed(() => data.value ?? [])
 
-function short(fingerprint: string): string {
-  return fingerprint.length > 16 ? `${fingerprint.slice(0, 8)}…${fingerprint.slice(-6)}` : fingerprint
-}
 
 function keyStatus(status: string): string {
   if (status === 'pending') return t('portal.keyPending')
