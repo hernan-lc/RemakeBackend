@@ -1,26 +1,27 @@
 <template>
-  <main class="flex min-h-screen w-full items-center justify-center bg-gradient-to-br from-slate-100 via-white to-indigo-100 px-4 py-16 dark:from-slate-950 dark:via-slate-950 dark:to-indigo-950">
+  <main class="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#f6f8fc] px-4 py-16 dark:bg-[#090f1e]">
+    <div class="pointer-events-none absolute left-1/2 top-0 h-96 w-[min(48rem,95vw)] -translate-x-1/2 rounded-full bg-indigo-200/40 blur-3xl dark:bg-indigo-500/10" aria-hidden="true" />
     <div class="absolute right-3 top-3 flex items-center gap-1">
       <ThemeToggle />
       <button
         type="button"
         aria-label="EN/ES"
         title="EN/ES"
-        class="inline-flex h-10 items-center rounded-md px-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
+        class="inline-flex h-10 items-center rounded-xl px-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
         @click="toggleLang"
       >
         <AppIcon name="globe" :size="18" aria-hidden="true" />
         <span class="ml-1 uppercase">{{ ui.locale }}</span>
       </button>
     </div>
-    <AppCard class="w-full max-w-md !p-6 shadow-xl shadow-slate-200/50 sm:!p-8 dark:shadow-black/20" label="sign-in">
-      <div class="mb-5 flex items-center gap-3">
-        <span class="inline-flex items-center justify-center rounded-xl bg-indigo-100 p-3 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" aria-hidden="true">
+    <AppCard class="relative w-full max-w-md !p-6 shadow-xl shadow-slate-200/60 sm:!p-9 dark:shadow-black/20" label="sign-in">
+      <div class="mb-7 flex items-center gap-4">
+        <span class="inline-flex size-12 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" aria-hidden="true">
           <AppIcon name="dashboard" :size="20" />
         </span>
         <div>
-          <h1 class="text-xl font-bold text-slate-900 dark:text-white">{{ t('app.title') }}</h1>
-          <p class="text-sm text-slate-600 dark:text-slate-400">{{ t('auth.signIn') }}</p>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ t('app.title') }}</h1>
+          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ t('app.workspace') }}</p>
         </div>
       </div>
       <div v-if="route.query.next && route.query.next !== '/app'" role="note" class="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
@@ -35,7 +36,7 @@
         {{ t('auth.signInPassword') }}
         <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
       </div>
-      <form class="flex flex-col gap-3" @submit.prevent="submit">
+      <form class="flex flex-col gap-4" @submit.prevent="submit">
         <AppInput v-model="identifier" :label="t('auth.identifier')" type="text" required autocomplete="username" icon="account" placeholder="admin@example.com" />
         <AppInput v-model="password" :label="t('auth.password')" type="password" required autocomplete="current-password" icon="lock" />
         <p v-if="failed" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">

@@ -1,7 +1,9 @@
 <template>
   <AppCard :label="t('releases.submitTitle')" :title="t('releases.submitTitle')">
     <p v-if="eligiblePublishers.length === 0" class="text-sm text-slate-600 dark:text-slate-400">{{ t('releases.selectPublisherHint') }}</p>
-    <div v-else class="flex flex-col gap-3">
+    <div v-else class="flex flex-col gap-6">
+      <section class="space-y-4">
+        <AppSectionHeader :title="t('releases.sourceDetails')" />
       <AppSelect v-model="publisherId" :label="t('releases.selectPublisher')">
         <option value="" disabled>{{ t('releases.selectPublisher') }}</option>
         <option v-for="p in eligiblePublishers" :key="p.id" :value="p.id">{{ p.namespace }}</option>
@@ -16,24 +18,27 @@
       </StateBlock>
       <p v-if="publisherId && !keysPending" class="text-xs text-slate-500 dark:text-slate-400">{{ t('releases.selectKeyHint') }}</p>
 
-      <label class="flex min-w-0 flex-col gap-1 text-sm">
+      <label class="flex min-w-0 flex-col gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4 text-sm dark:border-slate-700 dark:bg-slate-800/40">
         <span class="font-medium text-slate-700 dark:text-slate-300">{{ t('releases.selectFile') }}</span>
         <input
           type="file"
           accept=".plugin,application/octet-stream"
-          class="text-sm text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-100 dark:text-slate-300 dark:file:border-slate-600 dark:file:bg-slate-800 dark:file:text-slate-200 dark:hover:file:bg-slate-700"
+          class="block w-full max-w-full text-xs text-slate-700 file:mr-3 file:rounded-xl file:border file:border-indigo-200 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-indigo-700 hover:file:bg-indigo-50 dark:text-slate-300 dark:file:border-slate-700 dark:file:bg-slate-800 dark:file:text-indigo-300 dark:hover:file:bg-slate-700"
           @change="onFile"
         />
         <span class="text-xs text-slate-500 dark:text-slate-400">{{ t('releases.fileHint') }}</span>
       </label>
-      <dl v-if="fileInfo" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+      <dl v-if="fileInfo" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 rounded-xl bg-slate-50 p-4 font-mono text-xs dark:bg-slate-800/60">
         <dt class="font-sans text-slate-500 dark:text-slate-400">{{ t('releases.checksum') }}</dt>
         <dd class="break-all">{{ fileInfo.sha256 }}</dd>
         <dt class="font-sans text-slate-500 dark:text-slate-400">{{ t('releases.size') }}</dt>
         <dd class="tabular-nums">{{ fileInfo.size }}</dd>
       </dl>
 
-      <AppInput v-model="pluginId" :label="t('releases.pluginId')" required :maxlength="256" />
+      </section>
+      <section class="space-y-4 border-t border-slate-100 pt-6 dark:border-slate-800">
+        <AppSectionHeader :title="t('releases.packageMetadata')" />
+        <AppInput v-model="pluginId" :label="t('releases.pluginId')" required :maxlength="256" />
       <p v-if="publisherId" class="text-xs text-slate-500 dark:text-slate-400">{{ t(namespaceOf(publisherId) === 'tiktools' ? 'releases.officialPluginIdHint' : 'releases.pluginIdHint', { namespace: namespaceOf(publisherId) }) }}</p>
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <AppInput v-model="version" :label="t('releases.version')" required :maxlength="128" />
@@ -41,6 +46,9 @@
       </div>
       <p class="text-xs text-slate-500 dark:text-slate-400">{{ t('releases.versionHint') }} {{ t('releases.targetHint') }}</p>
 
+      </section>
+      <div class="space-y-4 rounded-xl border border-slate-100 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-800/40">
+        <AppSectionHeader :title="t('releases.uploadProgress')" />
       <p v-if="error" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
         <AppIcon name="alert" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ error }}
@@ -51,7 +59,7 @@
       </p>
 
       <div class="flex flex-wrap gap-2">
-        <AppButton size="sm" variant="primary" :loading="phase !== 'idle' && phase !== 'done'" :disabled="!canStart || phase === 'done'" @click="run">
+        <AppButton size="sm" variant="primary" icon="package" class="w-full sm:w-auto" :loading="phase !== 'idle' && phase !== 'done'" :disabled="!canStart || phase === 'done'" @click="run">
           {{ phase === 'done' ? t('releases.submitted') : t('releases.submit') }}
         </AppButton>
         <AppButton v-if="phase === 'done'" size="sm" variant="secondary" @click="reset">
@@ -64,6 +72,7 @@
           {{ s.label }}
         </li>
       </ol>
+      </div>
     </div>
   </AppCard>
 </template>
@@ -82,6 +91,7 @@ import AppButton from '../ui/AppButton.vue'
 import AppCard from '../ui/AppCard.vue'
 import AppInput from '../ui/AppInput.vue'
 import AppSelect from '../ui/AppSelect.vue'
+import AppSectionHeader from '../ui/AppSectionHeader.vue'
 
 const props = defineProps<{ publishers: MyPublisher[] }>()
 const emit = defineEmits<{ submitted: [] }>()

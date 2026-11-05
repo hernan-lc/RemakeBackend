@@ -1,6 +1,6 @@
 export const en = {
   temporaryApproval: { title: 'Temporary operator approval', button: 'Approve with log code', generate: 'Generate code', code: 'Eight-digit code', description: 'This temporary operator override approves {namespace} without independent review. Anyone with access to the service logs can read the code.', instructions: 'Find the code for challenge {id} in the Railway service logs. It expires in five minutes and can be used only once.', overrideNotice: 'Independent review is required unless you explicitly use the temporary log-code override.', invalid: 'The code is incorrect. Check the logs and try again.', failed: 'Approval could not be completed. The code may have expired, been used, or the request may no longer be eligible.' },
-  app: { title: 'Cloud Admin', dashboard: 'Dashboard', publishers: 'Publishers', moderation: 'Moderation', audit: 'Audit', portal: 'My publishers', account: 'Account', logout: 'Sign out', menu: 'Menu', skipContent: 'Skip to content', toggleTheme: 'Toggle color theme', themeLight: 'Switch to light theme', themeDark: 'Switch to dark theme', collapseNav: 'Collapse navigation', expandNav: 'Expand navigation' },
+  app: { title: 'Cloud Admin', workspace: 'Operations workspace', navigation: 'Navigation', dashboard: 'Dashboard', publishers: 'Publishers', moderation: 'Moderation', audit: 'Audit', portal: 'My publishers', account: 'Account', logout: 'Sign out', menu: 'Menu', skipContent: 'Skip to content', toggleTheme: 'Toggle color theme', themeLight: 'Switch to light theme', themeDark: 'Switch to dark theme', collapseNav: 'Collapse navigation', expandNav: 'Expand navigation' },
   auth: {
     signIn: 'Sign in',
     signInGoogle: 'Sign in with Google',
@@ -20,7 +20,7 @@ export const en = {
     signOutDone: 'Signed out. Cached session data was cleared.',
     anonymous: 'Not signed in',
   },
-  states: { loading: 'Loading…', empty: 'Nothing here yet.', retry: 'Retry', refresh: 'Refresh', next: 'Next page', back: 'Back', confirm: 'Confirm', cancel: 'Cancel', close: 'Close' },
+  states: { loading: 'Loading…', noMatches: 'No matching results on this page.', searchPageHint: 'Search only filters the currently loaded page.', empty: 'Nothing here yet.', retry: 'Retry', refresh: 'Refresh', next: 'Next page', back: 'Back', confirm: 'Confirm', cancel: 'Cancel', close: 'Close' },
   errors: {
     title: 'Something went wrong',
     forbidden: 'You do not have access. Ask a Cloud admin for the right role.',
@@ -31,6 +31,15 @@ export const en = {
   },
   dashboard: {
     title: 'Review workload',
+    description: 'Monitor approvals, release verification and recent activity in one place.',
+    publisherHint: 'Namespace requests awaiting review',
+    queueHint: 'Releases visible in the current queue',
+    keysHint: 'Signing keys awaiting approval',
+    auditHint: 'Recorded operations and changes',
+    releasesHint: 'Current distribution of release verification and review states.',
+    activityHint: 'Latest actions recorded in the audit log.',
+    noActivity: 'No recent audit events.',
+    awaitingVerification: 'Awaiting verification', integrityPassed: 'Integrity passed', antivirusPassed: 'Antivirus passed', reviewApproved: 'Review approved', reviewRejected: 'Review rejected', rejected: 'Rejected',
     pendingPublishers: 'Pending publishers',
     pendingKeys: 'Pending signing keys',
     releases: 'Releases by status',
@@ -40,9 +49,10 @@ export const en = {
     approve: 'Approve',
     approveConfirm: 'Approve this publisher namespace? This grants the namespace, never a signing key.',
   },
-  publishers: { title: 'Publisher requests', filter: 'Status filter', all: 'All', pending: 'Pending', approved: 'Approved', suspended: 'Suspended', namespace: 'Namespace', status: 'Status', created: 'Requested', actions: 'Actions', approvedMsg: 'Approved.', keys: 'Keys', pendingKeys: 'Pending signing keys', noPendingKeys: 'No keys awaiting approval.', approveKey: 'Approve key', approvedKeyMsg: 'Signing key approved.', fingerprint: 'Fingerprint', compareFingerprint: 'Before approving, compare the full fingerprint with the publisher through a trusted channel.', independentReviewer: 'You belong to this publisher. A different admin who is not a member must approve the namespace and review its keys.', membershipsUnavailable: 'Could not check your publisher memberships. Review actions are unavailable until this check succeeds.', approvalForbidden: 'Approval was denied. Your admin role or publisher membership may have changed; refresh and ask an independent admin to review.' },
+  publishers: { title: 'Publisher requests', searchPage: 'Search namespaces on this page', filter: 'Status filter', all: 'All', pending: 'Pending', approved: 'Approved', suspended: 'Suspended', namespace: 'Namespace', status: 'Status', created: 'Requested', actions: 'Actions', approvedMsg: 'Approved.', keys: 'Keys', pendingKeys: 'Pending signing keys', noPendingKeys: 'No keys awaiting approval.', approveKey: 'Approve key', approvedKeyMsg: 'Signing key approved.', fingerprint: 'Fingerprint', compareFingerprint: 'Before approving, compare the full fingerprint with the publisher through a trusted channel.', independentReviewer: 'You belong to this publisher. A different admin who is not a member must approve the namespace and review its keys.', membershipsUnavailable: 'Could not check your publisher memberships. Review actions are unavailable until this check succeeds.', approvalForbidden: 'Approval was denied. Your admin role or publisher membership may have changed; refresh and ask an independent admin to review.' },
   moderation: {
     title: 'Moderation queue',
+    searchPage: 'Search releases on this page',
     inspect: 'Get inspection link',
     inspectionReady: 'Inspection link ready (expires shortly, single version).',
     approve: 'Approve',
@@ -61,7 +71,7 @@ export const en = {
     advisorySaved: 'Advisory recorded.',
     conflictNote: 'You cannot review your own or your publishers’ releases.',
   },
-  audit: { title: 'Audit events', action: 'Action', actor: 'Actor', target: 'Target', when: 'When' },
+  audit: { title: 'Audit events', searchPage: 'Search audit events on this page', action: 'Action', actor: 'Actor', target: 'Target', when: 'When' },
   portal: {
     title: 'My publishers',
     description: 'Manage your namespaces, signing keys, members, and releases in one place.',
@@ -133,6 +143,7 @@ export const en = {
     title: 'Releases',
     noReleases: 'No releases yet. Submit a signed package to start.',
     submitTitle: 'Submit a signed release',
+    sourceDetails: 'Publisher and signed package', packageMetadata: 'Release metadata', uploadProgress: 'Submission progress',
     selectPublisher: 'Publisher',
     selectPublisherHint: 'Only approved publishers accept releases.',
     selectKey: 'Signing key',
