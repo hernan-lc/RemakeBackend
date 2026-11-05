@@ -1,8 +1,8 @@
 # TikTools Cloud
 
 Early foundation for the optional TikTools cloud backend. **Not
-production-ready:** publisher signing-key approval, registry publication,
-complete sync, desktop integration, and release gates remain outstanding.
+production-ready:** production trust, scanner operations, deployment and
+release gates need validation; sync and desktop integration remain incomplete.
 Per-surface status and limits are in the [feature matrix](docs/FEATURE-MATRIX.md);
 verified evidence in [implementation status](docs/IMPLEMENTATION-STATUS.md).
 The plan, specification, and roadmap are [here](docs/PLAN.md),
@@ -15,7 +15,9 @@ indexed in [docs/README.md](docs/README.md).
   are verified with `cargo +1.95.0 check --workspace --locked` and
   `cargo +1.89.0 check -p cloud-client --all-features --locked`; CI repeats
   both checks.
-- pgrust (Postgres 18.6-compatible, self-hosted; no external database).
+- A PostgreSQL-compatible database. Local development uses pgrust; a fresh
+  PostgreSQL 18 database also passes the migration and upload-authorization
+  smoke tests. The complete suite has not yet been validated on every provider.
 - Better Auth is pinned to `c6940517155ff9a123221789b1efc89ef48cb19c`
   with only `axum` and `sqlx` features; provider token retention is not
   enabled. Google credentials are optional and must be set together. Google
@@ -65,19 +67,18 @@ Health and identity:
   transfers by recipient-accepted expiring offer, and a non-owner can leave.
   Membership never bypasses pending status or grants signing keys.
   Approval and Cloud role management: [publisher approval](docs/PUBLISHER-APPROVAL.md).
-- **Uploads and releases** — S3 quarantine uploads ([object storage](docs/OBJECT-STORAGE.md)),
+- **Uploads and releases** — S3 or single-instance private-volume quarantine uploads ([object storage](docs/OBJECT-STORAGE.md)),
   integrity verification with ClamAV ([package verification](docs/PACKAGE-VERIFICATION.md),
   [release verification](docs/RELEASE-VERIFICATION.md)). Uploaded objects
-  can be verified but not yet published.
+  can be reviewed and prepared for signed registry publication.
 - **Moderation** — independent review decisions, release yanks, and
-  security advisories ([moderation](docs/MODERATION.md)); publication
-  remains unimplemented. Publisher keys enroll via challenge-based proof
-  of possession, but enrollment and approval are disabled until
-  session-bound step-up exists ([publisher keys](docs/PUBLISHER-KEYS.md)).
+  security advisories ([moderation](docs/MODERATION.md)). Publisher keys
+  enroll via challenge-based proof of possession with session-bound step-up
+  ([publisher keys](docs/PUBLISHER-KEYS.md)).
 - **Registry** — test fixture with disposable keys, never an official
   registry ([registry operations](docs/REGISTRY-OPERATIONS.md)). The
-  standalone snapshot candidate builder stages private file versions;
-  promotion-readiness decisions are recorded but never deploy.
+  snapshot candidate builder stages private file versions; a separate operator
+  command verifies and promotes an immutable generation.
 - **Sync and desktop** — experimental plugin-selections sync only, not
   connected to Desktop or ready for sensitive data ([sync](docs/SYNC.md));
   backend-mediated native sign-in is experimental ([desktop authentication](docs/DESKTOP-AUTH.md)).
@@ -87,7 +88,12 @@ Health and identity:
 
 ## Optional Docker-free database
 
-For local Linux/macOS development without Docker, use the `pgrust-local` launcher after configuring `.env`; if you cannot build from source, `python3 scripts/pgrust-local.py up` downloads a verified prebuilt bundle instead. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown.
+For local Linux/macOS development without Docker, use the source-building `pgrust-local` launcher after configuring `.env`. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown.
+
+For Railway staging, the repository includes a multi-stage image and same-origin
+admin hosting. See [Railway staging](docs/RAILWAY-STAGING.md) for configuration,
+migration and current storage limitations. The publication system remains
+staging-only until its production gates have been verified.
 
 ## Tests
 
@@ -99,9 +105,11 @@ For the OAuth/session integration tests, create a dedicated disposable
 database and run:
 
 ```sh
-CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1
+CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1 --skip google_jwks_live_refresh_smoke --skip staging_official_packages_install_with_pinned_client --skip real_clamav_scans_staging_packages
 ```
 
 This applies Better Auth migrations and inserts fixture records — never
 point it at production. CI provisions a separate pgrust service. The
 fixture is not a substitute for a real Google or desktop end-to-end test.
+The skipped network and staging tests require separate services and inputs;
+see [Railway staging](docs/RAILWAY-STAGING.md) for the staging tests.

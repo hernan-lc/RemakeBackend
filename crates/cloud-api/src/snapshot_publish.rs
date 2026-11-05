@@ -190,13 +190,13 @@ struct AdvisorySnapshot {
 impl SnapshotItem {
     fn approved(&self) -> Result<TrustedKey> {
         use base64::{engine::general_purpose::STANDARD, Engine};
-        use tiktools_plugin_package::{KeyId, KeyRole};
+        use tiktools_plugin_package::KeyId;
         let raw = STANDARD.decode(&self.public_key)?;
         if STANDARD.encode(&raw) != self.public_key {
             return Err("noncanonical publisher key".into());
         }
         let key = tiktools_plugin_package::PublicKey::new(KeyId::parse(&self.key_id)?, &raw)?;
-        Ok(TrustedKey::new(key, KeyRole::Publisher).publisher(&self.namespace))
+        Ok(cloud_verifier::approved_publisher_key(key, &self.namespace))
     }
 
     fn channel(&self) -> Result<&'static str> {

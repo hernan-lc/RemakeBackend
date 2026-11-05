@@ -5,10 +5,9 @@
 //! rollback, bounded GC, and real TikTools registry-client compatibility
 //! (discover, download, signature verification, install, update).
 //!
-//! Run explicitly with CLOUD_TEST_DATABASE_URL; the tests apply upstream
-//! migrations and drive a fake versioned S3 endpoint plus a fake ClamAV
-//! INSTREAM server. Nothing here touches real storage, real scanners, or
-//! production trust material.
+//! Database tests apply upstream migrations and normally use fake S3 and
+//! ClamAV servers. The explicitly configured staging client test connects to
+//! an existing registry and requires an independently supplied root pin.
 use super::*;
 use axum::{
     body::Body,
@@ -556,6 +555,93 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// Exercise the real client and installer against an explicitly supplied staging
+/// generation. The root pin must be supplied independently of the registry.
+#[tokio::test]
+#[ignore = "requires a running disposable staging registry and independent test root pin"]
+async fn staging_official_packages_install_with_pinned_client() {
+    use tiktools_plugin_api::HostCompat;
+    use tiktools_plugin_installer::{
+        CommitOptions, Consent, Installer, InstallerConfig, NoopHooks, NoopReporter, PackageOrigin,
+        SignaturePolicy,
+    };
+
+    let base = std::env::var("CLOUD_STAGING_ORIGIN").unwrap();
+    let generation: i64 = std::env::var("CLOUD_STAGING_GENERATION")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let root: tiktools_plugin_package::PublicKey = serde_json::from_slice(
+        &std::fs::read(std::env::var("CLOUD_STAGING_ROOT_PIN").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let (client, trust, source) = tiktools_client(&base, generation, &root, &work);
+    assert!(client.refresh("fixture").await.unwrap().verified);
+    let installer = Installer::new(
+        InstallerConfig {
+            plugins_dir: work.path().join("plugins"),
+            store_dir: work.path().join("store"),
+            host: HostCompat::new(semver::Version::new(0, 3, 3)),
+            retain_versions: 1,
+            provider_endpoints: None,
+        },
+        trust,
+    );
+    for id in [
+        "audio.play.process",
+        "hotkeys",
+        "l4d2.interactive",
+        "minecraft.server",
+        "peak.game",
+        "repo.game",
+        "sonicboom.server",
+        "textintel",
+        "tiktools.event-gateway",
+    ] {
+        let (_, document) = client.package(id, Some("fixture")).await.unwrap();
+        let release = document.releases.first().expect("published release");
+        let artifact = release.artifacts.first().expect("published artifact");
+        let download_dir = tempfile::tempdir().unwrap();
+        let downloaded = Downloader::new(download_dir.path())
+            .unwrap()
+            .fetch(
+                DownloadRequest {
+                    url: &join_url(&source.url, &artifact.url).unwrap(),
+                    expected_digest: Some(&artifact.sha256),
+                    expected_size: Some(artifact.size),
+                },
+                &|_, _| {},
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        let prepared = installer
+            .prepare(
+                &downloaded.path,
+                PackageOrigin::Registry {
+                    registry: "fixture".into(),
+                    url: source.url.clone(),
+                },
+                SignaturePolicy::Require,
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        let preview = installer.preview(&prepared);
+        let result = installer
+            .commit(
+                &prepared,
+                &CommitOptions {
+                    consent: Consent::Token(preview.consent_token),
+                    policy: None,
+                },
+                &NoopHooks,
+                &NoopReporter,
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(result.receipt.id, id);
+    }
 }
 
 #[tokio::test]
@@ -1616,4 +1702,71 @@ async fn client_discovers_update_and_yank_removal() {
         .unwrap();
     assert_eq!(outcome.receipt.version, "2.0.0");
     server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn local_volume_publication_serves_verified_registry() {
+    use std::os::unix::fs::PermissionsExt;
+    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&database_url).await;
+    let _guard = lock(&pool).await;
+    let owner = user(&ctx).await;
+    let moderator = user(&ctx).await;
+    sqlx::query("INSERT INTO cloud_account_roles (user_id, role) VALUES ($1, 'moderator')")
+        .bind(&moderator.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (publisher, namespace) = setup_publisher(&pool, &owner.0, "approved").await;
+    let signing = publisher_key(&namespace);
+    let key_row = setup_key(&pool, publisher, &signing, &owner.0, "approved").await;
+    let trust = trust(&namespace, &signing, &[]);
+    let work = tempfile::tempdir().unwrap();
+    let volume = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(volume.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let store = cloud_storage::QuarantineStore::local(
+        volume.path(),
+        "http://127.0.0.1:3000",
+        b"test-only-local-storage-secret-32-bytes",
+    )
+    .unwrap();
+    let plugin_id = format!("{namespace}.plugin");
+    let (path, digest, size) = package(work.path(), &signing, &namespace, &plugin_id, "1.0.0");
+    verified_release(
+        &pool,
+        &store,
+        publisher,
+        key_row,
+        &owner.0,
+        &moderator.0,
+        &plugin_id,
+        "1.0.0",
+        &path,
+        &digest,
+        size,
+    )
+    .await;
+    let (_clam, clam_addr, clamserver) = fake_clam().await;
+    let clam = scanner(&clam_addr);
+    let candidate = ready_candidate(&pool, &store, &clam, &trust, "local-test-operator").await;
+    let published = snapshot_publish::publish(
+        &pool,
+        &store,
+        &clam,
+        &inputs(&trust),
+        candidate,
+        "local-test-operator",
+    )
+    .await
+    .unwrap();
+    let (base, server) = serve_app(ctx, pool, store).await;
+    let client_dir = tempfile::tempdir().unwrap();
+    let (client, _, _) = tiktools_client(&base, published.generation, &trust.root.key, &client_dir);
+    assert!(client.refresh("fixture").await.unwrap().verified);
+    let (_, document) = client.package(&plugin_id, Some("fixture")).await.unwrap();
+    assert!(document.releases.iter().any(|r| r.version == "1.0.0"));
+    server.abort();
+    clamserver.abort();
 }

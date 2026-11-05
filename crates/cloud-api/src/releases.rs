@@ -121,10 +121,7 @@ async fn authorize(
 fn valid(input: &Submission, namespace: &str) -> bool {
     input.plugin_id.len() <= 256
         && is_valid_plugin_id(&input.plugin_id)
-        && input
-            .plugin_id
-            .strip_prefix(namespace)
-            .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1)
+        && cloud_verifier::publisher_allows(namespace, &input.plugin_id)
         && input.version.len() <= 128
         && parse_version(&input.version).is_some_and(|version| version.to_string() == input.version)
         && input.target.len() <= 128
@@ -339,4 +336,26 @@ pub async fn review(
     };
     tx.commit().await.map_err(db)?;
     Ok(Json(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn submission(id: &str) -> Submission {
+        Submission {
+            upload_id: Uuid::new_v4(),
+            publisher_key_id: Uuid::new_v4(),
+            plugin_id: id.into(),
+            version: "1.0.0".into(),
+            target: "any".into(),
+        }
+    }
+    #[test]
+    fn legacy_submission_requires_official_namespace_and_exact_id() {
+        assert!(valid(&submission("hotkeys"), "tiktools"));
+        assert!(valid(&submission("sonicboom.server"), "tiktools"));
+        assert!(!valid(&submission("hotkeys"), "other"));
+        assert!(!valid(&submission("sonicboom.other"), "tiktools"));
+        assert!(valid(&submission("other.plugin"), "other"));
+    }
 }

@@ -85,9 +85,9 @@ publisher and signing-key approval, an antivirus-passed verification job, an app
 review, and the requester's role and conflicts of interest. It records one audited,
 idempotent queue item and returns `202` with `status: "queued"` and
 `processingAvailable: false`. Concurrent retries return the same job ID and current
-preparation status. This flag means end-to-end snapshot publication is unavailable;
-a preparation worker is available as described below. The release remains
-`review_approved` and private. There is no public release status yet.
+preparation status. This response does not start the one-shot workers or promote
+a snapshot. The release remains private until an operator runs the preparation,
+candidate, readiness and promotion steps described here.
 
 Run one preparation job in an isolated, resource-limited process with
 `cargo run --locked -p cloud-api -- prepare-publication-once`, using the same database,
@@ -103,11 +103,9 @@ job. A failed, blocked or superseded attempt can leave an unreferenced object ve
 cleanup is not implemented; an operator may explicitly retry eligible transient failures as described below. The bucket must remain private and
 its policies must preserve referenced versions through publication.
 
-`prepared` is **not published** and does not imply that a snapshot exists. A future
-promotion process must recheck current authorization and scanner policy, fetch and verify
-the recorded prepared version, independently verify a signed snapshot, and atomically
-promote it without mixing snapshot generations. The initial-candidate worker does not
-implement that promotion. A queued or prepared
+`prepared` is **not published** and does not imply that a snapshot exists. The separate
+promotion command rechecks authorization, scanner policy, object versions and the signed
+snapshot before atomically activating a generation. A queued or prepared
 request is not authorization to skip these checks; revocation or suspension after
 preparation must prevent publication. The integration test uses simulated S3 and ClamAV
 servers; real provider signatures, checksums, IAM and failure behavior remain unverified.
@@ -175,17 +173,15 @@ be checked. The worker also requires the database, versioned private object stor
 and loopback `CLAMAV_ADDR` settings. Protect the signing host and key; production
 KMS/HSM integration is not implemented.
 
-This command accepts only a seed with no index, package or catalog tree and zero
-catalog pages. Cloud does not yet model an existing published inventory, so it must
-not be used to update an existing public registry. It assigns channels from versions,
+For the first generation, this command accepts only a seed with no index, package or
+catalog tree and zero catalog pages. It assigns channels from versions,
 carries moderator-recorded advisories into the registry documents, and refuses to
 build when any prepared release is yanked. The database comparisons
 are point-in-time checks; they do not freeze future changes or make a candidate safe
-to deploy. A future promotion process must recheck the entire inventory, current
-authorization, trust, scanner policy and all stored object versions after construction
-and enforce consistent client access across snapshot generations. Candidate creation
-is not idempotent, and failed or raced builds may leave unreferenced private objects;
-operator retry and garbage collection are not implemented. The integration test uses
+to deploy. The separate promotion command rechecks inventory, authorization, trust,
+scanner policy and stored object versions after construction. Candidate creation
+is not idempotent, and failed or raced builds may leave unreferenced private objects.
+The integration test uses
 simulated S3 and ClamAV servers, not a real provider or production scanner.
 
 Migration `20261102000014_snapshot_candidates.sql` adds private candidate, release and
@@ -263,7 +259,7 @@ object keys and version IDs serialized as compact JSON; database row revisions
 are used for the comparison but excluded from the digest. A blocked row records
 the candidate inventory hash at the time of recording, without a manifest hash.
 These checks do not freeze authorization, trust material, or stored files after
-verification, so a future promotion process must recheck them. Operators can
+verification, so the promotion command rechecks them. Operators can
 review the recorded history with
 `cargo run --locked -p cloud-api -- list-promotion-checks CANDIDATE_UUID`,
 which prints the decisions as JSON, oldest first; unknown candidates list no

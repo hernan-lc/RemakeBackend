@@ -1,5 +1,16 @@
 # Quarantine object storage (experimental)
 
+For a single-instance deployment, an alternative filesystem backend is enabled
+with `STORAGE_LOCAL_DIR`. The directory must already exist, be mode 0700, and
+live on a persistent volume owned exclusively by the service. The backend
+streams uploads through the API, checks their size and digest, and creates
+immutable local objects atomically. Its signed upload URLs expire within five
+minutes; inspection URLs expire within one minute. They are bearer secrets and
+must not be logged. This backend requires coordinated database and volume
+backups and has not been validated with multiple replicas or real Railway
+storage. See `RAILWAY-STAGING.md`. The S3-specific details below apply when the
+five S3 settings are configured instead.
+
 `cloud-storage` provides S3-compatible quarantine storage for the authenticated HTTP upload API. A one-shot verification worker and ClamAV protocol adapter are connected; moderation can record decisions, but publication is not yet connected.
 
 The component requires an explicitly configured endpoint, bucket, region and credentials; it does not read a default credential chain. Endpoints must use HTTPS except for a loopback IP used in tests. It accepts only server-generated `quarantine/{publisher UUID}/{upload UUID}` keys. Before presigning or capturing an object it requires bucket versioning to be enabled. Upload URLs last at most five minutes and bind `Content-Length`, `If-None-Match: *`, and the SHA-256 checksum in signed headers; the caller must send all returned headers. The component refuses to return a URL if the SDK does not sign those headers. URLs are bearer capabilities: deliver them only to an authorized user over TLS with `Cache-Control: no-store`, and never log them.

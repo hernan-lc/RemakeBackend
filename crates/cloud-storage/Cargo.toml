@@ -9,6 +9,8 @@ license = "MIT"
 aws-sdk-s3 = { version = "=1.122.0", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }
 base64 = "0.22"
 hex = "0.4"
+hmac = "0.12"
+fs2 = "0.4"
 thiserror = "2"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util", "fs"] }

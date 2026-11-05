@@ -1,8 +1,11 @@
 mod account;
 mod admin;
+mod admin_static;
 mod config;
 mod desktop;
 mod dual_auth;
+mod local_backup;
+mod local_objects;
 mod moderation;
 mod publication;
 mod publication_worker;
@@ -138,8 +141,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .unwrap_or_else(|_| "cloud_api=info".into()),
         )
         .init();
+    let startup_args: Vec<_> = std::env::args().skip(1).collect();
+    if let [command, path] = startup_args.as_slice() {
+        if command == "verify-local-backup" {
+            local_backup::verify(std::path::Path::new(path))?;
+            return Ok(());
+        }
+    }
     let config =
         Config::from_env().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    if let [command, path] = startup_args.as_slice() {
+        if command == "backup-local" {
+            local_backup::backup(
+                config
+                    .object_storage
+                    .ok_or("STORAGE_LOCAL_DIR is required")?,
+                &config.database_url,
+                std::path::Path::new(path),
+            )
+            .await?;
+            return Ok(());
+        }
+        if command == "restore-local" {
+            local_backup::restore(
+                config
+                    .object_storage
+                    .ok_or("STORAGE_LOCAL_DIR is required")?,
+                &config.database_url,
+                std::path::Path::new(path),
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+    // Every command that can touch this database holds the volume's shared
+    // lock when local storage is configured. Offline backups require the
+    // exclusive lock and therefore refuse to race API and worker commands.
+    let _local_volume_guard = match &config.object_storage {
+        Some(config::StorageConfig::Local { root, .. }) => {
+            Some(cloud_storage::local::LocalStore::open(root)?)
+        }
+        _ => None,
+    };
     let adapter = Arc::new(SqlxDbAdapter::postgres(&config.database_url).await?);
     let storage = Arc::new(SqlxSecondaryStorage::postgres(&config.database_url).await?);
     let context = AuthContext::new(
@@ -174,11 +217,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let [command, candidate] = args.as_slice() {
         if command == "verify-candidate" {
             let id = uuid::Uuid::parse_str(candidate)?;
-            let store = cloud_storage::QuarantineStore::new(
-                config
-                    .object_storage
-                    .ok_or("object storage must be configured")?,
-            )?;
+            let store = config
+                .object_storage
+                .ok_or("object storage must be configured")?
+                .build()?;
             let pool = PgPoolOptions::new()
                 .max_connections(2)
                 .connect(&config.database_url)
@@ -224,11 +266,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let [command, candidate, operator] = args.as_slice() {
         if command == "check-promotion-readiness" {
             let id = uuid::Uuid::parse_str(candidate)?;
-            let store = cloud_storage::QuarantineStore::new(
-                config
-                    .object_storage
-                    .ok_or("object storage must be configured")?,
-            )?;
+            let store = config
+                .object_storage
+                .ok_or("object storage must be configured")?
+                .build()?;
             let pool = PgPoolOptions::new()
                 .max_connections(2)
                 .connect(&config.database_url)
@@ -321,7 +362,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let storage_config = config
                 .object_storage
                 .ok_or("object storage must be configured")?;
-            let store = cloud_storage::QuarantineStore::new(storage_config)?;
+            let store = storage_config.build()?;
             let pool = PgPoolOptions::new()
                 .max_connections(5)
                 .connect(&config.database_url)
@@ -360,7 +401,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let storage_config = config
                 .object_storage
                 .ok_or("object storage must be configured")?;
-            let store = cloud_storage::QuarantineStore::new(storage_config)?;
+            let store = storage_config.build()?;
             let scanner = scanner::ClamAv::new(
                 config
                     .clamav_addr
@@ -403,7 +444,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let storage_config = config
                 .object_storage
                 .ok_or("object storage must be configured")?;
-            let store = cloud_storage::QuarantineStore::new(storage_config)?;
+            let store = storage_config.build()?;
             let report = snapshot_publish::gc(&pool, &store, limit, operator).await?;
             println!(
                 "{}",
@@ -425,7 +466,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let storage_config = config
                 .object_storage
                 .ok_or("object storage must be configured")?;
-            let store = cloud_storage::QuarantineStore::new(storage_config)?;
+            let store = storage_config.build()?;
             let pool = PgPoolOptions::new()
                 .max_connections(2)
                 .connect(&config.database_url)
@@ -454,7 +495,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let storage_config = config
             .object_storage
             .ok_or("object storage must be configured")?;
-        let store = cloud_storage::QuarantineStore::new(storage_config)?;
+        let store = storage_config.build()?;
         let pool = PgPoolOptions::new()
             .max_connections(2)
             .connect(&config.database_url)
@@ -480,7 +521,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        return Err("usage: cloud-api [migrate | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
+        return Err("usage: cloud-api [migrate | backup-local NEW_DIR | verify-local-backup DIR | restore-local DIR | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
     let mut auth = configured_auth_router(context.clone())?;
     let mut step_up_oauth = None;
@@ -511,10 +552,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     let object_storage = config
         .object_storage
-        .map(cloud_storage::QuarantineStore::new)
+        .map(config::StorageConfig::build)
         .transpose()?;
     let hsts = config.origin.starts_with("https://");
-    let app = app_with_proxies(
+    let mut app = app_with_proxies(
         context,
         pool,
         auth,
@@ -523,17 +564,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
         step_up_oauth,
         hsts,
     );
+    if let Some(dist) = config.admin_dist_dir {
+        app = admin_static::mount(app, &dist, hsts)?;
+    }
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(address = %config.bind, "cloud API listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = terminate.recv() => {},
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to install SIGTERM handler");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
@@ -607,6 +669,14 @@ fn app_inner(
         .clone()
         .map(|storage| better_auth::rate_limit::RateLimiter::new(storage, "cloud:auth-social-get"));
     let router = Router::new()
+        .route(
+            "/api/v1/local-objects/quarantine/{publisher}/{upload}",
+            axum::routing::put(local_objects::upload),
+        )
+        .route(
+            "/api/v1/local-inspection/quarantine/{publisher}/{upload}",
+            get(local_objects::inspection),
+        )
         .route("/", get(web::page))
         .route("/desktop/login", get(web::page))
         .route("/desktop/login.js", get(web::script))

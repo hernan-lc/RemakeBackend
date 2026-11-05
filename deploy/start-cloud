@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Optional colocated scanner. A separately maintained signature database and
+# config are required; do not silently fall back to running without a scanner.
+set -u
+
+if [[ -z "${CLOUD_CLAMD_CONFIG:-}" ]]; then
+    exec cloud-api
+fi
+if [[ "$CLOUD_CLAMD_CONFIG" != /* || ! -f "$CLOUD_CLAMD_CONFIG" || -z "${CLAMAV_ADDR:-}" ]]; then
+    echo "CLOUD_CLAMD_CONFIG must name an absolute config file and CLAMAV_ADDR must be set" >&2
+    exit 1
+fi
+
+clamd --foreground --config-file="$CLOUD_CLAMD_CONFIG" &
+scanner_pid=$!
+cloud-api &
+api_pid=$!
+
+stop_children() {
+    trap - TERM INT
+    kill -TERM "$api_pid" "$scanner_pid" 2>/dev/null || true
+    wait "$api_pid" 2>/dev/null || true
+    wait "$scanner_pid" 2>/dev/null || true
+}
+trap 'stop_children; exit 0' TERM INT
+
+# If either exits, terminate its companion and let the service manager restart.
+wait -n "$api_pid" "$scanner_pid"
+status=$?
+stop_children
+if [[ "$status" -eq 0 ]]; then
+    echo "API or scanner exited unexpectedly" >&2
+    exit 1
+fi
+exit "$status"

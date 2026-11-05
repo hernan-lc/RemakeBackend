@@ -44,6 +44,42 @@ pub struct ExpectedRelease<'a> {
     pub sha256: &'a str,
 }
 
+/// Grandfathered identifiers owned by the independently approved official
+/// publisher. New identifiers must use their publisher namespace.
+pub const OFFICIAL_LEGACY_IDS: &[&str] = &[
+    "audio.play.process",
+    "hotkeys",
+    "l4d2.interactive",
+    "minecraft.server",
+    "peak.game",
+    "repo.game",
+    "sonicboom.server",
+    "textintel",
+];
+
+pub fn publisher_allows(namespace: &str, plugin_id: &str) -> bool {
+    plugin_id
+        .strip_prefix(namespace)
+        .is_some_and(|s| s.starts_with('.') && s.len() > 1)
+        || namespace == "tiktools" && OFFICIAL_LEGACY_IDS.contains(&plugin_id)
+}
+
+/// Locally approved authority is always bounded; registry root delegation
+/// must independently authorize each identifier too.
+pub fn approved_publisher_key(
+    key: tiktools_plugin_package::PublicKey,
+    namespace: &str,
+) -> TrustedKey {
+    let mut trusted = TrustedKey::new(key, KeyRole::Publisher).publisher(namespace);
+    if namespace == "tiktools" {
+        trusted.scopes.push("tiktools.*".into());
+        trusted
+            .scopes
+            .extend(OFFICIAL_LEGACY_IDS.iter().map(|id| (*id).to_owned()));
+    }
+    trusted
+}
+
 /// Holds the exact private copy that was verified. Persist this copy by digest;
 /// never publish the original upload path, which can change while verifying.
 pub struct VerifiedArtifact {
@@ -70,10 +106,7 @@ pub fn verify(
 ) -> Result<VerifiedArtifact, VerifyError> {
     if !is_valid_publisher(expected.namespace)
         || !is_valid_plugin_id(expected.plugin_id)
-        || !expected
-            .plugin_id
-            .strip_prefix(expected.namespace)
-            .is_some_and(|s| s.starts_with('.') && s.len() > 1)
+        || !publisher_allows(expected.namespace, expected.plugin_id)
         || tiktools_plugin_api::manifest::parse_version(expected.version).is_none()
         || !(expected.target == "any" || is_plugin_target(expected.target))
     {
@@ -189,6 +222,65 @@ mod tests {
     use super::*;
     use tiktools_plugin_package::{pack, sign_archive, KeyId, PackRequest, SigningKey};
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+    #[test]
+    fn official_legacy_scopes_are_exact_and_not_available_to_other_publishers() {
+        let signing =
+            SigningKey::generate(KeyId::parse("test-key").unwrap(), Some("tiktools".into()))
+                .unwrap();
+        let official = approved_publisher_key(signing.public_key(), "tiktools");
+        for id in OFFICIAL_LEGACY_IDS {
+            assert!(publisher_allows("tiktools", id));
+            assert!(official.allows_package(id));
+            assert!(!publisher_allows("other", id));
+        }
+        assert!(publisher_allows("tiktools", "tiktools.new"));
+        assert!(official.allows_package("tiktools.new"));
+        assert!(!publisher_allows("tiktools", "sonicboom.other"));
+        assert!(!official.allows_package("sonicboom.other"));
+        assert!(!publisher_allows("tiktools", "tiktools"));
+        let other = approved_publisher_key(signing.public_key(), "other");
+        assert!(!other.allows_package("hotkeys"));
+    }
+
+    #[test]
+    fn signed_official_legacy_package_verifies_only_with_explicit_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("plugin.json");
+        std::fs::write(&manifest, serde_json::to_vec(&serde_json::json!({"schemaVersion":2,"id":"hotkeys","name":"Hotkeys","version":"1.0.0","runtime":"process","entry":"index.js","protocolVersion":1,"publisher":"tiktools"})).unwrap()).unwrap();
+        let entry = dir.path().join("entry");
+        std::fs::write(&entry, b"test").unwrap();
+        let package = dir.path().join("hotkeys.plugin");
+        pack(&PackRequest {
+            manifest,
+            entry: Some(entry),
+            output: package.clone(),
+            target: None,
+        })
+        .unwrap();
+        let signing = SigningKey::generate(
+            KeyId::parse("official-key").unwrap(),
+            Some("tiktools".into()),
+        )
+        .unwrap();
+        sign_archive(&package, &signing).unwrap();
+        let digest = Sha256Digest::of_file(&package).unwrap().to_string();
+        let expected = || ExpectedRelease {
+            namespace: "tiktools",
+            plugin_id: "hotkeys",
+            version: "1.0.0",
+            target: "any",
+            sha256: &digest,
+        };
+        let official = approved_publisher_key(signing.public_key(), "tiktools");
+        assert!(verify(&package, expected(), &official).is_ok());
+        let unscoped =
+            TrustedKey::new(signing.public_key(), KeyRole::Publisher).publisher("tiktools");
+        assert!(matches!(
+            verify(&package, expected(), &unscoped),
+            Err(VerifyError::Untrusted)
+        ));
+    }
 
     fn setup() -> (TempDir, PathBuf, TrustedKey) {
         let dir = tempfile::tempdir().unwrap();

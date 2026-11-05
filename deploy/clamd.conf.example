@@ -1,0 +1,16 @@
+# Example only: install and maintain official signature databases separately.
+# Mount the volume at /data, with /data/objects and /data/clamav as distinct
+# directories readable by UID 10001. Do not use test signatures in production.
+Foreground yes
+DatabaseDirectory /data/clamav
+TCPAddr 127.0.0.1
+TCPSocket 3310
+StreamMaxLength 134217728
+MaxFileSize 134217728
+MaxScanSize 536870912
+ScanArchive yes
+AlertExceedsMax yes
+MaxThreads 2
+MaxQueue 12
+SelfCheck 600
+ConcurrentDatabaseReload no

@@ -1,0 +1,24 @@
+# Send only build inputs to the remote builder. Local volumes, backups,
+# credentials and signing keys must never enter the build context.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!migrations/
+!migrations/**
+!web/
+!web/admin/
+!web/admin/**
+!deploy/
+!deploy/Dockerfile
+!deploy/start-cloud
+!deploy/clamd.conf.example
+web/admin/node_modules/
+web/admin/dist/
+**/.env
+**/.env.*
+**/*.key.json
+**/*.pem
+**/*.key
+**/*.tsbuildinfo

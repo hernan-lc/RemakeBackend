@@ -723,6 +723,97 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn official_legacy_release_requires_independent_root_delegation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = SigningKey::generate(KeyId::parse("root-legacy").unwrap(), None).unwrap();
+        let index = SigningKey::generate(KeyId::parse("index-legacy").unwrap(), None).unwrap();
+        let publisher =
+            SigningKey::generate(KeyId::parse("pub-legacy").unwrap(), Some("tiktools".into()))
+                .unwrap();
+        let approved = cloud_verifier::approved_publisher_key(publisher.public_key(), "tiktools");
+        let unscoped =
+            TrustedKey::new(publisher.public_key(), KeyRole::Publisher).publisher("tiktools");
+        let seed = dir.path().join("scoped");
+        IndexWriter::open(
+            &seed,
+            "fixture",
+            Some(SigningKey::from_json(&index.to_json()).unwrap()),
+        )
+        .init(
+            &root,
+            vec![
+                TrustedKey::new(index.public_key(), KeyRole::Index),
+                approved.clone(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        let unscoped_seed = dir.path().join("unscoped");
+        IndexWriter::open(
+            &unscoped_seed,
+            "fixture",
+            Some(SigningKey::from_json(&index.to_json()).unwrap()),
+        )
+        .init(
+            &root,
+            vec![
+                TrustedKey::new(index.public_key(), KeyRole::Index),
+                unscoped,
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        let manifest = dir.path().join("plugin.json");
+        fs::write(&manifest, serde_json::to_vec(&serde_json::json!({"schemaVersion":2,"id":"hotkeys","name":"Hotkeys","version":"1.0.0","runtime":"process","entry":"index.js","protocolVersion":1,"publisher":"tiktools","description":"Test plugin","license":"MIT","engines":{"tiktools":">=0.3.3"},"categories":["utilities"]})).unwrap()).unwrap();
+        let entry = dir.path().join("entry");
+        fs::write(&entry, b"test").unwrap();
+        let package = dir.path().join("test.plugin");
+        pack(&PackRequest {
+            manifest,
+            entry: Some(entry),
+            output: package.clone(),
+            target: None,
+        })
+        .unwrap();
+        sign_archive(&package, &publisher).unwrap();
+        let digest = Sha256Digest::of_file(&package).unwrap().to_string();
+        let input = || ReleaseInput {
+            source: &package,
+            expected: ExpectedRelease {
+                namespace: "tiktools",
+                plugin_id: "hotkeys",
+                version: "1.0.0",
+                target: "any",
+                sha256: &digest,
+            },
+            approved_key: &approved,
+            channel: "stable",
+            yanked: false,
+            advisory: None,
+        };
+        let pin = TrustedKey::new(root.public_key(), KeyRole::Root);
+        assert!(build(
+            &unscoped_seed,
+            &pin,
+            SigningKey::from_json(&index.to_json()).unwrap(),
+            &[input()]
+        )
+        .is_err());
+        let candidate = build(
+            &seed,
+            &pin,
+            SigningKey::from_json(&index.to_json()).unwrap(),
+            &[input()],
+        )
+        .unwrap();
+        assert!(candidate
+            .revalidate(&pin, &index.public_key(), &[(&approved, "hotkeys")])
+            .is_ok());
+    }
     #[test]
     fn refuses_untrusted_inputs_and_duplicate_release() {
         let f = Fixture::new();

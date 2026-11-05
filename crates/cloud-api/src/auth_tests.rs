@@ -8507,3 +8507,152 @@ async fn linked_providers_list_and_unlink_guardrails() {
     );
     fixture_handle.abort();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn local_storage_upload_and_inspection_enforce_capabilities() {
+    use better_auth::email_password::{EmailPasswordService, SignUpInput};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let (ctx, pool) = context(&database_url, false).await;
+    let service = EmailPasswordService::new(ctx.clone()).unwrap();
+    let identity = service
+        .sign_up(
+            SignUpInput {
+                email: format!("{}@example.test", uuid::Uuid::new_v4()),
+                name: "Local storage test".into(),
+                password: "test password with enough characters".into(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let cookie = format!("{}={}", identity.cookie.name, identity.cookie.value);
+    let publisher = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_publishers (id,namespace,status) VALUES ($1,$2,'approved')")
+        .bind(publisher)
+        .bind(format!("pub{}", publisher.simple()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_memberships (publisher_id,user_id,role) VALUES ($1,$2,'owner')")
+        .bind(publisher).bind(&identity.user.id).execute(&pool).await.unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let store = cloud_storage::QuarantineStore::local(
+        root.path(),
+        ORIGIN,
+        b"local-test-only-secret-32-bytes-long",
+    )
+    .unwrap();
+    let app = app_with_storage(
+        ctx.clone(),
+        pool.clone(),
+        AuthRouter::new(ctx).unwrap(),
+        Some(store.clone()),
+    );
+    let data = b"test package contents";
+    let digest = hex::encode(Sha256::digest(data));
+    let create_request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/plugins/uploads")
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("idempotency-key", "local-test-unique-0001")
+        .body(Body::from(
+            json!({"publisherId":publisher,"size":data.len(),"sha256":digest}).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let signed = Url::parse(value["url"].as_str().unwrap()).unwrap();
+    let uri = format!("{}?{}", signed.path(), signed.query().unwrap());
+    let upload_id = value["id"].as_str().unwrap();
+    let headers = value["headers"].as_object().unwrap();
+    let build_put = |uri: &str, bytes: Vec<u8>| {
+        let mut builder = Request::builder().method("PUT").uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(name.as_str(), value.as_str().unwrap());
+        }
+        builder.body(Body::from(bytes)).unwrap()
+    };
+    let bad_uri = uri.replace("signature=", "signature=0");
+    assert_eq!(
+        app.clone()
+            .oneshot(build_put(&bad_uri, data.to_vec()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut altered = data.to_vec();
+    altered[0] ^= 1;
+    assert_eq!(
+        app.clone()
+            .oneshot(build_put(&uri, altered))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(build_put(&uri, data.to_vec()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(build_put(&uri, data.to_vec()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let complete = format!("/api/v1/plugins/uploads/{upload_id}/complete");
+    assert_eq!(
+        request(&app, "POST", &complete, Some(&cookie), Some(ORIGIN))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let key = format!("quarantine/{publisher}/{upload_id}");
+    let version = store.capture(&key, data.len() as i64).await.unwrap();
+    let inspect = store
+        .presign_inspection(
+            &key,
+            &version.version_id,
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+    let url = Url::parse(&inspect.url).unwrap();
+    let uri = format!("{}?{}", url.path(), url.query().unwrap());
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        "attachment"
+    );
+    assert_eq!(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap()[..],
+        data
+    );
+}

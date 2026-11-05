@@ -178,6 +178,31 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable ClamAV daemon and the nine staging packages"]
+    async fn real_clamav_scans_staging_packages() {
+        let addr = std::env::var("CLOUD_CLAMAV_TEST_ADDR").unwrap();
+        let directory = std::env::var("CLOUD_STAGING_PACKAGES_DIR").unwrap();
+        let scanner = ClamAv::new(addr.parse().expect("invalid scanner address"));
+        let mut paths: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "plugin"))
+            .collect();
+        paths.sort();
+        assert_eq!(paths.len(), 9, "expected exactly nine staging packages");
+        for path in paths {
+            let bytes = std::fs::read(&path).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(
+                scanner.scan(&path, bytes.len() as u64, &digest).await,
+                Scan::Clean,
+                "scanner rejected {}",
+                path.display()
+            );
+        }
+    }
     #[tokio::test]
     async fn only_exact_clean_or_detected_response_is_accepted() {
         let dir = tempfile::tempdir().unwrap();

@@ -51,7 +51,7 @@ per-resource caps and row locks instead.
 
 | Surface | Status | Limits |
 |---|---|---|
-| `build-initial-candidate`, `export-candidate`, `verify-candidate`, `check-promotion-readiness` | Experimental | Initial-only private candidates from the pinned writer; empty seed required. Decisions pin the inventory hash but never deploy. No promotion, no updates to an existing registry, no cleanup of orphaned objects. See [REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md). |
+| `build-initial-candidate`, `export-candidate`, `verify-candidate`, `check-promotion-readiness` | Experimental | Builds and checks private candidates using the pinned writer. Readiness records do not deploy; promotion is a separate command that repeats the checks. See [REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md). |
 | `migrate`, `verify-once`, `prepare-publication-once`, `build-initial-candidate`, `export-candidate`, `verify-candidate`, `check-promotion-readiness`, `list-promotion-checks`, `retry-verification`, `retry-publication` | Supported | Explicit migrations with no auto-migration on startup and no tested rollback beyond restoring a backup. Workers are one-shot commands, not daemons. Recording a promotion check never deploys. See [REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md) and [DATABASE-RECOVERY.md](DATABASE-RECOVERY.md). |
 
 ## Sync and client library

@@ -3,7 +3,7 @@ use cloud_storage::{ObjectVersion, QuarantineStore, StorageError};
 use cloud_verifier::{ExpectedRelease, VerifyError};
 use sqlx::{PgPool, Row};
 use std::error::Error;
-use tiktools_plugin_package::{KeyId, KeyRole, PublicKey, TrustedKey};
+use tiktools_plugin_package::{KeyId, PublicKey};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -123,7 +123,7 @@ pub(crate) async fn verify_artifact(
             algorithm: "ed25519".into(),
             public_key,
         };
-        let trusted = TrustedKey::new(key, KeyRole::Publisher).publisher(&namespace);
+        let trusted = cloud_verifier::approved_publisher_key(key, &namespace);
         cloud_verifier::verify(
             &path,
             ExpectedRelease {

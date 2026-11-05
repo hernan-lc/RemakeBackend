@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tiktools_plugin_api::manifest::parse_version;
-use tiktools_plugin_package::{KeyId, KeyRole, PublicKey, Sha256Digest, SigningKey, TrustedKey};
+use tiktools_plugin_package::{KeyId, PublicKey, Sha256Digest, SigningKey, TrustedKey};
 use tiktools_plugin_registry::{Advisory, AdvisorySeverity};
 use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -114,7 +114,7 @@ impl Item {
             return Err("noncanonical publisher key".into());
         }
         let key = PublicKey::new(KeyId::parse(&self.key_id)?, &raw)?;
-        Ok(TrustedKey::new(key, KeyRole::Publisher).publisher(&self.namespace))
+        Ok(cloud_verifier::approved_publisher_key(key, &self.namespace))
     }
 }
 // One SQL statement takes a point-in-time view and includes every prepared job.

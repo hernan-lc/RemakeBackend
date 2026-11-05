@@ -37,7 +37,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo test -p cloud-client --all-features --locked
-      - run: cargo test --workspace --locked -- --ignored --test-threads=1 --skip google_jwks_live_refresh_smoke
+      - run: cargo test --workspace --locked -- --ignored --test-threads=1 --skip google_jwks_live_refresh_smoke --skip staging_official_packages_install_with_pinned_client --skip real_clamav_scans_staging_packages
         env:
           CLOUD_TEST_DATABASE_URL: postgres://cloud:test-only@localhost:5432/cloud_test
   registry-fixture:

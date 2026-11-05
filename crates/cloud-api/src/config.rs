@@ -12,8 +12,30 @@ pub struct Config {
     pub origin: String,
     pub google: Option<(String, String)>,
     pub jwks_policy: JwksRefreshPolicy,
-    pub object_storage: Option<cloud_storage::Config>,
+    pub object_storage: Option<StorageConfig>,
     pub clamav_addr: Option<SocketAddr>,
+    pub admin_dist_dir: Option<std::path::PathBuf>,
+}
+
+pub enum StorageConfig {
+    S3(cloud_storage::Config),
+    Local {
+        root: std::path::PathBuf,
+        origin: String,
+        secret: String,
+    },
+}
+impl StorageConfig {
+    pub fn build(self) -> Result<cloud_storage::QuarantineStore, cloud_storage::StorageError> {
+        match self {
+            Self::S3(config) => cloud_storage::QuarantineStore::new(config),
+            Self::Local {
+                root,
+                origin,
+                secret,
+            } => cloud_storage::QuarantineStore::local(&root, &origin, secret.as_bytes()),
+        }
+    }
 }
 
 impl Config {
@@ -27,10 +49,21 @@ impl Config {
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| format!("{key} is required"))
         };
-        let bind = get("BIND_ADDR")
-            .unwrap_or_else(|| "127.0.0.1:3000".into())
-            .parse()
-            .map_err(|_| "invalid BIND_ADDR")?;
+        // An explicit bind address wins for local development. Railway and
+        // similar platforms supply PORT and require a listener on all interfaces.
+        let bind: SocketAddr = match get("BIND_ADDR") {
+            Some(value) => value.parse().map_err(|_| "invalid BIND_ADDR")?,
+            None => match get("PORT") {
+                Some(value) => {
+                    let port: u16 = value.parse().map_err(|_| "invalid PORT")?;
+                    if port == 0 {
+                        return Err("invalid PORT".into());
+                    }
+                    SocketAddr::from(([0, 0, 0, 0], port))
+                }
+                None => SocketAddr::from(([127, 0, 0, 1], 3000)),
+            },
+        };
         let trusted_proxy_cidrs = get("TRUSTED_PROXY_CIDRS")
             .map(|value| {
                 value
@@ -93,20 +126,33 @@ impl Config {
             "STORAGE_SECRET_KEY",
         ];
         let storage_values: Vec<_> = storage_names.iter().map(|name| get(name)).collect();
-        let object_storage = if storage_values.iter().all(Option::is_none) {
+        let local_root = get("STORAGE_LOCAL_DIR");
+        let object_storage = if let Some(path) = local_root {
+            if storage_values.iter().any(Option::is_some)
+                || path.trim().is_empty()
+                || !std::path::Path::new(&path).is_absolute()
+            {
+                return Err("STORAGE_LOCAL_DIR must be absolute and cannot be combined with STORAGE_* S3 settings".into());
+            }
+            Some(StorageConfig::Local {
+                root: path.into(),
+                origin: url.origin().ascii_serialization(),
+                secret: auth_secret.clone(),
+            })
+        } else if storage_values.iter().all(Option::is_none) {
             None
         } else if storage_values
             .iter()
             .all(|v| v.as_ref().is_some_and(|s| !s.trim().is_empty()))
         {
             let mut values = storage_values.into_iter().map(Option::unwrap);
-            Some(cloud_storage::Config {
+            Some(StorageConfig::S3(cloud_storage::Config {
                 endpoint: values.next().unwrap(),
                 region: values.next().unwrap(),
                 bucket: values.next().unwrap(),
                 access_key: values.next().unwrap(),
                 secret_key: values.next().unwrap(),
-            })
+            }))
         } else {
             return Err("all STORAGE_* settings must be supplied together".into());
         };
@@ -153,6 +199,9 @@ impl Config {
             jwks_policy,
             object_storage,
             clamav_addr,
+            admin_dist_dir: get("ADMIN_DIST_DIR")
+                .filter(|v| !v.trim().is_empty())
+                .map(Into::into),
         })
     }
 }
@@ -197,6 +246,41 @@ mod tests {
         assert!(config(&[("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,10.0.0.0/8")]).is_ok());
         assert!(config(&[("TRUSTED_PROXY_CIDRS", "not-a-cidr")]).is_err());
         assert!(config(&[("TRUSTED_PROXY_CIDRS", "0.0.0.0/0")]).is_err());
+    }
+
+    #[test]
+    fn platform_port_and_explicit_bind() {
+        assert_eq!(config(&[]).unwrap().bind.to_string(), "127.0.0.1:3000");
+        assert_eq!(
+            config(&[("PORT", "8080")]).unwrap().bind.to_string(),
+            "0.0.0.0:8080"
+        );
+        assert_eq!(
+            config(&[("PORT", "8080"), ("BIND_ADDR", "127.0.0.1:4000")])
+                .unwrap()
+                .bind
+                .to_string(),
+            "127.0.0.1:4000"
+        );
+        assert!(config(&[("PORT", "0")]).is_err());
+        assert!(config(&[("PORT", "abc")]).is_err());
+    }
+
+    #[test]
+    fn local_storage_is_explicit_and_exclusive_with_s3() {
+        assert!(matches!(
+            config(&[("STORAGE_LOCAL_DIR", "/tmp/cloud-objects")])
+                .unwrap()
+                .object_storage,
+            Some(StorageConfig::Local { .. })
+        ));
+        assert!(config(&[("STORAGE_LOCAL_DIR", "relative")]).is_err());
+        assert!(config(&[("STORAGE_LOCAL_DIR", "")]).is_err());
+        assert!(config(&[
+            ("STORAGE_LOCAL_DIR", "/tmp/cloud-objects"),
+            ("STORAGE_BUCKET", "bucket")
+        ])
+        .is_err());
     }
 
     #[test]

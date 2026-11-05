@@ -1,5 +1,7 @@
 //! S3 quarantine primitives. They do not authorize publishers or publish artifacts.
 #![forbid(unsafe_code)]
+
+pub mod local;
 use aws_sdk_s3::{
     config::{Credentials, Region},
     presigning::PresigningConfig,
@@ -8,8 +10,14 @@ use aws_sdk_s3::{
     Client,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use url::Url;
@@ -42,8 +50,19 @@ pub struct Config {
 }
 #[derive(Clone)]
 pub struct QuarantineStore {
-    client: Client,
-    bucket: String,
+    backend: Backend,
+}
+#[derive(Clone)]
+enum Backend {
+    S3 {
+        client: Client,
+        bucket: String,
+    },
+    Local {
+        store: local::LocalStore,
+        origin: Url,
+        secret: Arc<[u8]>,
+    },
 }
 // This is a bearer capability: avoid Debug and logging it.
 pub struct PresignedUpload {
@@ -105,15 +124,55 @@ impl QuarantineStore {
             .force_path_style(true)
             .build();
         Ok(Self {
-            client: Client::from_conf(settings),
-            bucket: config.bucket,
+            backend: Backend::S3 {
+                client: Client::from_conf(settings),
+                bucket: config.bucket,
+            },
         })
     }
+    /// Use a private local directory and short-lived same-origin capabilities.
+    pub fn local(root: &Path, origin: &str, secret: &[u8]) -> Result<Self, StorageError> {
+        let origin = Url::parse(origin).map_err(|_| StorageError::Invalid)?;
+        let loopback = origin
+            .host_str()
+            .is_some_and(|h| matches!(h, "127.0.0.1" | "[::1]" | "localhost"));
+        if !(origin.scheme() == "https" || origin.scheme() == "http" && loopback)
+            || origin.host().is_none()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || secret.len() < 32
+        {
+            return Err(StorageError::Invalid);
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| StorageError::Invalid)?;
+        mac.update(b"remake-local-origin-v1\n");
+        mac.update(origin.origin().ascii_serialization().as_bytes());
+        let derived_secret: Arc<[u8]> = Arc::from(mac.finalize().into_bytes().as_slice());
+        Ok(Self {
+            backend: Backend::Local {
+                store: local::LocalStore::open(root)?,
+                origin,
+                secret: derived_secret,
+            },
+        })
+    }
+    fn s3(&self) -> Result<(&Client, &str), StorageError> {
+        match &self.backend {
+            Backend::S3 { client, bucket } => Ok((client, bucket)),
+            Backend::Local { .. } => Err(StorageError::Invalid),
+        }
+    }
+    pub fn is_local(&self) -> bool {
+        matches!(self.backend, Backend::Local { .. })
+    }
     async fn require_versioning(&self) -> Result<(), StorageError> {
-        let response = self
-            .client
+        let (client, bucket) = self.s3()?;
+        let response = client
             .get_bucket_versioning()
-            .bucket(&self.bucket)
+            .bucket(bucket)
             .send()
             .await
             .map_err(|_| StorageError::Unavailable)?;
@@ -145,12 +204,36 @@ impl QuarantineStore {
         }
         let digest = hex::decode(sha256).map_err(|_| StorageError::Invalid)?;
         let checksum = STANDARD.encode(digest);
+        if let Backend::Local { origin, secret, .. } = &self.backend {
+            let expires = expiry(ttl)?;
+            let signature = sign(
+                secret,
+                &format!("upload\n{key}\n{size}\n{sha256}\n{expires}"),
+            )?;
+            let mut url = origin
+                .join(&format!("/api/v1/local-objects/{key}"))
+                .map_err(|_| StorageError::Invalid)?;
+            url.query_pairs_mut()
+                .append_pair("expires", &expires.to_string())
+                .append_pair("size", &size.to_string())
+                .append_pair("sha256", sha256)
+                .append_pair("signature", &signature);
+            return Ok(PresignedUpload {
+                url: url.to_string(),
+                headers: BTreeMap::from([
+                    ("content-length".into(), size.to_string()),
+                    ("if-none-match".into(), "*".into()),
+                    ("x-amz-checksum-sha256".into(), checksum),
+                ]),
+            });
+        }
         self.require_versioning().await?;
         let presign = PresigningConfig::expires_in(ttl).map_err(|_| StorageError::Invalid)?;
         let signed = self
-            .client
+            .s3()?
+            .0
             .put_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .content_length(size)
             .checksum_sha256(&checksum)
@@ -201,12 +284,30 @@ impl QuarantineStore {
         {
             return Err(StorageError::Invalid);
         }
+        if let Backend::Local { origin, secret, .. } = &self.backend {
+            if !valid_sha256(version_id) {
+                return Err(StorageError::Invalid);
+            }
+            let expires = expiry(ttl)?;
+            let signature = sign(secret, &format!("inspect\n{key}\n{version_id}\n{expires}"))?;
+            let mut url = origin
+                .join(&format!("/api/v1/local-inspection/{key}"))
+                .map_err(|_| StorageError::Invalid)?;
+            url.query_pairs_mut()
+                .append_pair("version", version_id)
+                .append_pair("expires", &expires.to_string())
+                .append_pair("signature", &signature);
+            return Ok(PresignedDownload {
+                url: url.to_string(),
+            });
+        }
         self.require_versioning().await?;
         let config = PresigningConfig::expires_in(ttl).map_err(|_| StorageError::Invalid)?;
         let signed = self
-            .client
+            .s3()?
+            .0
             .get_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .version_id(version_id)
             .response_content_type("application/octet-stream")
@@ -297,15 +398,24 @@ impl QuarantineStore {
         if !metadata.is_file() || metadata.len() != size as u64 {
             return Err(StorageError::InvalidObject);
         }
+        if let Backend::Local { store, .. } = &self.backend {
+            let input = tokio::fs::File::open(path)
+                .await
+                .map_err(|_| StorageError::Unavailable)?;
+            let version = store.put(key, size, sha256, input).await?;
+            store.download(key, &version, tokio::io::sink()).await?;
+            return Ok((key.to_owned(), version));
+        }
         self.require_versioning().await?;
         let checksum = STANDARD.encode(hex::decode(sha256).map_err(|_| StorageError::Invalid)?);
         let body = ByteStream::from_path(path)
             .await
             .map_err(|_| StorageError::Unavailable)?;
         let response = self
-            .client
+            .s3()?
+            .0
             .put_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .content_length(size)
             .checksum_sha256(checksum)
@@ -335,10 +445,14 @@ impl QuarantineStore {
         {
             return Err(StorageError::Invalid);
         }
+        if let Backend::Local { store, .. } = &self.backend {
+            return store.delete_version(key, version_id).await;
+        }
         self.require_versioning().await?;
-        self.client
+        self.s3()?
+            .0
             .delete_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .version_id(version_id)
             .send()
@@ -368,10 +482,17 @@ impl QuarantineStore {
         {
             return Err(StorageError::Invalid);
         }
+        if let Backend::Local { store, .. } = &self.backend {
+            if version.version_id != expected_sha256 {
+                return Err(StorageError::InvalidObject);
+            }
+            return store.download(key, version, output).await;
+        }
         let result = self
-            .client
+            .s3()?
+            .0
             .get_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .version_id(&version.version_id)
             .send()
@@ -425,11 +546,15 @@ impl QuarantineStore {
         if !valid_key(key) || !(1..=MAX_ARTIFACT_SIZE).contains(&expected_size) {
             return Err(StorageError::Invalid);
         }
+        if let Backend::Local { store, .. } = &self.backend {
+            return store.capture(key, expected_size).await;
+        }
         self.require_versioning().await?;
         let head = self
-            .client
+            .s3()?
+            .0
             .head_object()
-            .bucket(&self.bucket)
+            .bucket(self.s3()?.1)
             .key(key)
             .send()
             .await
@@ -446,6 +571,105 @@ impl QuarantineStore {
             size: expected_size,
         })
     }
+
+    /// Validate the upload capability before reading any request body.
+    pub fn local_upload(
+        &self,
+        key: &str,
+        size: i64,
+        sha256: &str,
+        expires: u64,
+        signature: &str,
+    ) -> Result<local::LocalStore, StorageError> {
+        let Backend::Local { store, secret, .. } = &self.backend else {
+            return Err(StorageError::Invalid);
+        };
+        if !valid_key(key) || !(1..=MAX_ARTIFACT_SIZE).contains(&size) || !valid_sha256(sha256) {
+            return Err(StorageError::Invalid);
+        }
+        verify(
+            secret,
+            &format!("upload\n{key}\n{size}\n{sha256}\n{expires}"),
+            expires,
+            MAX_URL_TTL,
+            signature,
+        )?;
+        Ok(store.clone())
+    }
+
+    /// Validate an inspection capability and bind it to the exact object hash.
+    pub async fn local_inspection(
+        &self,
+        key: &str,
+        version: &str,
+        expires: u64,
+        signature: &str,
+    ) -> Result<(local::LocalStore, ObjectVersion), StorageError> {
+        let Backend::Local { store, secret, .. } = &self.backend else {
+            return Err(StorageError::Invalid);
+        };
+        if !valid_key(key) || !valid_sha256(version) {
+            return Err(StorageError::Invalid);
+        }
+        verify(
+            secret,
+            &format!("inspect\n{key}\n{version}\n{expires}"),
+            expires,
+            Duration::from_secs(60),
+            signature,
+        )?;
+        let size = store.length(key).await?;
+        Ok((
+            store.clone(),
+            ObjectVersion {
+                version_id: version.to_owned(),
+                size,
+            },
+        ))
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn unix_time() -> Result<u64, StorageError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| StorageError::Unavailable)
+}
+fn expiry(ttl: Duration) -> Result<u64, StorageError> {
+    unix_time()?
+        .checked_add(ttl.as_secs())
+        .ok_or(StorageError::Invalid)
+}
+fn sign(secret: &[u8], message: &str) -> Result<String, StorageError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| StorageError::Invalid)?;
+    mac.update(b"remake-local-object-v1\n");
+    mac.update(message.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+fn verify(
+    secret: &[u8],
+    message: &str,
+    expires: u64,
+    max_ttl: Duration,
+    signature: &str,
+) -> Result<(), StorageError> {
+    let now = unix_time()?;
+    if expires <= now || expires > now.saturating_add(max_ttl.as_secs()) || !valid_sha256(signature)
+    {
+        return Err(StorageError::Invalid);
+    }
+    let bytes = hex::decode(signature).map_err(|_| StorageError::Invalid)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| StorageError::Invalid)?;
+    mac.update(b"remake-local-object-v1\n");
+    mac.update(message.as_bytes());
+    mac.verify_slice(&bytes).map_err(|_| StorageError::Invalid)
 }
 fn valid_key(key: &str) -> bool {
     let mut parts = key.split('/');
@@ -477,6 +701,90 @@ fn valid_bucket(bucket: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_capabilities_bind_key_size_digest_expiry_and_scope() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store = QuarantineStore::local(
+            root.path(),
+            "http://127.0.0.1:3000",
+            b"01234567890123456789012345678901",
+        )
+        .unwrap();
+        let key = format!("quarantine/{}/{}", Uuid::new_v4(), Uuid::new_v4());
+        let data = b"artifact";
+        let digest = hex::encode(Sha256::digest(data));
+        let signed = store
+            .presign_upload(&key, data.len() as i64, &digest, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let url = Url::parse(&signed.url).unwrap();
+        let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        let expires = query["expires"].parse().unwrap();
+        let signature = &query["signature"];
+        let local = store
+            .local_upload(&key, data.len() as i64, &digest, expires, signature)
+            .unwrap();
+        let other_origin = QuarantineStore::local(
+            root.path(),
+            "http://127.0.0.1:4000",
+            b"01234567890123456789012345678901",
+        )
+        .unwrap();
+        assert!(other_origin
+            .local_upload(&key, data.len() as i64, &digest, expires, signature)
+            .is_err());
+        assert!(store
+            .local_upload(&key, data.len() as i64 + 1, &digest, expires, signature)
+            .is_err());
+        assert!(store
+            .local_upload(&key, data.len() as i64, &"0".repeat(64), expires, signature)
+            .is_err());
+        assert!(store
+            .local_upload(&key, data.len() as i64, &digest, 0, signature)
+            .is_err());
+        let other = format!("quarantine/{}/{}", Uuid::new_v4(), Uuid::new_v4());
+        assert!(store
+            .local_upload(&other, data.len() as i64, &digest, expires, signature)
+            .is_err());
+        let version = local
+            .put(&key, data.len() as i64, &digest, &data[..])
+            .await
+            .unwrap();
+        assert_eq!(
+            store.capture(&key, data.len() as i64).await.unwrap(),
+            version
+        );
+        let inspect = store
+            .presign_inspection(&key, &version.version_id, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let url = Url::parse(&inspect.url).unwrap();
+        let q: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        let (local, recorded) = store
+            .local_inspection(
+                &key,
+                &q["version"],
+                q["expires"].parse().unwrap(),
+                &q["signature"],
+            )
+            .await
+            .unwrap();
+        let mut result = Vec::new();
+        local.download(&key, &recorded, &mut result).await.unwrap();
+        assert_eq!(result, data);
+        assert!(store
+            .local_inspection(&key, &version.version_id, expires, signature)
+            .await
+            .is_err());
+        store
+            .delete_version(&key, &version.version_id)
+            .await
+            .unwrap();
+        assert!(store.capture(&key, data.len() as i64).await.is_err());
+    }
     #[tokio::test]
     async fn validates_quarantine_paths_and_endpoints() {
         let key = format!("quarantine/{}/{}", Uuid::new_v4(), Uuid::new_v4());
