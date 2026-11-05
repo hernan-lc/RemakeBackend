@@ -18,6 +18,7 @@
       </div>
       <template v-else>
         <AppCard :padded="false" label="publisher-requests">
+          <p v-if="membershipsError" class="p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">{{ t('publishers.membershipsUnavailable') }} <button class="underline" @click="refetchMemberships()">{{ t('states.retry') }}</button></p>
           <div class="scroll-thin overflow-x-auto">
             <table class="w-full min-w-[36rem] text-left text-sm">
               <thead>
@@ -40,11 +41,13 @@
                       variant="primary"
                       icon="check"
                       :loading="busyId === p.id"
+                      :disabled="!memberships || isMember(p.id)"
                       @click="askApprove(p.id, p.namespace)"
                     >
                       {{ t('dashboard.approve') }}
                     </AppButton>
-                    <AppButton size="sm" variant="ghost" @click="toggleKeys(p.id)">
+                    <p v-if="isMember(p.id)" class="max-w-80 text-xs text-amber-700 dark:text-amber-300">{{ t('publishers.independentReviewer') }}</p>
+                    <AppButton size="sm" variant="ghost" :disabled="!memberships || isMember(p.id)" @click="toggleKeys(p.id)">
                       {{ t('publishers.keys') }}
                     </AppButton>
                     <ul v-if="keys[p.id]" class="flex w-full flex-col gap-2 text-left">
@@ -123,6 +126,13 @@ const { data, isPending, error, refetch } = useQuery({
   queryFn: () => api.adminPublishers({ status: status.value || undefined, cursor: cursor.value, limit: 50 }),
 })
 const items = computed(() => data.value?.items ?? [])
+const { data: memberships, error: membershipsError, refetch: refetchMemberships } = useQuery({
+  queryKey: ['my-publishers', 'review-eligibility'],
+  queryFn: api.myPublishers,
+})
+function isMember(id: string): boolean {
+  return memberships.value?.some((publisher) => publisher.id === id) ?? false
+}
 const forbidden = computed(() => error.value instanceof ApiError && error.value.status === 403)
 const errorDetail = computed(() =>
   error.value instanceof ApiError && error.value.status !== 403 ? `HTTP ${error.value.status}` : undefined,
@@ -172,8 +182,14 @@ async function doApprove() {
     confirmOpen.value = false
     await client.invalidateQueries({ queryKey: ['admin'] })
     await refetch()
-  } catch {
-    ui.toast(t('errors.actionFailed'), 'err')
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 403) {
+      confirmOpen.value = false
+      await refetchMemberships()
+      ui.toast(t('publishers.approvalForbidden'), 'err')
+    } else {
+      ui.toast(t('errors.actionFailed'), 'err')
+    }
   } finally {
     busyId.value = null
   }

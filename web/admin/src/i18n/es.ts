@@ -41,7 +41,7 @@ export const es: typeof en = {
     approve: 'Aprobar',
     approveConfirm: '¿Aprobar este espacio de nombres? Esto otorga el espacio, nunca una clave de firma.',
   },
-  publishers: { title: 'Solicitudes de publicador', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella' },
+  publishers: { title: 'Solicitudes de publicador', filter: 'Filtro de estado', all: 'Todos', pending: 'Pendientes', approved: 'Aprobados', suspended: 'Suspendidos', namespace: 'Espacio', status: 'Estado', created: 'Solicitado', actions: 'Acciones', approvedMsg: 'Aprobado.', keys: 'Claves', pendingKeys: 'Claves de firma pendientes', approveKey: 'Aprobar clave', approvedKeyMsg: 'Clave de firma aprobada.', fingerprint: 'Huella', independentReviewer: 'Perteneces a este publicador. Otro administrador que no sea miembro debe aprobar el espacio y revisar sus claves.', membershipsUnavailable: 'No se pudieron comprobar tus membresías. Las acciones de revisión estarán disponibles cuando se complete la comprobación.', approvalForbidden: 'Se denegó la aprobación. Tu rol de administrador o membresía puede haber cambiado; actualiza y solicita la revisión de otro administrador independiente.' },
   moderation: {
     title: 'Cola de moderación',
     inspect: 'Obtener enlace de inspección',

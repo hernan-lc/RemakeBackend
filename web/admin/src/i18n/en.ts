@@ -39,7 +39,7 @@ export const en = {
     approve: 'Approve',
     approveConfirm: 'Approve this publisher namespace? This grants the namespace, never a signing key.',
   },
-  publishers: { title: 'Publisher requests', filter: 'Status filter', all: 'All', pending: 'Pending', approved: 'Approved', suspended: 'Suspended', namespace: 'Namespace', status: 'Status', created: 'Requested', actions: 'Actions', approvedMsg: 'Approved.', keys: 'Keys', pendingKeys: 'Pending signing keys', approveKey: 'Approve key', approvedKeyMsg: 'Signing key approved.', fingerprint: 'Fingerprint' },
+  publishers: { title: 'Publisher requests', filter: 'Status filter', all: 'All', pending: 'Pending', approved: 'Approved', suspended: 'Suspended', namespace: 'Namespace', status: 'Status', created: 'Requested', actions: 'Actions', approvedMsg: 'Approved.', keys: 'Keys', pendingKeys: 'Pending signing keys', approveKey: 'Approve key', approvedKeyMsg: 'Signing key approved.', fingerprint: 'Fingerprint', independentReviewer: 'You belong to this publisher. A different admin who is not a member must approve the namespace and review its keys.', membershipsUnavailable: 'Could not check your publisher memberships. Review actions are unavailable until this check succeeds.', approvalForbidden: 'Approval was denied. Your admin role or publisher membership may have changed; refresh and ask an independent admin to review.' },
   moderation: {
     title: 'Moderation queue',
     inspect: 'Get inspection link',

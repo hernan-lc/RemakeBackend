@@ -4,6 +4,26 @@ A namespace request starts `pending`. An authenticated Cloud admin may call `POS
 
 Cloud account roles are separate from Better Auth identity roles. The explicit database operator commands are `cloud-api grant-role USER_ID admin OPERATOR` and `cloud-api revoke-role USER_ID admin OPERATOR`; `moderator` is the reviewer role: with `admin` it lists the moderation queue and records decisions, yanks, advisories, and inspections, independent of publisher membership (see [MODERATION.md](MODERATION.md)). Only `admin` approves publishers or reads the admin APIs. Run migrations first. A successful change writes an audit event, a repeated no-op does not, and the command refuses to revoke the final admin. The operator label is supplied on the command line and is **not authenticated evidence of who ran it**: restrict database and shell access, and correlate it with independently authenticated operator logs. No HTTP role-management endpoint exists. This bootstrap mechanism is not a substitute for production access-control review.
 
+## Independent review workflow
+
+The reviewer must be a different trusted person with a Cloud `admin` role and
+must not be a member of the publisher, regardless of their membership role.
+An admin who owns the namespace cannot approve it or review its keys. Have the
+reviewer sign up or sign in, obtain their user ID through their account, and ask
+an authorized database operator to grant that ID the admin role using the command
+above. The reviewer signs in through the browser and approves the pending
+namespace. The owner then enrolls a signing key with fresh step-up authentication;
+the reviewer independently checks its fingerprint and approves the key with a
+fresh step-up grant. Approving a namespace does not approve any key. Release
+moderation has separate independent-review requirements.
+
+The admin publisher page checks the current account's memberships and explains
+when another reviewer is needed. Its check is advisory; the API rechecks the role
+and membership at the time of the action. A 403 can also mean that the admin
+role or membership changed, so refresh the page and verify the account before
+retrying. Do not use a second account controlled by the requester as a substitute
+for an independent reviewer.
+
 Auth-user deletion is blocked while Cloud roles or publisher memberships remain; roles can be self-revoked with `DELETE /api/v1/me/roles/{role}` or revoked through the operator command before calling `DELETE /api/v1/me`. Audit events are retained under the opaque user id. Approval is serialized with role revocation and membership changes, but it is not a replacement for independent security review or a complete approval UI.
 
 ## Ownership transfer
