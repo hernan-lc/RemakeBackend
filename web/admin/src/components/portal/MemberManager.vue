@@ -1,9 +1,9 @@
 <template>
-  <div class="flex flex-col gap-2">
+  <div class="flex flex-col gap-4">
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
       <ul v-if="members.length > 0" class="divide-y divide-slate-100 rounded-md border border-slate-200 text-sm dark:divide-slate-800 dark:border-slate-700">
-        <li v-for="m in members" :key="m.user_id" class="flex flex-wrap items-center gap-2 px-3 py-1.5">
-          <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ m.user_id }}</span>
+        <li v-for="m in members" :key="m.user_id" class="flex flex-wrap items-center gap-2 px-4 py-3">
+          <span class="min-w-0 flex-1 break-all font-mono text-xs">{{ m.user_id }}</span>
           <AppBadge tone="neutral">{{ m.role }}</AppBadge>
           <template v-if="isOwner && m.role !== 'owner'">
             <AppSelect :model-value="roles[m.user_id] ?? m.role" class="w-32" :label="t('portal.setRole')" @update:model-value="(v) => (roles[m.user_id] = v)">

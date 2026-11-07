@@ -280,6 +280,8 @@ describe('release submission wizard', () => {
     const f = packageFile()
     Object.defineProperty(input.element, 'files', { value: [f], configurable: true })
     await input.trigger('change')
+    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[aria-current="step"]').text()).toContain('Metadata'))
     const texts = wrapper.findAll('input[type="text"]')
     await texts[0]!.setValue('acme.plugin')
     await texts[1]!.setValue('1.2.3')
@@ -295,7 +297,7 @@ describe('release submission wizard', () => {
     await fillValid(wrapper)
     const texts = wrapper.findAll('input[type="text"]')
     await texts[0]!.setValue('other.plugin')
-    const submit = wrapper.findAll('button').find((b) => b.text() === 'Submit release')!
+    const submit = wrapper.findAll('button').find((b) => b.text() === 'Continue')!
     await submit.trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('must start with'))
     await texts[0]!.setValue('acme.plugin')
@@ -315,6 +317,7 @@ describe('release submission wizard', () => {
     await wrapper.setProps({ publishers: [{ id: 'p1', namespace: 'tiktools', status: 'approved', role: 'owner' }] })
     await fillValid(wrapper)
     await wrapper.findAll('input[type="text"]')[0]!.setValue('sonicboom.server')
+    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click')
     await wrapper.findAll('button').find((b) => b.text() === 'Submit release')!.trigger('click')
     await vi.waitFor(() => expect(calls).toContain('/api/v1/plugins/uploads'))
   })
@@ -346,6 +349,8 @@ describe('release submission wizard', () => {
       return json({})
     })
     await fillValid(wrapper)
+    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click')
+    expect(wrapper.find('[aria-current="step"]').text()).toContain('Review and submit')
     const submit = wrapper.findAll('button').find((b) => b.text() === 'Submit release')!
     await submit.trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('r1'))
@@ -366,6 +371,8 @@ describe('release submission wizard', () => {
       return json({})
     })
     await fillValid(wrapper)
+    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click')
+    expect(wrapper.find('[aria-current="step"]').text()).toContain('Review and submit')
     const submit = wrapper.findAll('button').find((b) => b.text() === 'Submit release')!
     await submit.trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('expired'))

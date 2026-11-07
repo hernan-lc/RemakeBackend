@@ -1,6 +1,5 @@
 <template>
-  <main class="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#f6f8fc] px-4 py-16 dark:bg-[#090f1e]">
-    <div class="pointer-events-none absolute left-1/2 top-0 h-96 w-[min(48rem,95vw)] -translate-x-1/2 rounded-full bg-indigo-200/40 blur-3xl dark:bg-indigo-500/10" aria-hidden="true" />
+  <main class="relative flex min-h-screen w-full items-center justify-center bg-slate-50 px-4 py-16 dark:bg-slate-950">
     <div class="absolute right-3 top-3 flex items-center gap-1">
       <ThemeToggle />
       <button
@@ -14,21 +13,23 @@
         <span class="ml-1 uppercase">{{ ui.locale }}</span>
       </button>
     </div>
-    <AppCard class="relative w-full max-w-md !p-6 shadow-xl shadow-slate-200/60 sm:!p-9 dark:shadow-black/20" label="sign-in">
-      <div class="mb-7 flex items-center gap-4">
-        <span class="inline-flex size-12 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" aria-hidden="true">
+    <AppCard class="relative w-full max-w-md !p-6 sm:!p-9" label="sign-in">
+      <div class="mb-7 flex items-center gap-3">
+        <span class="inline-flex size-12 items-center justify-center rounded-lg bg-indigo-600 text-white" aria-hidden="true">
           <AppIcon name="dashboard" :size="20" />
         </span>
         <div>
-          <h1 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ t('app.title') }}</h1>
+          <p class="text-sm font-semibold text-slate-900 dark:text-white">{{ t('app.title') }}</p>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ t('app.workspace') }}</p>
         </div>
       </div>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{{ t('auth.signIn') }}</h1>
+      <p class="mb-6 mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{{ copy.description }}</p>
       <div v-if="route.query.next && route.query.next !== '/app'" role="note" class="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
         <AppIcon name="info" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
         {{ t('errors.expired') }}
       </div>
-      <AppButton v-if="googleAvailable" variant="primary" icon="external" href="/api/auth/sign-in/social/google" class="w-full">
+      <AppButton v-if="googleAvailable" variant="secondary" icon="external" href="/api/auth/sign-in/social/google" class="w-full">
         {{ t('auth.signInGoogle') }}
       </AppButton>
       <div v-if="googleAvailable" class="my-4 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400" aria-hidden="true">
@@ -37,7 +38,7 @@
         <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
       </div>
       <form class="flex flex-col gap-4" @submit.prevent="submit">
-        <AppInput v-model="identifier" :label="t('auth.identifier')" type="text" required autocomplete="username" icon="account" placeholder="admin@example.com" />
+        <AppInput v-model="identifier" :label="t('auth.identifier')" type="text" required autocomplete="username" icon="account"  />
         <AppInput v-model="password" :label="t('auth.password')" type="password" required autocomplete="current-password" icon="lock" />
         <p v-if="failed" role="alert" class="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
           <AppIcon name="alert" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
@@ -47,15 +48,16 @@
           {{ t('auth.signIn') }}
         </AppButton>
       </form>
+      <p class="mt-6 border-t border-slate-200 pt-4 text-xs leading-5 text-slate-600 dark:border-slate-700 dark:text-slate-300">{{ copy.access }}</p>
     </AppCard>
   </main>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { ApiError, api } from '../api/client'
+import { api } from '../api/client'
 import { safeNextPath } from '../api/auth'
 import { useInvalidateSession } from '../queries/session'
 import { useUiStore } from '../stores/ui'
@@ -66,6 +68,11 @@ import AppInput from '../components/ui/AppInput.vue'
 import ThemeToggle from '../components/ui/ThemeToggle.vue'
 
 const { t, locale } = useI18n()
+const copy = computed(() => locale.value === 'es' ? {
+  description: 'Accede a tu espacio de operaciones con tu cuenta de Cloud.', access: 'Las herramientas disponibles dependen de los permisos de tu cuenta.',
+} : {
+  description: 'Sign in to your operations workspace with your Cloud account.', access: 'Available tools depend on your account permissions.',
+})
 const route = useRoute()
 const router = useRouter()
 const invalidate = useInvalidateSession()
@@ -90,6 +97,7 @@ function toggleLang() {
 }
 
 async function submit() {
+  if (busy.value) return
   busy.value = true
   failed.value = false
   try {
@@ -100,8 +108,8 @@ async function submit() {
     else await api.signInUsername(id, password.value)
     await invalidate()
     await router.replace(safeNextPath(route.query.next))
-  } catch (e) {
-    failed.value = e instanceof ApiError
+  } catch {
+    failed.value = true
   } finally {
     busy.value = false
   }

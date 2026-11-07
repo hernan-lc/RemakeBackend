@@ -1,7 +1,8 @@
 <template>
-  <main class="flex min-h-screen w-full items-center justify-center bg-slate-100 px-4 dark:bg-slate-950">
-    <div v-if="checking" role="status" class="text-slate-600 dark:text-slate-400">{{ t('states.loading') }}</div>
-    <div v-else role="alert" class="w-full max-w-md rounded-lg border border-red-200 bg-white p-4 text-sm text-red-800 dark:border-red-900 dark:bg-slate-900 dark:text-red-200">
+  <main class="flex min-h-screen w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-slate-950">
+    <div v-if="checking" role="status" class="rounded-xl border border-slate-200 bg-white p-7 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">{{ t('states.loading') }}</div>
+    <div v-else role="alert" class="w-full max-w-md rounded-xl border border-red-200 bg-white p-7 text-sm text-red-800 dark:border-red-900 dark:bg-slate-900 dark:text-red-200">
+      <h1 class="mb-3 text-xl font-semibold">{{ locale === 'es' ? 'No se pudo iniciar sesión' : 'Unable to sign in' }}</h1>
       {{ t('auth.callbackError') }}
       <RouterLink to="/login" class="mt-2 block font-medium underline">{{ t('auth.signIn') }}</RouterLink>
     </div>
@@ -16,7 +17,7 @@ import { api } from '../api/client'
 import { callbackOutcome } from '../api/auth'
 import { useInvalidateSession } from '../queries/session'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const invalidate = useInvalidateSession()

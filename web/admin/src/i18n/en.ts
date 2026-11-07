@@ -197,7 +197,7 @@ export const en = {
     orPassword: 'or with your password',
     password: 'Password',
     verify: 'Verify',
-    ephemeral: 'Your password never leaves this form and is never stored.',
+    ephemeral: 'Your password is sent to the server for verification and is not saved in browser storage.',
     invalidPassword: 'Wrong password. Nothing was changed; try again.',
     noPassword: 'This account has no password. Continue with Google instead.',
     forbidden: 'Re-authentication is not available for this action right now.',

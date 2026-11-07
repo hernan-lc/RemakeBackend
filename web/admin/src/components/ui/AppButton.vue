@@ -13,7 +13,7 @@
   >
     <AppIcon v-if="icon && !loading" :name="icon" :size="iconSize" aria-hidden="true" />
     <span v-if="loading" class="inline-block size-4 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
-    <span v-if="$slots.default" :class="compact ? undefined : 'truncate'"><slot /></span>
+    <span v-if="$slots.default" :class="compact ? undefined : 'break-words text-center'"><slot /></span>
   </component>
 </template>
 
@@ -48,9 +48,9 @@ const compact = computed(() => props.iconOnly || (!slots.default && !!props.icon
 
 const variantClasses: Record<Variant, string> = {
   primary:
-    'bg-indigo-600 text-white shadow-sm shadow-indigo-600/15 hover:bg-indigo-700 active:bg-indigo-800 dark:bg-indigo-500 dark:text-white dark:hover:bg-indigo-400 dark:active:bg-indigo-600',
+    'bg-indigo-600 text-white   hover:bg-indigo-700 active:bg-indigo-800 dark:bg-indigo-600 dark:text-white dark:hover:bg-indigo-700 dark:active:bg-indigo-800',
   secondary:
-    'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 active:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200 dark:hover:bg-slate-700 dark:active:bg-slate-800',
+    'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 active:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:active:bg-slate-800',
   danger:
     'border border-red-300 text-red-700 hover:bg-red-50 active:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950 dark:active:bg-red-900',
   dangerFill:
@@ -59,10 +59,10 @@ const variantClasses: Record<Variant, string> = {
 }
 
 const classes = computed(() => [
-  'inline-flex max-w-full min-h-9 items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500',
+  'inline-flex max-w-full min-h-11 items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500',
   'disabled:cursor-not-allowed disabled:opacity-50',
-  props.size === 'sm' ? 'px-3 py-1.5 text-xs sm:text-sm' : 'px-4 py-2.5 text-sm',
-  compact.value ? (props.size === 'sm' ? 'size-8 !px-0' : 'size-10 !px-0') : undefined,
+  props.size === 'sm' ? 'px-3 py-1.5 text-sm' : 'px-4 py-2.5 text-sm',
+  compact.value ? (props.size === 'sm' ? 'size-11 !px-0' : 'size-11 !px-0') : undefined,
   variantClasses[props.variant],
 ])
 

@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-4">
-    <PageHeader :title="t('moderation.title')" :description="t('moderation.conflictNote')" />
+    <PageHeader :title="t('moderation.title')" :description="copy.description" />
     <AppToolbar v-model="search" :search-label="t('moderation.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch" />
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <template v-if="forbidden">
@@ -9,22 +9,46 @@
           {{ t('errors.notAdmin') }}
         </div>
       </template>
-      <ul v-else class="grid grid-cols-1 gap-4 2xl:grid-cols-2">
-        <li v-for="c in visibleItems" :key="c.id">
+      <div v-else-if="visibleItems.length" class="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(16rem,0.8fr)_minmax(0,1.7fr)]">
+        <section class="min-w-0 rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900" :aria-label="copy.queue">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-4 dark:border-slate-700">
+            <h2 class="text-sm font-semibold">{{ copy.queue }}</h2>
+            <span class="text-xs text-slate-600 dark:text-slate-300">{{ visibleItems.length }} {{ copy.loaded }}</span>
+          </div>
+          <ul class="max-h-72 overflow-y-auto divide-y divide-slate-200 xl:max-h-[calc(100vh-18rem)] dark:divide-slate-700">
+            <li v-for="item in visibleItems" :key="item.id">
+              <button type="button" class="flex min-h-20 w-full flex-col gap-1 border-l-4 p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-indigo-600"
+                :class="selectedRelease?.id === item.id ? 'border-indigo-600 bg-indigo-50 text-slate-950 dark:border-indigo-400 dark:bg-slate-800 dark:text-white' : 'border-transparent text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800'"
+                aria-controls="release-review-detail" :aria-pressed="selectedRelease?.id === item.id" :aria-label="`${copy.select}: ${item.namespace}/${item.pluginId}@${item.version}`" @click="selectedId = item.id">
+                <span class="break-all text-xs text-slate-600 dark:text-slate-300">{{ item.namespace }}</span>
+                <span class="break-all text-sm font-semibold">{{ item.pluginId }}</span>
+                <span class="text-xs">{{ item.version }} · {{ item.target }}</span>
+                <span v-if="item.yanked" class="text-xs font-semibold text-red-700 dark:text-red-300">yanked</span>
+              </button>
+            </li>
+          </ul>
+        </section>
+        <section v-for="c in selectedItems" :key="c.id" id="release-review-detail" class="min-w-0" :aria-label="copy.detail">
           <AppCard :label="`${c.namespace}/${c.pluginId}@${c.version}`">
+            <p class="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">{{ copy.detail }}</p>
             <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <span class="break-all font-mono text-sm font-semibold">{{ c.namespace }}/{{ c.pluginId }}@{{ c.version }}</span>
+              <h2 class="break-all text-xl font-semibold tracking-tight">{{ c.namespace }}/{{ c.pluginId }}<span class="ml-2 font-mono text-sm text-slate-600 dark:text-slate-300">{{ c.version }}</span></h2>
               <AppBadge v-if="c.yanked" tone="danger" icon="ban">yanked</AppBadge>
               <AppBadge v-if="c.advisory" tone="warn" icon="flag">{{ c.advisory.severity }}</AppBadge>
             </div>
-            <p class="mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+            <p class="mt-1 text-xs text-slate-600 tabular-nums dark:text-slate-300">
               {{ c.target }} · {{ (c.size / 1024).toFixed(1) }} KiB
             </p>
-            <details class="mt-3 rounded-lg text-xs text-slate-500 dark:text-slate-400">
-              <summary class="cursor-pointer py-1 font-medium">{{ t('moderation.details') }}</summary>
-              <p class="mt-2 break-all rounded-lg bg-slate-50 p-3 font-mono leading-5 dark:bg-slate-800/60">sha256:{{ c.sha256 }} · key {{ c.keyId }}</p>
+            <p class="mt-4 border-l-2 border-indigo-600 pl-3 text-sm leading-6 text-slate-700 dark:border-indigo-400 dark:text-slate-200">{{ t('moderation.conflictNote') }}</p>
+            <details class="mt-5 rounded-lg border border-slate-200 p-4 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200">
+              <summary class="min-h-11 cursor-pointer py-3 font-medium">{{ t('moderation.details') }}</summary>
+              <dl class="mt-3 grid gap-3 leading-5">
+                <div><dt class="font-semibold">SHA-256</dt><dd class="mt-1 break-all font-mono">{{ c.sha256 }}</dd></div>
+                <div><dt class="font-semibold">{{ c.keyId }}</dt><dd class="mt-1 break-all font-mono">{{ c.keyFingerprint }}</dd><dd class="text-slate-600 dark:text-slate-300">{{ copy.fingerprint }}</dd></div>
+              </dl>
             </details>
-            <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+            <h3 class="mt-6 text-sm font-semibold">{{ copy.decision }}</h3>
+            <div class="mt-3 flex flex-wrap gap-2">
               <AppButton size="sm" variant="secondary" icon="eye" @click="inspect(c.id)">
                 {{ t('moderation.inspect') }}
               </AppButton>
@@ -35,7 +59,7 @@
                 {{ t('moderation.reject') }}
               </AppButton>
               <details class="w-full sm:w-auto">
-                <summary class="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">{{ t('moderation.moreActions') }}</summary>
+                <summary class="min-h-11 cursor-pointer rounded-lg px-3 py-3 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">{{ t('moderation.moreActions') }}</summary>
                 <div class="mt-2 flex flex-wrap gap-2">
                   <AppButton size="sm" variant="danger" icon="ban" :disabled="c.yanked" @click="askYank(c.id)">{{ t('moderation.yank') }}</AppButton>
                   <AppButton size="sm" variant="ghost" icon="flag" @click="openAdvisory(c.id)">{{ t('moderation.advisory') }}</AppButton>
@@ -61,8 +85,8 @@
               </div>
             </form>
           </AppCard>
-        </li>
-      </ul>
+        </section>
+      </div>
       <EmptyState v-if="!forbidden && visibleItems.length === 0" :title="search ? t('states.noMatches') : t('states.empty')" icon="moderation" />
       <div v-if="data?.nextCursor" class="mt-3 flex justify-center">
         <AppButton variant="secondary" icon="chevronDown" @click="after = data.nextCursor ?? undefined">
@@ -102,7 +126,9 @@ import EmptyState from '../components/ui/EmptyState.vue'
 import AppToolbar from '../components/ui/AppToolbar.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const copy = computed(() => locale.value === 'es' ? { queue: 'Releases en esta página', detail: 'Revisión de release', select: 'Seleccionar release', evidence: 'Evidencia del paquete', decision: 'Decisión de revisión', fingerprint: 'Huella de la clave (SHA-256)', loaded: 'cargadas', description: 'Selecciona una release, comprueba su evidencia y registra una decisión.' } : { queue: 'Releases on this page', detail: 'Release review', select: 'Select release', evidence: 'Package evidence', decision: 'Review decision', fingerprint: 'Key fingerprint (SHA-256)', loaded: 'loaded', description: 'Select a release, inspect its evidence and record a decision.' })
+const selectedId = ref<string | null>(null)
 const ui = useUiStore()
 const client = useQueryClient()
 const after = ref<string | undefined>(undefined)
@@ -117,6 +143,9 @@ const visibleItems = computed(() => {
   const query = search.value.trim().toLowerCase()
   return query ? items.value.filter((c) => [c.namespace, c.pluginId, c.version, c.target, c.sha256].some((text) => text.toLowerCase().includes(query))) : items.value
 })
+const selectedRelease = computed(() => visibleItems.value.find(c => c.id === selectedId.value) ?? visibleItems.value[0])
+const selectedItems = computed(() => selectedRelease.value ? [selectedRelease.value] : [])
+const releaseLabel = (id: string) => { const item = items.value.find(c => c.id === id); return item ? `${item.namespace}/${item.pluginId}@${item.version}` : id }
 const forbidden = computed(() => error.value instanceof ApiError && error.value.status === 403)
 const errorDetail = computed(() =>
   error.value instanceof ApiError && error.value.status !== 403 ? `HTTP ${error.value.status}` : undefined,
@@ -151,7 +180,7 @@ function askDecide(id: string, decision: 'approve' | 'reject') {
   yankReason.value = ''
   confirmDanger.value = decision === 'reject'
   confirmTitle.value = decision === 'approve' ? t('moderation.approve') : t('moderation.reject')
-  confirmBody.value = t('moderation.decideConfirm')
+  confirmBody.value = `${releaseLabel(id)} — ${t('moderation.decideConfirm')}`
   confirmAction = async () => {
     await api.decideRelease(id, decision, decision === 'approve' ? 'policy_reviewed' : 'policy')
     ui.toast(t('moderation.decided'), 'ok')
@@ -164,7 +193,7 @@ function askYank(id: string) {
   yankReason.value = ''
   confirmDanger.value = true
   confirmTitle.value = t('moderation.yank')
-  confirmBody.value = t('moderation.yankConfirm')
+  confirmBody.value = `${releaseLabel(id)} — ${t('moderation.yankConfirm')}`
   confirmAction = async () => {
     await api.yankRelease(id, yankReason.value.trim())
     ui.toast(t('moderation.yanked'), 'ok')

@@ -1,5 +1,5 @@
 <template>
-  <div role="status" class="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+  <div role="status" class="rounded-2xl border border-slate-300 bg-white p-5  dark:border-slate-800 dark:bg-slate-900">
     <span class="sr-only">{{ label }}</span>
     <div class="animate-pulse space-y-4" aria-hidden="true">
       <div class="h-3 w-32 rounded bg-slate-200 dark:bg-slate-700" />

@@ -199,7 +199,7 @@ export const es: typeof en = {
     orPassword: 'o con tu contraseña',
     password: 'Contraseña',
     verify: 'Verificar',
-    ephemeral: 'Tu contraseña nunca sale de este formulario y nunca se almacena.',
+    ephemeral: 'Tu contraseña se envía al servidor para verificarla y no se guarda en el almacenamiento del navegador.',
     invalidPassword: 'Contraseña incorrecta. No se cambió nada; inténtalo de nuevo.',
     noPassword: 'Esta cuenta no tiene contraseña. Continúa con Google.',
     forbidden: 'La reautenticación no está disponible para esta acción ahora mismo.',

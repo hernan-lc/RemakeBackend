@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watchEffect } from "vue";
+import { nextTick, onMounted, ref, watchEffect } from "vue";
 import CollapseTransition from "./components/CollapseTransition.vue";
 import LangSelect from "./components/LangSelect.vue";
 import PasswordField from "./components/PasswordField.vue";
@@ -24,6 +24,8 @@ const signedIn = ref(false);
 const pending = ref<HandoffParams | null>(null);
 const cancelled = ref(false);
 const busy = ref(false);
+const checking = ref(true);
+const heading = ref<HTMLHeadingElement | null>(null);
 
 function t(key: MessageKey): string {
   return STRINGS[lang.value][key];
@@ -69,22 +71,28 @@ function fail(text: string): void {
 
 function showStep(next: 1 | 2): void {
   step.value = next;
+  void nextTick(() => document.getElementById(next === 2 ? "password" : "identifier")?.focus());
   if (next === 2) message.value = t("enterPassword");
 }
 
 function setMode(next: "login" | "register"): void {
+  if (busy.value || cancelled.value) return;
+  password.value = "";
+  message.value = "";
   mode.value = next;
   if (next === "register") step.value = 1;
   else showStep(1);
 }
 
 async function showSignedIn(email: string | undefined): Promise<void> {
+  if (cancelled.value) return;
   account.value = typeof email === "string" ? email : t("signedIn");
   message.value = t("continueWith");
   signedIn.value = true;
 }
 
 async function showSignedOut(): Promise<void> {
+  if (cancelled.value) return;
   // No placeholder line: the form explains itself, and the primary
   // actions carry the context as hover tooltips instead.
   message.value = "";
@@ -97,7 +105,7 @@ async function showSignedOut(): Promise<void> {
 
 async function login(): Promise<void> {
   const id = identifier.value.trim();
-  if (!id || !password.value || busy.value) return;
+  if (!id || !password.value || busy.value || cancelled.value) return;
   busy.value = true;
   message.value = t("signingIn");
   try {
@@ -107,20 +115,22 @@ async function login(): Promise<void> {
         : { username: id, password: password.value },
     );
     password.value = "";
+    if (cancelled.value) return;
     const user = await fetchMe();
     await showSignedIn(user.email);
   } catch {
     password.value = "";
-    message.value = t("signInFailed");
+    if (!cancelled.value) message.value = t("signInFailed");
   } finally {
     busy.value = false;
   }
 }
 
 async function register(): Promise<void> {
+  if (cancelled.value) return;
   const name = displayName.value.trim();
   const email = identifier.value.trim();
-  if (!name || !email.includes("@") || !password.value || busy.value) {
+  if (!name || !email.includes("@") || !password.value || busy.value || cancelled.value) {
     message.value = t("needRegisterFields");
     return;
   }
@@ -129,17 +139,19 @@ async function register(): Promise<void> {
   try {
     await signUp({ email, name, password: password.value });
     password.value = "";
+    if (cancelled.value) return;
     const user = await fetchMe();
     await showSignedIn(user.email);
   } catch {
     password.value = "";
-    message.value = t("registerFailed");
+    if (!cancelled.value) message.value = t("registerFailed");
   } finally {
     busy.value = false;
   }
 }
 
 async function submit(): Promise<void> {
+  if (cancelled.value || busy.value || !pending.value) return;
   if (mode.value === "register") {
     await register();
     return;
@@ -153,12 +165,20 @@ async function submit(): Promise<void> {
 }
 
 function goBack(): void {
+  if (busy.value || cancelled.value) return;
+  password.value = "";
   message.value = "";
   showStep(1);
 }
 
 function cancel(): void {
   cancelled.value = true;
+  pending.value = null;
+  account.value = "";
+  identifier.value = "";
+  displayName.value = "";
+  password.value = "";
+  void nextTick(() => heading.value?.focus());
   try {
     sessionStorage.removeItem(HANDOFF_KEY);
   } catch {
@@ -168,6 +188,7 @@ function cancel(): void {
 }
 
 function signInWithGoogle(): void {
+  if (cancelled.value || busy.value || !pending.value) return;
   location.assign("/api/auth/sign-in/social/google");
 }
 
@@ -196,11 +217,13 @@ async function cont(): Promise<void> {
 
 onMounted(async () => {
   if (!loadHandoff()) {
+    checking.value = false;
     fail(t("badHandoff"));
     return;
   }
   try {
     const user = await fetchMe();
+    if (cancelled.value) return;
     account.value = typeof user.email === "string" ? user.email : t("signedIn");
     message.value = t("continueWith");
     canContinue.value = true;
@@ -211,31 +234,38 @@ onMounted(async () => {
       return;
     }
     fail(t("checkFailed"));
+  } finally {
+    checking.value = false;
   }
 });
 </script>
 
 <template>
-  <main>
+  <main aria-labelledby="access-heading">
     <div class="topbar">
       <div class="brand">
         <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98 6 6 0 0 0-11.7 1.62A4 4 0 0 0 7 19h10.5z"/>
           <path d="M9.5 15.5l2 2 3.5-4"/>
         </svg>
+        <span>TikTools Desktop</span>
       </div>
       <LangSelect :lang="lang" @select="setLang" />
     </div>
-    <p id="message" role="status">{{ message }}</p>
-    <p id="account">{{ account }}</p>
+    <header class="access-header">
+      <h1 id="access-heading" ref="heading" tabindex="-1">{{ t(cancelled ? 'cancelledTitle' : signedIn || canContinue ? 'connectTitle' : mode === 'register' ? 'createAccount' : 'welcomeTitle') }}</h1>
+      <p v-if="!cancelled" class="subtitle">{{ t('desktopDescription') }}</p>
+    </header>
+    <p id="message" role="status" aria-live="polite">{{ cancelled ? t('cancelled') : message }}</p>
+    <p v-if="!cancelled && (signedIn || canContinue)" id="account">{{ account }}</p>
 
-    <Transition name="fade" mode="out-in">
+    <Transition v-if="!cancelled && !checking && pending" name="fade" mode="out-in">
       <div v-if="!signedIn && !canContinue" key="form">
-        <div class="tabs" id="mode-tabs">
-          <button type="button" :class="{ active: mode === 'login' }" @click="setMode('login')">
+        <div class="tabs" id="mode-tabs" role="group" :aria-label="t('accessMethod')">
+          <button type="button" :class="{ active: mode === 'login' }" :aria-pressed="mode === 'login'" :disabled="busy" @click="setMode('login')">
             {{ t("signIn") }}
           </button>
-          <button type="button" :class="{ active: mode === 'register' }" @click="setMode('register')">
+          <button type="button" :class="{ active: mode === 'register' }" :aria-pressed="mode === 'register'" :disabled="busy" @click="setMode('register')">
             {{ t("createAccount") }}
           </button>
         </div>
@@ -244,6 +274,7 @@ onMounted(async () => {
           <CollapseTransition :open="mode === 'register' || step === 1">
             <TextField
               v-model="identifier"
+              id="identifier"
               :label="t('identifier')"
               icon="user"
               autocomplete="username"
@@ -256,6 +287,7 @@ onMounted(async () => {
           <CollapseTransition :open="mode === 'register'">
             <TextField
               v-model="displayName"
+              id="display-name"
               :label="t('name')"
               icon="tag"
               autocomplete="nickname"
@@ -265,14 +297,18 @@ onMounted(async () => {
           <CollapseTransition :open="mode === 'register' || step === 2">
             <PasswordField
               v-model="password"
+              id="password"
               :label="t('password')"
-              autocomplete="current-password"
+              :autocomplete="mode === 'register' ? 'new-password' : 'current-password'"
               :show-label="t('showPassword')"
               :hide-label="t('hidePassword')"
             />
           </CollapseTransition>
 
-          <div class="actions">
+          <div class="actions form-actions">
+            <button v-if="mode === 'login' && step === 2" type="button" id="password-back" :disabled="busy" @click="goBack">
+              <span aria-hidden="true">←</span> {{ t('back') }}
+            </button>
             <button
               v-if="mode === 'login' && step === 1"
               type="submit"
@@ -291,21 +327,13 @@ onMounted(async () => {
             >
               {{ mode === "register" ? t("createAccount") : t("signIn") }}
             </button>
-            <button
-              v-if="mode === 'login' && step === 2"
-              type="button"
-              id="password-back"
-              class="ghost"
-              @click="goBack"
-            >
-              {{ t("back") }}
-            </button>
+
           </div>
         </form>
 
-        <div class="actions">
+        <div v-if="googleAvailable" class="actions provider-actions">
           <button
-            v-if="googleAvailable"
+            :disabled="busy"
             type="button"
             id="sign-in"
             :title="t('signInToContinue')"
@@ -329,10 +357,10 @@ onMounted(async () => {
       </div>
     </Transition>
 
-    <div class="actions">
+    <footer v-if="!cancelled" class="access-footer">
       <button type="button" id="cancel" class="ghost" @click="cancel">
         {{ t("cancel") }}
       </button>
-    </div>
+    </footer>
   </main>
 </template>

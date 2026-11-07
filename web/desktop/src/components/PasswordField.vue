@@ -2,6 +2,7 @@
 import { ref } from "vue";
 
 defineProps<{
+  id: string;
   label: string;
   autocomplete: string;
   showLabel: string;
@@ -17,14 +18,14 @@ function toggle(): void {
 </script>
 
 <template>
-  <div class="field">
-    <label>{{ label }}</label>
+  <div class="field password-field">
+    <label :for="id">{{ label }}</label>
     <div class="control">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/>
         <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
       </svg>
-      <input v-model="model" :type="visible ? 'text' : 'password'" :autocomplete="autocomplete" />
+      <input :id="id" v-model="model" :type="visible ? 'text' : 'password'" :autocomplete="autocomplete" />
       <button
         type="button"
         class="peek"

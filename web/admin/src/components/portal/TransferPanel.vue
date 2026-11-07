@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col gap-2 text-sm">
+  <div class="flex flex-col gap-4 text-sm">
     <StateBlock :loading="isPending" :error="!!failed" :retry="true" @retry="refetch">
       <template v-if="transfer">
         <p v-if="isRecipient" class="text-slate-700 dark:text-slate-300">
@@ -17,9 +17,9 @@
           </AppButton>
         </div>
       </template>
-      <p v-else class="text-slate-500 dark:text-slate-400">{{ t('portal.noTransfer') }}</p>
+      <p v-else class="text-slate-600 dark:text-slate-300">{{ t('portal.noTransfer') }}</p>
     </StateBlock>
-    <form v-if="isOwner && !transfer" class="flex flex-col gap-2" @submit.prevent="doOffer">
+    <form v-if="isOwner && !transfer" class="flex flex-col gap-4" @submit.prevent="doOffer">
       <AppInput v-model="recipient" :label="t('portal.offerTo')" required :maxlength="256" />
       <p v-if="error" role="alert" class="flex items-start gap-2 text-red-700 dark:text-red-300">
         <AppIcon name="alert" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />

@@ -1,6 +1,6 @@
 <template>
-  <main class="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center bg-slate-100 px-4 dark:bg-slate-950">
-    <div role="status" class="text-slate-600 dark:text-slate-400">{{ t('states.loading') }}</div>
+  <main class="flex min-h-screen w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-slate-950">
+    <div role="status" class="w-full max-w-md rounded-xl border border-slate-200 bg-white p-7 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">{{ t('states.loading') }}</div>
   </main>
 </template>
 

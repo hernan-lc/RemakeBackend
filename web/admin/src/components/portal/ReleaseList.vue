@@ -1,14 +1,14 @@
 <template>
-  <div class="flex flex-col gap-2">
+  <div class="flex flex-col gap-4">
     <div class="flex items-center justify-between gap-2">
       <h4 class="text-sm font-semibold text-slate-900 dark:text-white">{{ t('releases.title') }}</h4>
       <AppButton size="sm" variant="ghost" icon="refresh" icon-only :label="t('states.refresh')" :title="t('states.refresh')" @click="refetch" />
     </div>
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
-      <ul v-if="items.length > 0" class="flex flex-col gap-2">
+      <ul v-if="items.length > 0" class="flex flex-col gap-4">
         <li v-for="r in items" :key="r.id">
           <AppCard :label="`${r.pluginId} ${r.version}`">
-            <button type="button" class="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-left" @click="toggle(r.id)">
+            <button type="button" :aria-expanded="openId === r.id" class="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-2 text-left" @click="toggle(r.id)">
               <span class="break-all font-mono text-sm font-semibold">{{ r.pluginId }} {{ r.version }}</span>
               <AppBadge tone="info">{{ r.target }}</AppBadge>
               <AppBadge :tone="r.status === 'review_approved' ? 'success' : r.status === 'review_rejected' || r.status === 'rejected' ? 'danger' : 'warn'">
@@ -18,22 +18,22 @@
             </button>
             <div v-if="openId === r.id" class="mt-2 flex flex-col gap-1.5 border-t border-slate-100 pt-2 text-sm dark:border-slate-800">
               <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.checksum') }}</dt>
+                <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.checksum') }}</dt>
                 <dd class="break-all font-mono">{{ r.sha256 }}</dd>
-                <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.size') }}</dt>
+                <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.size') }}</dt>
                 <dd class="font-mono tabular-nums">{{ r.size }}</dd>
-                <dt class="text-slate-500 dark:text-slate-400">{{ t('portal.keyId') }}</dt>
+                <dt class="text-slate-600 dark:text-slate-300">{{ t('portal.keyId') }}</dt>
                 <dd class="break-all font-mono">{{ r.keyId }}</dd>
-                <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.verification') }}</dt>
+                <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.verification') }}</dt>
                 <dd>{{ r.verification ? `${r.verification.status}${r.verification.resultClass ? ` (${r.verification.resultClass})` : ''}` : '—' }}</dd>
-                <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.moderation') }}</dt>
+                <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.moderation') }}</dt>
                 <dd>{{ r.moderation ? `${r.moderation.decision} (${r.moderation.reasonCode})` : '—' }}</dd>
                 <template v-if="r.yanked">
-                  <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.yankReason') }}</dt>
+                  <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.yankReason') }}</dt>
                   <dd>{{ r.yankReason }}</dd>
                 </template>
                 <template v-if="r.advisory">
-                  <dt class="text-slate-500 dark:text-slate-400">{{ t('releases.advisory') }}</dt>
+                  <dt class="text-slate-600 dark:text-slate-300">{{ t('releases.advisory') }}</dt>
                   <dd>{{ r.advisory.severity }}: {{ r.advisory.message }}</dd>
                 </template>
               </dl>

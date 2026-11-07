@@ -1,32 +1,32 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --bg: #eef0f3;
+  --bg: #eeeeef;
   --card: #ffffff;
-  --text: #17171c;
-  --muted: #5b5b64;
-  --border: #d8d8de;
+  --text: #242429;
+  --muted: #52525b;
+  --border: #c5c5c9;
   --input-bg: #ffffff;
-  --primary: #1d4ed8;
-  --primary-hover: #1e40af;
+  --primary: #3e6685;
+  --primary-hover: #335570;
   --primary-text: #ffffff;
-  --focus: #2563eb;
-  --tab-bg: #e4e4e7;
+  --focus: #3e6685;
+  --tab-bg: #dddddf;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0c0c10;
-    --card: #17171d;
+    --bg: #1b1b1f;
+    --card: #242429;
     --text: #f4f4f5;
-    --muted: #a8a8b3;
-    --border: #34343e;
-    --input-bg: #0c0c10;
-    --primary: #5b96f7;
-    --primary-hover: #7cabf8;
-    --primary-text: #0b0e14;
-    --focus: #8db4f8;
-    --tab-bg: #26262e;
+    --muted: #a2a2aa;
+    --border: #71717a;
+    --input-bg: #1b1b1f;
+    --primary: #a2bdd2;
+    --primary-hover: #bccedc;
+    --primary-text: #1b1b1f;
+    --focus: #a2bdd2;
+    --tab-bg: #303036;
   }
 }
 
@@ -44,12 +44,12 @@ body {
 
 main {
   width: 100%;
-  max-width: 24rem;
+  max-width: 28rem;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 1rem;
-  padding: 1.75rem;
-  box-shadow: 0 8px 28px rgb(0 0 0 / 0.12);
+  padding: 2rem;
+
 }
 
 .topbar {
@@ -57,7 +57,7 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 1.75rem;
 }
 
 .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -87,7 +87,7 @@ main {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 0.65rem;
-  box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
+
   min-width: 9rem;
   z-index: 10;
 }
@@ -119,6 +119,8 @@ main {
 
 .tabs button {
   flex: 1;
+  padding-inline: 0.5rem;
+  font-size: 0.9rem;
   border-color: transparent;
   background: transparent;
   border-radius: 0.45rem;
@@ -155,7 +157,7 @@ input {
   width: 100%;
 }
 
-#password-field input { padding-right: 2.6rem; }
+.password-field input { padding-right: 2.6rem; }
 
 .peek {
   position: absolute;
@@ -185,7 +187,7 @@ input {
 
 .who:empty { display: none; }
 
-input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 35%, transparent); }
+input:focus { outline: 2px solid var(--focus); outline-offset: 2px; border-color: var(--focus); }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.25rem; }
 
@@ -221,7 +223,7 @@ button[type="submit"]:hover, #continue:hover { background: var(--primary-hover);
 #sign-in svg.g { width: 1.1rem; height: 1.1rem; flex: none; }
 
 button.ghost { border-color: transparent; color: var(--muted); font-weight: 500; }
-button.ghost:hover { border-color: transparent; color: var(--text); text-decoration: underline; }
+button.ghost:hover { border-color: var(--border); color: var(--text); background: var(--tab-bg); }
 
 button:disabled { opacity: 0.55; cursor: default; }
 
@@ -310,3 +312,22 @@ input,
 }
 
 [hidden] { display: none !important; }
+
+/* Access hierarchy shared by login, consent and terminal cancellation. */
+#app { width: 100%; max-width: 28rem; }
+.brand span { font-size: 0.9rem; font-weight: 700; }
+.access-header { margin-bottom: 1.5rem; }
+h1 { margin: 0; font-size: 1.65rem; line-height: 1.2; letter-spacing: -0.04em; }
+.subtitle { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+#account, .who { padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--input-bg); color: var(--text); }
+.form-actions { flex-wrap: nowrap; align-items: stretch; gap: 0.75rem; }
+.form-actions button[type="submit"] { flex: 1; width: auto; }
+#password-back { flex: 0 0 auto; }
+.access-footer { display: flex; justify-content: center; border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1.5rem; }
+button { min-height: 44px; }
+.peek { width: 44px; height: 44px; right: 0; }
+.peek svg { position: static; transform: none; }
+.password-field input { padding-right: 3rem; min-height: 48px; }
+@media (max-width: 480px) { #app { max-width: none; } .brand span { font-size: 0.8rem; } .topbar { gap: 0.5rem; } }
+
+@media (prefers-reduced-motion: reduce) { .collapse, .collapse.open { transition: none; } }

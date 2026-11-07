@@ -1,6 +1,6 @@
 <template>
   <component :is="to ? RouterLink : 'div'" :to="to"
-    :class="['group block min-h-28 rounded-xl border border-slate-200/80 bg-white p-4 dark:border-slate-800 dark:bg-slate-900', to ? 'transition-colors hover:border-indigo-300 hover:bg-indigo-50/30 dark:hover:border-indigo-800 dark:hover:bg-indigo-500/5' : '']">
+    :class="['group block min-h-28 rounded-xl border border-slate-300 bg-white p-4 dark:border-slate-800 dark:bg-slate-900', to ? 'transition-colors hover:border-indigo-300 hover:bg-indigo-50/30 dark:hover:border-indigo-800 dark:hover:bg-indigo-500/5' : '']">
     <dl>
       <dt class="flex items-center justify-between gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
         {{ label }}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 defineProps<{
+  id: string;
   label: string;
   icon: "user" | "tag";
   autocomplete: string;
@@ -10,7 +11,7 @@ const model = defineModel<string>({ required: true });
 
 <template>
   <div class="field">
-    <label>{{ label }}</label>
+    <label :for="id">{{ label }}</label>
     <div class="control">
       <svg
         viewBox="0 0 24 24"
@@ -30,7 +31,7 @@ const model = defineModel<string>({ required: true });
           <circle cx="8.5" cy="8.5" r="1.2"/>
         </template>
       </svg>
-      <input v-model="model" :autocomplete="autocomplete" />
+      <input :id="id" v-model="model" :autocomplete="autocomplete" />
     </div>
   </div>
 </template>
