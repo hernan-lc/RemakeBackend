@@ -1,7 +1,8 @@
 # Propuesta de rediseño — TikTools Cloud
 
-Estado: **propuesta**, no aplicada a los componentes Vue. La implementación de este
-cambio se limita a la demo, sus comprobaciones y la documentación visual. El
+Estado: el **dashboard y los componentes del panel siguen siendo propuesta**.
+El acceso de escritorio sí está implementado: cabecera contextual, Atrás/Entrar
+alineados, Cancelar separado, identidad única y cancelación terminal accesible. El
 [concepto](concept.html) presenta la dirección del dashboard; no es una aplicación
 alternativa ni una promesa de datos nuevos disponibles en el backend.
 
@@ -27,7 +28,7 @@ SLA o gráficos históricos sin datos reales del servidor.
 | [Consentimiento](screenshots/desktop-consent.png) | Patrón visual distinto al admin y poco contexto de la aplicación destino | Compartir color, tipografía y controles; explicar «Conectar esta cuenta con TikTools Desktop» y mantener Cancelar visible |
 | [Confirmación](screenshots/publisher-confirmation.png) | Confirmación genérica separada del contexto de la fila | Incluir objeto, alcance y consecuencia; foco inicial seguro y devolución del foco al activador |
 
-La captura automatizada también detectó que `web/desktop/src/components/TextField.vue` muestra un `<label>` sin asociación al input. Priorizar `id`/`for` o envolver el control: el selector por nombre accesible no lo encuentra.
+La asociación `id`/`for` de los campos de usuario y contraseña de escritorio ya está corregida y cubierta por el recorrido de navegador.
 
 En el diálogo step-up, revisar también el texto «Your password never leaves this form»: la contraseña se envía al endpoint de verificación; el mensaje propuesto debe explicar que no se almacena en el navegador, sin prometer que no se transmite.
 
@@ -87,5 +88,5 @@ no asumirlo por la paleta. Hashes e IDs usan monoespaciada y salto de línea seg
 - **P4 — Auditoría y acceso:** texto humano con códigos exactos, login, cuenta,
   consentimiento y errores. Validar callback y OAuth reales en entorno de prueba.
 
-No hay cambios visuales publicados. La aprobación del concepto puede preceder a la
-implementación por fases; la demo ya permite revisar las pantallas actuales.
+Los cambios de acceso de escritorio están preparados en el PR; no hay despliegue.
+La implementación por fases del dashboard sigue pendiente.

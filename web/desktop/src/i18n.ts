@@ -10,6 +10,12 @@ export const NATIVE_NAMES: Record<Language, string> = {
 };
 
 const en = {
+  welcomeTitle: "Welcome back",
+  connectTitle: "Connect your account",
+  cancelledTitle: "Sign-in cancelled",
+  desktopDescription: "Sign in securely to continue to TikTools Desktop.",
+  accessMethod: "Account access",
+
   title: "TikTools Cloud sign in",
   checking: "Checking sign-in…",
   signInToContinue: "Sign in to continue to TikTools.",
@@ -42,6 +48,12 @@ const en = {
 export type MessageKey = keyof typeof en;
 
 const es: Record<MessageKey, string> = {
+  welcomeTitle: "Te damos la bienvenida",
+  connectTitle: "Conecta tu cuenta",
+  cancelledTitle: "Inicio de sesión cancelado",
+  desktopDescription: "Inicia sesión de forma segura para continuar a TikTools Desktop.",
+  accessMethod: "Acceso a la cuenta",
+
   title: "TikTools Cloud: iniciar sesión",
   checking: "Comprobando la sesión…",
   signInToContinue: "Inicia sesión para continuar a TikTools.",
@@ -72,6 +84,12 @@ const es: Record<MessageKey, string> = {
 };
 
 const fr: Record<MessageKey, string> = {
+  welcomeTitle: "Bienvenue",
+  connectTitle: "Connectez votre compte",
+  cancelledTitle: "Connexion annulée",
+  desktopDescription: "Connectez-vous en toute sécurité pour continuer vers TikTools Desktop.",
+  accessMethod: "Accès au compte",
+
   title: "TikTools Cloud : connexion",
   checking: "Vérification de la session…",
   signInToContinue: "Connectez-vous pour continuer vers TikTools.",
@@ -102,6 +120,12 @@ const fr: Record<MessageKey, string> = {
 };
 
 const de: Record<MessageKey, string> = {
+  welcomeTitle: "Willkommen",
+  connectTitle: "Konto verbinden",
+  cancelledTitle: "Anmeldung abgebrochen",
+  desktopDescription: "Melden Sie sich sicher an, um mit TikTools Desktop fortzufahren.",
+  accessMethod: "Kontozugang",
+
   title: "TikTools Cloud: Anmeldung",
   checking: "Sitzung wird geprüft…",
   signInToContinue: "Melden Sie sich an, um mit TikTools fortzufahren.",
@@ -132,6 +156,12 @@ const de: Record<MessageKey, string> = {
 };
 
 const pt: Record<MessageKey, string> = {
+  welcomeTitle: "Bem-vindo",
+  connectTitle: "Conecte sua conta",
+  cancelledTitle: "Entrada cancelada",
+  desktopDescription: "Entre com segurança para continuar no TikTools Desktop.",
+  accessMethod: "Acesso à conta",
+
   title: "TikTools Cloud: entrar",
   checking: "Verificando a sessão…",
   signInToContinue: "Entre para continuar no TikTools.",

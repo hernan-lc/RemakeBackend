@@ -22,3 +22,17 @@ no inline scripts, no external resources, system fonts only.
 Run `npm run demo` after dependency installation. See the
 [demo guide](../../docs/demo/README.md) for the consent URL, fictional credentials
 and limitations. The final desktop handoff is intentionally unavailable.
+
+## Access-flow browser checks
+
+With the desktop Vite server running and `web/admin` dependencies installed:
+
+```sh
+node web/admin/demo/test-desktop-flow.mjs # from the repository root
+```
+
+The test intercepts all API requests with isolated fixtures. It checks login errors
+and success, Back and keyboard focus, cancellation while requests are in flight,
+invalid handoff/callback rejection, and registration layouts in all five locales.
+Set `CAPTURE_DIR` to an absolute directory to save reference screenshots. These
+checks do not replace integration tests against real OAuth and desktop callbacks.

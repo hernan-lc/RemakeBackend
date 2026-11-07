@@ -3,8 +3,10 @@
 ## Implementado
 
 Modo demo explícito para las dos aplicaciones Vite. No requiere Rust, PostgreSQL,
-OAuth, almacenamiento de archivos ni credenciales reales. Los componentes y el
-cliente HTTP de producción no se modificaron.
+OAuth, almacenamiento de archivos ni credenciales reales. El cliente HTTP y la autorización de producción no se modifican.
+El acceso de escritorio incorpora ahora la jerarquía visual, las acciones Atrás/Entrar
+y el estado cancelado descritos en `web/desktop/README.md`. El rediseño del dashboard
+sigue siendo una propuesta.
 
 ```sh
 # Desde la raíz del repositorio
@@ -57,6 +59,7 @@ Los enlaces de evidencia en esta guía y la propuesta funcionan después de ejec
 los scripts siguientes. El concepto HTML es fuente revisable y sí se versiona.
 
 - [Galería de capturas](gallery.html): pantallas actuales, escritorio/móvil y oscuro.
+- [Propuesta específica del dashboard](DASHBOARD-PROPOSAL.md): composición y alcance de datos, sin implementar.
 - [Propuesta integral](REDESIGN.md): observaciones vinculadas a capturas y plan por componente.
 - [Concepto visual](concept.html): maqueta estática propuesta, no integrada en Vue.
 - [Informe de navegador](screenshots/report.json): errores JS y desbordamiento horizontal.

@@ -44,11 +44,11 @@ body {
 
 main {
   width: 100%;
-  max-width: 24rem;
+  max-width: 28rem;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 1rem;
-  padding: 1.75rem;
+  padding: 2rem;
   box-shadow: 0 8px 28px rgb(0 0 0 / 0.12);
 }
 
@@ -57,7 +57,7 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 1.75rem;
 }
 
 .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -119,6 +119,8 @@ main {
 
 .tabs button {
   flex: 1;
+  padding-inline: 0.5rem;
+  font-size: 0.9rem;
   border-color: transparent;
   background: transparent;
   border-radius: 0.45rem;
@@ -155,7 +157,7 @@ input {
   width: 100%;
 }
 
-#password-field input { padding-right: 2.6rem; }
+.password-field input { padding-right: 2.6rem; }
 
 .peek {
   position: absolute;
@@ -221,7 +223,7 @@ button[type="submit"]:hover, #continue:hover { background: var(--primary-hover);
 #sign-in svg.g { width: 1.1rem; height: 1.1rem; flex: none; }
 
 button.ghost { border-color: transparent; color: var(--muted); font-weight: 500; }
-button.ghost:hover { border-color: transparent; color: var(--text); text-decoration: underline; }
+button.ghost:hover { border-color: var(--border); color: var(--text); background: var(--tab-bg); }
 
 button:disabled { opacity: 0.55; cursor: default; }
 
@@ -310,3 +312,22 @@ input,
 }
 
 [hidden] { display: none !important; }
+
+/* Access hierarchy shared by login, consent and terminal cancellation. */
+#app { width: 100%; max-width: 28rem; }
+.brand span { font-size: 0.9rem; font-weight: 700; }
+.access-header { margin-bottom: 1.5rem; }
+h1 { margin: 0; font-size: 1.65rem; line-height: 1.2; letter-spacing: -0.04em; }
+.subtitle { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+#account, .who { padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--input-bg); color: var(--text); }
+.form-actions { flex-wrap: nowrap; align-items: stretch; gap: 0.75rem; }
+.form-actions button[type="submit"] { flex: 1; width: auto; }
+#password-back { flex: 0 0 auto; }
+.access-footer { display: flex; justify-content: center; border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1.5rem; }
+button { min-height: 44px; }
+.peek { width: 44px; height: 44px; right: 0; }
+.peek svg { position: static; transform: none; }
+.password-field input { padding-right: 3rem; min-height: 48px; }
+@media (max-width: 480px) { #app { max-width: none; } .brand span { font-size: 0.8rem; } .topbar { gap: 0.5rem; } }
+
+@media (prefers-reduced-motion: reduce) { .collapse, .collapse.open { transition: none; } }
