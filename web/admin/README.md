@@ -3,6 +3,13 @@
 Vite + Vue 3 + TypeScript app for Cloud admins and moderators. Same-origin
 cookie sessions only; the backend (`cloud-api`) authorizes every call.
 
+## Demo without a backend
+
+Run `npm run demo` and open `http://127.0.0.1:5173/app`. This explicit,
+development-only mode uses fictional in-memory data and intercepts every API
+request. Normal builds and authentication are unchanged. See the
+[demo guide, screenshots and redesign proposal](../../docs/demo/README.md).
+
 ## Run
 
 For a coordinated local start, install the frontend dependencies with

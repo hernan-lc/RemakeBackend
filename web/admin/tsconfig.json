@@ -15,5 +15,5 @@
     "useDefineForClassFields": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts", "playwright/**/*.ts"]
+  "include": ["demo/**/*.ts", "src/**/*.ts", "src/**/*.vue", "tests/**/*.ts", "playwright/**/*.ts"]
 }

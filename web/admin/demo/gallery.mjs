@@ -1,0 +1,6 @@
+import { readdir, writeFile } from 'node:fs/promises'
+const root = new URL('../../../docs/demo/', import.meta.url)
+const names = (await readdir(new URL('screenshots/', root))).filter(name => /^[a-z0-9-]+\.png$/.test(name)).sort()
+const cards = names.map(name => `<figure><a href="screenshots/${name}"><img loading="lazy" src="screenshots/${name}" alt="${name.slice(0,-4)}"></a><figcaption>${name.slice(0,-4)}</figcaption></figure>`).join('\n')
+await writeFile(new URL('gallery.html', root), `<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Capturas de demo</title><style>body{font:16px system-ui;margin:32px;background:#f5f6fa;color:#17223b}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}figure{margin:0;background:white;border-radius:12px;overflow:hidden}img{width:100%;height:260px;object-fit:contain;object-position:top}figcaption{padding:16px}</style><h1>Pantallas actuales · Demo local</h1><p>Datos ficticios. Capturas de Chromium; páginas largas capturadas completas.</p><p><a href="REDESIGN.md">Propuesta integral</a> · <a href="concept.html">Concepto propuesto, no implementado</a> · <a href="README.md">Guía</a></p><div class="grid">${cards}</div></html>`)
+console.log(`Generated gallery for ${names.length} screenshots`)

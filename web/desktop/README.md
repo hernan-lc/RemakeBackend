@@ -16,3 +16,9 @@ bun run build   # writes crates/cloud-api/web/dist/{index.html,login.js,login.cs
 to the same origin, so point it at a running backend or use the built page
 through the API). Keep the bundle dependency-free and CSP-compatible:
 no inline scripts, no external resources, system fonts only.
+
+## Local demo
+
+Run `npm run demo` after dependency installation. See the
+[demo guide](../../docs/demo/README.md) for the consent URL, fictional credentials
+and limitations. The final desktop handoff is intentionally unavailable.

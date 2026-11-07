@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "demo": "vite --mode demo"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.9.2",
     "vite": "^6.0.3",
-    "@vitejs/plugin-vue": "^5.2.1",
     "vue-tsc": "^2.2.0"
   },
   "dependencies": {
