@@ -53,7 +53,8 @@ No se modifican ni despliegan servicios de producción.
 
 ## Evidencia y reproducción
 
-Las capturas, la galería y los informes son artefactos locales ignorados por Git.
+La selección revisada de capturas del PR se versiona en [pr-11](pr-11/README.md).
+Las demás capturas, la galería y los informes son artefactos locales ignorados por Git.
 Los enlaces de evidencia en esta guía y la propuesta funcionan después de ejecutar
 los scripts siguientes. El concepto HTML es fuente revisable y sí se versiona.
 
