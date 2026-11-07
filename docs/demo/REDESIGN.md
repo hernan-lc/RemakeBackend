@@ -2,7 +2,8 @@
 
 El panel Vue y el acceso de escritorio incorporan superficies planas, bordes
 legibles, controles principales de 44 px y jerarquía de acciones. Se eliminaron
-sombras decorativas; no se añadieron degradados. `concept.html` se conserva como
+sombras; no se añadieron degradados. La paleta inspirada en OBS utiliza grises
+neutros y azul apagado, conservando colores semánticos de estado y el layout. `concept.html` se conserva como
 referencia histórica, no como una segunda aplicación.
 
 ## Pantallas y componentes

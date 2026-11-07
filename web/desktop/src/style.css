@@ -1,32 +1,32 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --bg: #eef0f3;
+  --bg: #eeeeef;
   --card: #ffffff;
-  --text: #17171c;
-  --muted: #5b5b64;
-  --border: #d8d8de;
+  --text: #242429;
+  --muted: #52525b;
+  --border: #c5c5c9;
   --input-bg: #ffffff;
-  --primary: #1d4ed8;
-  --primary-hover: #1e40af;
+  --primary: #3e6685;
+  --primary-hover: #335570;
   --primary-text: #ffffff;
-  --focus: #2563eb;
-  --tab-bg: #e4e4e7;
+  --focus: #3e6685;
+  --tab-bg: #dddddf;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0c0c10;
-    --card: #17171d;
+    --bg: #1b1b1f;
+    --card: #242429;
     --text: #f4f4f5;
-    --muted: #a8a8b3;
-    --border: #34343e;
-    --input-bg: #0c0c10;
-    --primary: #5b96f7;
-    --primary-hover: #7cabf8;
-    --primary-text: #0b0e14;
-    --focus: #8db4f8;
-    --tab-bg: #26262e;
+    --muted: #a2a2aa;
+    --border: #71717a;
+    --input-bg: #1b1b1f;
+    --primary: #a2bdd2;
+    --primary-hover: #bccedc;
+    --primary-text: #1b1b1f;
+    --focus: #a2bdd2;
+    --tab-bg: #303036;
   }
 }
 
@@ -187,7 +187,7 @@ input {
 
 .who:empty { display: none; }
 
-input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 35%, transparent); }
+input:focus { outline: 2px solid var(--focus); outline-offset: 2px; border-color: var(--focus); }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.25rem; }
 

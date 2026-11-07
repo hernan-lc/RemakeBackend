@@ -1,7 +1,7 @@
 # PR #11: implemented UI screenshots
 
 Real Chromium captures of the local backend-free demo, taken 2026-11-07 from the
-redesign implemented in commit `6238a9b`. These are not concept renders.
+implemented redesign with the neutral OBS-inspired palette. These are not concept renders.
 
 All identities, namespace names, counts and records are demo fixtures. The displayed
 `demo@example.test` / `demo-only` credentials are intentionally public, local-only
