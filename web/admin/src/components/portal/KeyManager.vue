@@ -1,8 +1,8 @@
 <template>
-  <div class="flex flex-col gap-2">
+  <div class="flex flex-col gap-4">
     <StateBlock :loading="isPending" :error="!!error" :retry="true" @retry="refetch">
       <ul v-if="keys.length > 0" class="divide-y divide-slate-100 rounded-md border border-slate-200 text-sm dark:divide-slate-800 dark:border-slate-700">
-        <li v-for="k in keys" :key="k.id" class="flex flex-wrap items-center gap-2 px-3 py-1.5">
+        <li v-for="k in keys" :key="k.id" class="flex flex-wrap items-center gap-2 px-4 py-3">
           <span class="min-w-0 flex-1 break-all font-mono text-xs">{{ k.keyId }}</span>
           <AppBadge :tone="k.status === 'approved' ? 'success' : k.status === 'pending' ? 'warn' : 'neutral'">
             {{ keyStatus(k.status) }}
@@ -16,27 +16,27 @@
           >
             {{ t('portal.revoke') }}
           </AppButton>
-          <div class="w-full text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.fingerprint') }} (SHA-256): <code class="break-all font-mono text-slate-700 dark:text-slate-300">{{ k.fingerprint }}</code></div>
+          <div class="w-full text-xs text-slate-600 dark:text-slate-300">{{ t('publishers.fingerprint') }} (SHA-256): <code class="break-all font-mono text-slate-700 dark:text-slate-300">{{ k.fingerprint }}</code></div>
         </li>
       </ul>
       <EmptyState v-else :title="t('portal.noKeys')" icon="key" />
     </StateBlock>
-    <div v-if="canManage" class="flex flex-col gap-2">
+    <div v-if="canManage" class="flex flex-col gap-4">
       <AppButton size="sm" variant="ghost" icon="key" @click="openEnroll">
         {{ t('portal.enrollKey') }}
       </AppButton>
-      <div v-if="enroll.active" class="flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-800">
+      <div v-if="enroll.active" class="flex flex-col gap-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-800">
         <p class="text-slate-600 dark:text-slate-400">{{ t('portal.enrollIntro') }}</p>
         <template v-if="enroll.challenge">
           <p class="text-slate-600 dark:text-slate-400">{{ t('portal.challengeReady') }}</p>
           <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
-            <dt class="font-sans text-slate-500 dark:text-slate-400">{{ t('portal.challengeId') }}</dt>
+            <dt class="font-sans text-slate-600 dark:text-slate-300">{{ t('portal.challengeId') }}</dt>
             <dd class="break-all">{{ enroll.challenge.challengeId }}</dd>
-            <dt class="font-sans text-slate-500 dark:text-slate-400">{{ t('portal.nonce') }}</dt>
+            <dt class="font-sans text-slate-600 dark:text-slate-300">{{ t('portal.nonce') }}</dt>
             <dd class="break-all">{{ enroll.challenge.nonce }}</dd>
           </dl>
-          <p class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ t('portal.cliHint') }}</p>
-          <form class="flex flex-col gap-2" @submit.prevent="submitKey">
+          <p class="font-mono text-xs text-slate-600 dark:text-slate-300">{{ t('portal.cliHint') }}</p>
+          <form class="flex flex-col gap-4" @submit.prevent="submitKey">
             <AppInput v-model="enroll.keyId" :label="t('portal.keyId')" required />
             <AppInput v-model="enroll.publicKey" :label="t('portal.publicKey')" required />
             <AppInput v-model="enroll.signature" :label="t('portal.signature')" required />
@@ -51,7 +51,7 @@
         </template>
       </div>
     </div>
-    <p v-else class="text-xs text-slate-500 dark:text-slate-400">{{ t('portal.approvalsNote') }}</p>
+    <p v-else class="text-xs text-slate-600 dark:text-slate-300">{{ t('portal.approvalsNote') }}</p>
     <ConfirmDialog :danger="true" :open="revokeId !== null" :title="t('portal.revoke')" :body="t('portal.revokeConfirm')" :busy="busy !== null" @confirm="doRevoke" @cancel="revokeId = null" />
     <StepUpDialog
       :open="dialogOpen"

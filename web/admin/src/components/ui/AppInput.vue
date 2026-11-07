@@ -5,6 +5,7 @@
       <AppIcon v-if="icon" :name="icon" :size="16" aria-hidden="true" class="pointer-events-none absolute left-3 text-slate-400 dark:text-slate-500" />
       <input
         :value="modelValue"
+        :disabled="disabled"
         :type="type"
         :required="required"
         :placeholder="placeholder"
@@ -27,21 +28,22 @@ const props = withDefaults(
     modelValue: string
     label?: string
     type?: string
+    disabled?: boolean
     required?: boolean
     placeholder?: string
     autocomplete?: string
     maxlength?: number
     icon?: IconName
   }>(),
-  { label: undefined, type: 'text', required: false, placeholder: undefined, autocomplete: undefined, maxlength: undefined, icon: undefined },
+  { disabled: false, label: undefined, type: 'text', required: false, placeholder: undefined, autocomplete: undefined, maxlength: undefined, icon: undefined },
 )
 
 defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const inputClasses = computed(() => [
-  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors',
-  'hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/15',
-  'dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-indigo-400',
+  'min-h-11 w-full rounded-lg border border-slate-500 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 transition-colors',
+  'hover:border-slate-600 focus:border-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 ',
+  'dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-400 dark:hover:border-slate-600 dark:focus:border-indigo-400',
   props.icon ? 'pl-9' : undefined,
 ])
 </script>

@@ -2,7 +2,7 @@
   <DialogRoot :open="open" @update:open="(value) => !value && cancel()">
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-50 bg-black/60" />
-      <DialogContent class="fixed left-1/2 top-1/2 z-50 w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+      <DialogContent class="fixed left-1/2 top-1/2 z-50 w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-300 bg-white p-5 sm:p-6 dark:border-slate-700 dark:bg-slate-900">
         <DialogTitle class="text-base font-semibold">{{ t('temporaryApproval.title') }}</DialogTitle>
         <DialogDescription class="mt-2 text-sm text-slate-600 dark:text-slate-400">{{ t('temporaryApproval.description', { namespace }) }}</DialogDescription>
         <p v-if="fingerprint" class="mt-3 break-all text-xs"><span class="font-semibold">{{ t('publishers.fingerprint') }} (SHA-256): </span><code>{{ fingerprint }}</code></p>

@@ -5,8 +5,7 @@
 Modo demo explícito para las dos aplicaciones Vite. No requiere Rust, PostgreSQL,
 OAuth, almacenamiento de archivos ni credenciales reales. El cliente HTTP y la autorización de producción no se modifican.
 El acceso de escritorio incorpora ahora la jerarquía visual, las acciones Atrás/Entrar
-y el estado cancelado descritos en `web/desktop/README.md`. El rediseño del dashboard
-sigue siendo una propuesta.
+y el estado cancelado descritos en `web/desktop/README.md`. El panel web incorpora el rediseño plano y responsive descrito en `REDESIGN.md`.
 
 ```sh
 # Desde la raíz del repositorio
@@ -59,8 +58,8 @@ Los enlaces de evidencia en esta guía y la propuesta funcionan después de ejec
 los scripts siguientes. El concepto HTML es fuente revisable y sí se versiona.
 
 - [Galería de capturas](gallery.html): pantallas actuales, escritorio/móvil y oscuro.
-- [Propuesta específica del dashboard](DASHBOARD-PROPOSAL.md): composición y alcance de datos, sin implementar.
-- [Propuesta integral](REDESIGN.md): observaciones vinculadas a capturas y plan por componente.
+- [Dashboard](DASHBOARD-PROPOSAL.md): composición implementada y alcance de datos.
+- [Rediseño integral](REDESIGN.md): cambios implementados y límites de validación.
 - [Concepto visual](concept.html): maqueta estática propuesta, no integrada en Vue.
 - [Informe de navegador](screenshots/report.json): errores JS y desbordamiento horizontal.
 
@@ -79,8 +78,8 @@ logout y login desde la interfaz. Las capturas completas de páginas largas incl
 la barra móvil fija en su posición del viewport; no representan toda la página
 visible a la vez.
 
-Validación realizada: build de producción del panel; 54 tests en 13 archivos;
-build y typecheck de escritorio (salida temporal para no tocar los assets embebidos);
+Validación realizada: build de producción del panel; 56 tests en 14 archivos;
+build y typecheck de escritorio con actualización de assets embebidos;
 rechazo de build demo; búsqueda de fixtures en el bundle normal sin coincidencias;
 recorrido de navegador sobre las pantallas capturadas. GitHub respondió HTTP 200 y
 el entorno confirmó red `unrestricted/enforced` y estado `running/connected`.

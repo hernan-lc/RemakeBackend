@@ -3,7 +3,7 @@
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70" />
       <DialogContent
-        class="fixed left-1/2 top-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+        class="fixed left-1/2 top-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[min(32rem,calc(100vw-2rem))] overflow-y-auto -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-300 bg-white p-5 sm:p-6 dark:border-slate-700 dark:bg-slate-900"
         @escape-key-down="onCancel"
       >
         <DialogTitle class="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-white">

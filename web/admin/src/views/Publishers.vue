@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-4">
-    <PageHeader :title="t('publishers.title')" />
+    <PageHeader :title="t('publishers.title')" :description="copy.description" />
     <AppToolbar v-model="search" :search-label="t('publishers.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch">
       <template #filters>
         <AppSelect v-model="status" :label="t('publishers.filter')" class="[&>span:first-child]:sr-only">
@@ -17,6 +17,10 @@
         {{ t('errors.notAdmin') }}
       </div>
       <template v-else>
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold">{{ status ? statusLabel(status) : t('publishers.all') }}</h2>
+          <span class="text-xs text-slate-600 dark:text-slate-300">{{ visibleItems.length }} {{ copy.loaded }}</span>
+        </div>
         <p v-if="visibleItems.some(p => isMember(p.id))" class="mb-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
           <AppIcon name="info" :size="16" class="shrink-0" aria-hidden="true" />
           {{ t(temporaryEnabled ? 'temporaryApproval.overrideNotice' : 'publishers.independentReviewer') }}
@@ -24,21 +28,21 @@
         <AppCard v-if="visibleItems.length > 0 || membershipsError" :padded="false" label="publisher-requests">
           <p v-if="membershipsError" class="p-4 text-sm text-amber-700 dark:text-amber-300" role="alert">{{ t('publishers.membershipsUnavailable') }} <button class="underline" @click="refetchMemberships()">{{ t('states.retry') }}</button></p>
           <div class="scroll-thin overflow-x-auto">
-            <table class="block w-full text-left text-sm md:table">
+            <table class="block w-full text-left text-sm md:table md:table-fixed">
               <thead class="sr-only md:not-sr-only md:table-header-group">
-                <tr class="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-400">
+                <tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-400">
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.namespace') }}</th>
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.status') }}</th>
                   <th scope="col" class="px-4 py-2.5 font-semibold">{{ t('publishers.created') }}</th>
-                  <th scope="col" class="px-4 py-2.5 font-semibold"><span class="sr-only">{{ t('publishers.actions') }}</span></th>
+                  <th scope="col" class="px-4 py-2.5 font-semibold md:w-[38%]"><span class="sr-only">{{ t('publishers.actions') }}</span></th>
                 </tr>
               </thead>
               <tbody class="block divide-y divide-slate-100 md:table-row-group dark:divide-slate-800">
                 <tr v-for="p in visibleItems" :key="p.id" class="block py-3 transition-colors hover:bg-slate-50 md:table-row md:py-0 dark:hover:bg-slate-800/40">
                   <td class="block break-all px-4 py-1 font-mono font-semibold md:table-cell md:py-2.5">{{ p.namespace }}</td>
-                  <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-500 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ p.status }}</AppBadge></td>
-                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:whitespace-nowrap md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span>{{ formatDateTime(p.createdAt, locale) }}</span></td>
-                  <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-col items-start gap-2 md:items-end md:text-right">
+                  <td class="block px-4 py-1 md:table-cell md:py-2.5"><span class="mr-2 text-xs text-slate-600 dark:text-slate-300 md:hidden">{{ t('publishers.status') }}:</span><AppBadge :tone="statusTone(p.status)">{{ statusLabel(p.status) }}</AppBadge></td>
+                  <td class="block break-words px-4 py-1 text-slate-600 tabular-nums md:table-cell md:py-2.5 dark:text-slate-400"><span class="mr-2 text-xs md:hidden">{{ t('publishers.created') }}:</span><span>{{ formatDateTime(p.createdAt, locale) }}</span></td>
+                  <td class="block px-4 py-2 md:table-cell md:py-2.5"><div class="flex flex-wrap items-center gap-2 md:justify-end md:text-right">
                     <AppButton
                       v-if="p.status === 'pending'"
                       size="sm"
@@ -55,8 +59,8 @@
                       {{ t('publishers.keys') }}
                     </AppButton>
                     <p v-if="keys[p.id] && pendingKeys(p.id).length === 0" class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.noPendingKeys') }}</p>
-                    <ul v-if="keys[p.id]" class="flex w-full flex-col gap-2 text-left">
-                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-col items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
+                    <ul v-if="keys[p.id]" class="mt-2 flex w-full min-w-0 flex-col gap-3 text-left">
+                      <li v-for="k in pendingKeys(p.id)" :key="k.id" class="flex flex-col items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800">
                         <span class="break-all font-mono text-xs font-semibold">{{ k.keyId }}</span>
                         <span class="text-xs text-slate-500 dark:text-slate-400">{{ t('publishers.fingerprint') }} (SHA-256)</span>
                         <code class="break-all font-mono text-xs">{{ k.fingerprint }}</code>
@@ -88,7 +92,7 @@
         </div>
       </template>
     </StateBlock>
-    <ConfirmDialog :danger="false" :open="confirmOpen" :title="t('dashboard.approve')" :body="t('dashboard.approveConfirm')" :busy="busyId !== null" @confirm="doApprove" @cancel="confirmOpen = false" />
+    <ConfirmDialog :danger="false" :open="confirmOpen" :title="t('dashboard.approve')" :body="`${pendingNs} — ${t('dashboard.approveConfirm')}`" :busy="busyId !== null" @confirm="doApprove" @cancel="confirmOpen = false" />
     <TemporaryApprovalDialog :open="!!temporaryTarget" :publisher-id="temporaryTarget?.publisherId ?? ''" :namespace="temporaryTarget?.namespace ?? ''" :key-id="temporaryTarget?.keyId ?? null" @cancelled="temporaryTarget = null" @approved="temporaryApproved" />
     <StepUpDialog
       :open="keyDialogOpen"
@@ -127,6 +131,8 @@ import EmptyState from '../components/ui/EmptyState.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 
 const { t, locale } = useI18n()
+const copy = computed(() => locale.value === 'es' ? { description: 'Revisa las solicitudes de namespaces y sus claves de firma con un administrador independiente.', loaded: 'solicitudes en esta página' } : { description: 'Review namespace requests and signing keys with an independent administrator.', loaded: 'requests on this page' })
+function statusLabel(value: string) { return ['pending', 'approved', 'suspended'].includes(value) ? t(`publishers.${value}`) : value }
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
