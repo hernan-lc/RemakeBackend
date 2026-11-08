@@ -1,5 +1,7 @@
 # Sync API (experimental)
 
+This document specifies the unchanged plugin-only v1 protocol. The separate v2 workspace contract is in [CLOUD-API-V2.md](CLOUD-API-V2.md).
+
 Sync is not connected to TikTools Desktop and is not production-ready. Browser endpoints use session cookies; explicitly bearer-only native equivalents are under `/api/v1/native/sync/`, and `/api/v1/native/me` resolves a bearer session. Browser endpoints do not accept bearer tokens, and native endpoints do not accept cookies. A backend native login handoff and optional keychain adapter are available, but they are not integrated into Desktop; see DESKTOP-AUTH.md. The only accepted collection is `plugin-selections`; all other collections and unknown fields are rejected. Version 1 values have this exact shape:
 
 ```json

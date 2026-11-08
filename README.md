@@ -1,11 +1,13 @@
 # TikTools Cloud
 
-Early foundation for the optional TikTools cloud backend. **Not
-production-ready:** production trust, scanner operations, deployment and
-release gates need validation; sync and desktop integration remain incomplete.
+TikTools cloud backend for identity, signed plugin publication, reviewed
+templates/profiles and optional workspace sync. **Not production-ready:**
+production trust, scanner operations, deployment and release gates still need
+validation. Desktop v2 integration is a separate authorized step.
 Per-surface status and limits are in the [feature matrix](docs/FEATURE-MATRIX.md);
 verified evidence in [implementation status](docs/IMPLEMENTATION-STATUS.md).
-The plan, specification, and roadmap are [here](docs/PLAN.md),
+The current cloud redesign and v2 API are in [CLOUD-REDESIGN.md](docs/CLOUD-REDESIGN.md) and [CLOUD-API-V2.md](docs/CLOUD-API-V2.md).
+The original plan, specification, and roadmap are [here](docs/PLAN.md),
 [here](docs/SPECS.md), and [here](docs/ROADMAP.md). All design docs are
 indexed in [docs/README.md](docs/README.md).
 
@@ -35,6 +37,12 @@ export $(grep -v '^#' .env | xargs)
 cargo run -p cloud-api -- migrate   # Better Auth + versioned Cloud migrations
 cargo run -p cloud-api
 ```
+
+With object storage and ClamAV configured, run `cargo run -p cloud-api --
+run-workers` in a separate supervised process to continuously verify and
+prepare plugin publications. Signing and generation promotion remain explicit
+operator operations. See [Cloud API v2](docs/CLOUD-API-V2.md) for the complete
+single-instance contract and subsequent Desktop integration boundary.
 
 Without Docker on Linux/macOS: `cargo run -p pgrust-local -- up` after
 initializing the pgrust submodule — see the [local pgrust guide](docs/LOCAL-PGRUST.md).
@@ -75,13 +83,16 @@ Health and identity:
   security advisories ([moderation](docs/MODERATION.md)). Publisher keys
   enroll via challenge-based proof of possession with session-bound step-up
   ([publisher keys](docs/PUBLISHER-KEYS.md)).
-- **Registry** — test fixture with disposable keys, never an official
-  registry ([registry operations](docs/REGISTRY-OPERATIONS.md)). The
-  snapshot candidate builder stages private file versions; a separate operator
-  command verifies and promotes an immutable generation.
-- **Sync and desktop** — experimental plugin-selections sync only, not
-  connected to Desktop or ready for sensitive data ([sync](docs/SYNC.md));
-  backend-mediated native sign-in is experimental ([desktop authentication](docs/DESKTOP-AUTH.md)).
+- **Registry** — signed generation publication, serving and rollback, plus a
+  v2 product catalog over the published inventory. Operators provision trust
+  material; disposable fixtures never establish official trust
+  ([registry operations](docs/REGISTRY-OPERATIONS.md)).
+- **Templates and profiles** — private versioned library, independent review,
+  public discovery and withdrawal ([v2 API](docs/CLOUD-API-V2.md)).
+- **Sync and desktop** — v1 plugin selections remain compatible; separate v2
+  workspace sync covers templates, profiles, portable settings and preferences.
+  Desktop v2 integration is a separate authorized step. Native sign-in remains
+  experimental ([desktop authentication](docs/DESKTOP-AUTH.md)).
 - **Admin web app** — `web/admin` (login, review dashboard, moderation,
   publisher portal) with read-only admin APIs ([admin web plan](docs/ADMIN-WEB-PLAN.md),
   [deployment hardening](docs/ADMIN-WEB-DEPLOYMENT.md)).

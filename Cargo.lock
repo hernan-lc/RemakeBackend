@@ -941,6 +941,7 @@ dependencies = [
  "better-auth-core",
  "chrono",
  "cloud-client",
+ "cloud-contracts",
  "cloud-snapshot",
  "cloud-storage",
  "cloud-verifier",
@@ -976,6 +977,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "better-auth",
+ "cloud-contracts",
  "fs2",
  "getrandom 0.2.17",
  "keyring",
@@ -992,6 +994,16 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "cloud-contracts"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

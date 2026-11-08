@@ -304,6 +304,46 @@ async fn check(state: &AppState) -> bool {
             ][..],
         ),
         ("cloud_sync_cursors", &["user_id", "cursor"]),
+        ("cloud_workspace_cursors", &["user_id", "cursor"]),
+        (
+            "cloud_workspace_records",
+            &[
+                "user_id",
+                "collection",
+                "key",
+                "revision",
+                "value",
+                "deleted",
+            ],
+        ),
+        (
+            "cloud_workspace_changes",
+            &["user_id", "cursor", "collection", "key", "value", "deleted"],
+        ),
+        (
+            "cloud_library_documents",
+            &[
+                "id",
+                "owner_user_id",
+                "kind",
+                "slug",
+                "revision",
+                "published_revision",
+            ],
+        ),
+        (
+            "cloud_library_versions",
+            &[
+                "document_id",
+                "revision",
+                "title",
+                "document",
+                "sha256",
+                "status",
+                "reviewed_by",
+                "reason",
+            ],
+        ),
         (
             "cloud_sync_records",
             &[

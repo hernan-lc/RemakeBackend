@@ -12,6 +12,8 @@ mod keychain;
 pub use keychain::{Keychain, KeychainError};
 mod login;
 mod store;
+mod workspace;
+pub use cloud_contracts::{WorkspaceChanges, WorkspaceRecord, WorkspaceSnapshot};
 pub use login::{LoginAttempt, LoginResult};
 use reqwest::{
     header::{HeaderValue, AUTHORIZATION, IF_MATCH, IF_NONE_MATCH},
@@ -27,6 +29,7 @@ pub use store::{StateSnapshot, StateStore, StoreError};
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
+pub use workspace::CloudCatalog;
 
 const COLLECTION: &str = "plugin-selections";
 const MAX_RESPONSE: usize = 1024 * 1024;

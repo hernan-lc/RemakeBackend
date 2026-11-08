@@ -14,6 +14,9 @@ rather than implying production readiness.
 
 ## Product, plan, and status
 
+- [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md) — Current single-instance cloud plan and repository boundaries.
+- [CLOUD-API-V2.md](CLOUD-API-V2.md) — Product catalog, reviewed templates/profiles, workspace sync, SDK and operations.
+
 - [SPECS.md](SPECS.md) — Architecture proposal: accounts, Google login,
   verified publishers, registry publication, opt-in sync.
 - [PLAN.md](PLAN.md) — Work breakdown for coding agents; status tracked in

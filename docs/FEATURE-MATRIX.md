@@ -58,13 +58,30 @@ per-resource caps and row locks instead.
 
 | Surface | Status | Limits |
 |---|---|---|
-| Browser and native sync record, changes, export, and head routes | Experimental | Plugin selections only, 120/min shared writes, bounded reads/exports, tombstones, and a 10,000-change feed with cursor rebuilds. No full schema, no Desktop integration, no multi-device E2E. See [SYNC.md](SYNC.md). |
+| V1 browser and native sync record, changes, export, and head routes | Experimental | Plugin selections only, 120/min shared writes, bounded reads/exports, tombstones, and a 10,000-change feed with cursor rebuilds. No full schema, no Desktop integration, no multi-device E2E. See [SYNC.md](SYNC.md). |
 | `cloud-client` opt-in library | Experimental | Conflict handling, offline persistence, cursor rebuilds, and keychain adapters tested with mocks and DOM stand-ins. Not integrated into TikTools Desktop. |
 
-## Absent scope
+## Product API v2
 
-No public registry serving, snapshot promotion or deployment, CDN or rollback
-handling, appeal or un-yank flows, enabled key enrollment, full sync schema,
-user-facing account deletion, publisher dashboard, analytics, additional
-identity providers, or production abuse/load testing. Anything not listed above
-does not exist.
+| Surface | Status | Limits |
+| --- | --- | --- |
+| `/api/v2/capabilities` | Experimental | Single-instance product contract; removing Desktop registry selectors is a separate authorized integration. |
+| `/api/v2/catalog/plugins` and plugin detail | Experimental | Published inventory, generation pinning, semantic versions, current yanks/revocations. Signed metadata remains authoritative. Search covers IDs. |
+| `/api/v2/library/documents` and revision routes | Experimental | Private immutable revisions, quotas, account isolation, conditional edits and deletion. No Desktop v2 UI integration. |
+| `/api/v2/catalog/documents` and moderation routes | Experimental | Independent approval and withdrawal; moderators use cookie sessions. Generic content still needs review for secrets and action behavior. |
+| `/api/v2/sync/*` | Experimental | Separate v2 storage, five portable collections, ETags/conflicts, tombstones, bounded feed/snapshots/quotas. No automatic local application or v1 migration. |
+| `/api/v2/me/export` | Experimental | Includes legacy account, v2 workspace and all own library revisions. Existing password-confirmed browser deletion cascades both new stores; social-only/native deletion limits remain. |
+| `cloud-contracts` and v2 `cloud-client` adapters | Experimental | Shared validation and same-origin SDK transport; offline Desktop application remains separate. |
+| Signed registry generations and rollback | Experimental | Existing backend implementation; operator trust provisioning and production infrastructure remain deployment gates. |
+| `run-workers` | Experimental | Continuous verification/preparation with fenced leases; explicit operator signing and promotion remain required. |
+
+Full routes, quotas and compatibility rules: [CLOUD-API-V2.md](CLOUD-API-V2.md).
+
+## Outstanding scope
+
+Desktop v2 integration and removal of end-user registry controls, social-only
+and native account deletion, live provider/OS keychain verification, KMS/HSM
+signing, production CDN behavior, load/abuse testing and independent production
+security review remain outside the verified local backend delivery. Existing
+v1 limits above still apply to v1. Public registry serving, promotion and
+rollback exist in code; older missing-feature descriptions were stale.

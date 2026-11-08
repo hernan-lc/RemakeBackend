@@ -1,5 +1,11 @@
 # TikTools Cloud — Implementation Plan for Coding Agents
 
+The current single-instance product direction and additive v2 implementation
+are defined in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md) and
+[CLOUD-API-V2.md](CLOUD-API-V2.md). They supersede earlier multiple-registry
+product assumptions and older missing-feature lists below. Historical rollout
+steps remain here; deployment evidence is in IMPLEMENTATION-STATUS.md.
+
 Start from a **new repository**, not a PR targeting `better-auth-rs` or `TikTools-app`. `better-auth-rs` remains a Git-pinned library. Work in focused branches, open reviewable draft PRs, and do not claim tests passed without executing them.
 
 ## Progress

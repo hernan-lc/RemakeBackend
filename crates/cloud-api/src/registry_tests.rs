@@ -1084,6 +1084,110 @@ impl Fixture {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn product_catalog_pins_generations_sorts_semver_and_reports_live_revocations() {
+    let fx = Fixture::setup().await;
+    let plugin = fx.release("catalog", "1.9.0").await;
+    fx.release("catalog", "1.10.0").await;
+    fx.release("catalog", "2.0.0-beta.1").await;
+    let (_, first) = fx.publish("catalog-test").await;
+    let (origin, server) = serve_app(fx.ctx.clone(), fx.pool.clone(), fx.store.clone()).await;
+    let catalog = cloud_client::CloudCatalog::new(&origin).unwrap();
+    let detail = catalog.plugin(&plugin, None).await.unwrap();
+    assert_eq!(detail["generation"], first.generation);
+    assert_eq!(detail["plugin"]["latestStableVersion"], "1.10.0");
+    assert_eq!(detail["plugin"]["versions"][0]["version"], "2.0.0-beta.1");
+    let metadata = detail["plugin"]["metadataPath"].as_str().unwrap();
+    assert!(metadata.starts_with(&format!(
+        "/api/v1/registry/generations/{}/files/index/",
+        first.generation
+    )));
+    assert_eq!(reqwest_for_catalog(&origin, metadata).await, StatusCode::OK);
+    let list = catalog
+        .plugins(&fx.namespace, None, Some(first.generation))
+        .await
+        .unwrap();
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    let later = fx.release("later", "1.0.0").await;
+    // A prepared release cannot leak through discovery before promotion.
+    assert!(matches!(
+        catalog.plugin(&later, None).await,
+        Err(cloud_client::SyncError::Http(404))
+    ));
+    let (_, second) = fx.publish("catalog-test").await;
+    assert!(second.generation > first.generation);
+    assert_eq!(
+        catalog
+            .plugins(&fx.namespace, None, Some(first.generation))
+            .await
+            .unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        catalog.plugins(&fx.namespace, None, None).await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    sqlx::query("INSERT INTO cloud_release_yanks(release_id,yanked_by,reason) SELECT id,$2,'catalog regression' FROM cloud_plugin_releases WHERE plugin_id=$1 AND version='1.10.0'")
+        .bind(&plugin).bind(&fx.moderator.0).execute(&fx.pool).await.unwrap();
+    let detail = catalog
+        .plugin(&plugin, Some(first.generation))
+        .await
+        .unwrap();
+    assert_eq!(detail["plugin"]["latestStableVersion"], "1.9.0");
+    assert!(detail["plugin"]["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["version"] == "1.10.0" && v["yanked"] == true));
+    sqlx::query("UPDATE cloud_publisher_keys SET status='revoked' WHERE id=$1")
+        .bind(fx.key_row)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let detail = catalog.plugin(&plugin, None).await.unwrap();
+    assert!(detail["plugin"]["latestStableVersion"].is_null());
+    assert!(detail["plugin"]["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|v| v["keyRevoked"] == true));
+    server.abort();
+}
+
+async fn reqwest_for_catalog(origin: &str, path: &str) -> StatusCode {
+    // The pinned registry client owns artifact verification. This request only
+    // confirms discovery points at an existing same-instance metadata file.
+    let listener = url::Url::parse(origin).unwrap();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream =
+        tokio::net::TcpStream::connect((listener.host_str().unwrap(), listener.port().unwrap()))
+            .await
+            .unwrap();
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    let status = String::from_utf8_lossy(&bytes)
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    StatusCode::from_u16(status).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn incremental_publication_preserves_versions_and_applies_yanks() {
     let fx = Fixture::setup().await;
     let a = fx.release("alpha", "1.0.0").await;

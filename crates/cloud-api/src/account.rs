@@ -140,7 +140,7 @@ async fn bounded_rows(
     Ok(rows)
 }
 
-async fn export_inner(
+pub(crate) async fn export_inner(
     principal: better_auth::session::AuthPrincipal,
     state: AppState,
 ) -> Result<Json<Value>, StatusCode> {

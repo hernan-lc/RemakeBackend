@@ -1,5 +1,11 @@
 # TikTools Cloud — Roadmap
 
+The current single-instance product direction and additive v2 implementation
+are defined in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md) and
+[CLOUD-API-V2.md](CLOUD-API-V2.md). They supersede earlier multiple-registry
+product assumptions and older missing-feature lists below. Historical rollout
+steps remain here; deployment evidence is in IMPLEMENTATION-STATUS.md.
+
 A new independent backend consuming `better-auth-rs` as a library. Checked items describe work completed and locally verified in this repository. Unchecked items include unfinished integration, production validation, and milestone exit criteria. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for evidence and limitations.
 
 ## M0 — Repository and dependency audit (P0)
@@ -67,4 +73,4 @@ A new independent backend consuming `better-auth-rs` as a library. Checked items
 - [ ] Live PostgreSQL, desktop callback, staging proxy and independent security testing pass.
 
 ## Principles
-Prefer modular monolith and separate repositories; keep generic auth code in Better Auth. Preserve PR #43's static protocol, signed packaging and third-party registry support. No TikTools-specific changes in the auth library unless generally reusable.
+Prefer modular monolith and separate repositories; keep generic auth code in Better Auth. Preserve the static protocol and signed packaging. End users consume one instance; operators configure their own deployment and independent trust pins. No TikTools-specific changes in the auth library unless generally reusable.

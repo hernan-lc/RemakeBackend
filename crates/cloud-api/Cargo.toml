@@ -6,6 +6,7 @@ rust-version = "1.95"
 license = "MIT"
 
 [dependencies]
+cloud-contracts = { path = "../cloud-contracts" }
 cloud-storage = { path = "../cloud-storage" }
 cloud-verifier = { path = "../cloud-verifier" }
 cloud-snapshot = { path = "../cloud-snapshot" }

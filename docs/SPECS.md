@@ -1,9 +1,15 @@
 # TikTools Cloud — Specifications
 
+The current single-instance product direction and additive v2 implementation
+are defined in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md) and
+[CLOUD-API-V2.md](CLOUD-API-V2.md). They supersede earlier multiple-registry
+product assumptions and older missing-feature lists below. Historical rollout
+steps remain here; deployment evidence is in IMPLEMENTATION-STATUS.md.
+
 Status: architecture proposal. New independent Rust backend; do not move authentication code from `nglmercer/better-auth-rs` into this repository.
 
 ## Purpose
-Build an optional cloud service for `nglmercer/TikTools-app` that provides accounts, Google login, verified plugin publishers, official plugin registry publication, and opt-in cross-device sync. The TikTools desktop application and third-party registries must continue operating without cloud connectivity.
+Build an optional cloud service for `nglmercer/TikTools-app` that provides accounts, Google login, verified plugin publishers, official plugin registry publication, and opt-in cross-device sync. The TikTools desktop application must retain local operation without cloud connectivity. End users consume one instance; self-hosting is configured by the operator at deployment/build time.
 
 ## Architecture
 - **Repository:** `nglmercer/TikTools-cloud` (proposed).

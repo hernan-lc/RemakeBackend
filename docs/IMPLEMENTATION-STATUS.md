@@ -1,5 +1,74 @@
 # Implementation status
 
+
+## Cloud v2 backend delivery verified 2026 11 08
+
+The current product direction is one operator-configured instance. The plan
+and repository boundary are in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md); the full
+contract is in [CLOUD-API-V2.md](CLOUD-API-V2.md). This section supersedes older
+missing-feature descriptions below for registry serving/promotion/rollback,
+template/profile management and expanded workspace synchronization. Historical
+verification notes remain below.
+
+Implemented in RemakeBackend only:
+
+- Backend-owned `cloud-contracts`, portable Desktop v1 template/profile
+  validation and v2 workspace record/snapshot/change types.
+- Single-instance capabilities and plugin discovery over a pinned published
+  generation, semantic version sorting and current yanks/advisories/key state.
+- Private template/profile history, conditional edits/deletion, independent
+  cookie-authenticated review, immutable published content and withdrawal.
+- Separate v2 sync storage for selections, templates, profiles, portable plugin
+  settings and preferences; strong preconditions, idempotent no-ops, account
+  isolation, bounded snapshots/feed, quotas and cursor rebuilds.
+- Complete v2 account export sections and FK-based deletion of both new stores
+  through the existing password-confirmed browser account deletion operation.
+- Anonymous catalog and authenticated v2 SDK adapters, continuous fenced
+  verification/preparation workers, migration/readiness updates and proxy body
+  limits compatible with bounded portable documents.
+- Repaired the existing login test harness, which referenced a removed JS
+  asset. It now exercises the current Vue controller and actual TypeScript
+  handoff/API modules with Vue/DOM stand-ins. CI selects Node 22 for type
+  stripping. No product UI or Desktop repository file was edited.
+
+Executed checks:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --workspace --locked` | 80 passed; database/network/staging tests are separately opt-in |
+| PostgreSQL 18.6 ignored suite, one test thread, excluding the three live/staging checks below | 70 API tests and 2 process tests passed |
+| Focused rerun of v2 two-session sync after adding simultaneous writes | Passed; exactly one same-base writer succeeds, the other conflicts |
+| `cargo test -p cloud-client --all-features --locked --quiet` | 12 passed |
+| `node --test scripts/test-desktop-login.cjs` | 5 passed on local Node 26.13.0; controller/transport tests, not browser rendering |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo fmt --all -- --check` and `git diff --check` | Passed |
+| `cargo +1.95.0 check --workspace --locked --quiet` | Passed |
+| `cargo +1.89.0 check -p cloud-client --all-features --locked` | Passed |
+| Isolated worker process smoke | Explicit migration succeeded; idle worker stayed running and exited 0 on SIGTERM |
+
+The database suite ran in a newly initialized temporary PostgreSQL cluster,
+not the configured application database. The worker smoke used another empty
+database in that cluster; it verifies idle operation/shutdown, not scanner I/O.
+The database-suite command was:
+
+```sh
+CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- \
+  --ignored --test-threads=1 \
+  --skip google_jwks_live_refresh_smoke \
+  --skip staging_official_packages_install_with_pinned_client \
+  --skip real_clamav_scans_staging_packages
+```
+
+No deployment or production migration was performed. Official trust material,
+production infrastructure validation, KMS/HSM integration, live Google/OS
+integration and the existing social-only/native account-deletion limitations
+remain separate work. Generic settings/free text require author care and
+independent public review; field validation is not a universal secret detector.
+Desktop v2 application, offline conflict persistence and removal of end-user
+registry controls wait for the user's subsequent authorization.
+
+## Earlier implementation evidence
+
 The plan remains the source of scope; the project is not ready for deployment.
 
 Foundation in this repository: Axum server, configuration validation, PostgreSQL adapter and secondary storage, explicit Better Auth migration command, health endpoints, Better Auth routes, cookie-protected `/api/v1/me`, optional Google provider, versioned Cloud migrations, pending publisher namespace requests and membership-scoped listing with an audit event, local PostgreSQL Compose file, and basic CI. Members may list their publisher membership; only an owner can add, change, or remove non-owner roles, with changes recorded in the audit table. Publisher namespace approval and a signing-key lifecycle are implemented; key enrollment and approval require session-bound step-up grants (password or Google reauthentication, single-use, five minutes, no bypass); ownership transfer uses a time-limited offer accepted by an existing member. The pinned auth library has sign-in second-factor challenges; a session-bound step-up integration for key enrollment remains unverified. Better Auth is pinned in the manifest and lockfile. Google provider token retention is not enabled.

@@ -1,12 +1,15 @@
 mod account;
 mod admin;
 mod admin_static;
+mod cloud_v2;
 mod config;
 mod desktop;
 mod dual_auth;
+mod library;
 mod local_backup;
 mod local_objects;
 mod moderation;
+mod portable;
 mod publication;
 mod publication_worker;
 mod publisher_keys;
@@ -29,6 +32,8 @@ mod temporary_log_approval;
 mod uploads;
 mod web;
 mod worker;
+mod worker_daemon;
+mod workspace;
 
 use axum::{
     extract::{FromRef, State},
@@ -146,7 +151,10 @@ fn startup_mode(args: &[String]) -> &'static str {
     {
         [] => "server",
         ["migrate"] => "migrate",
-        ["verify-once"] | ["prepare-publication-once"] | ["build-initial-candidate"] => "worker",
+        ["verify-once"]
+        | ["prepare-publication-once"]
+        | ["build-initial-candidate"]
+        | ["run-workers"] => "worker",
         [command, ..]
             if matches!(
                 *command,
@@ -542,6 +550,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args == ["verify-once"]
         || args == ["prepare-publication-once"]
         || args == ["build-initial-candidate"]
+        || args == ["run-workers"]
     {
         let storage_config = config
             .object_storage
@@ -556,6 +565,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .clamav_addr
                 .ok_or("CLAMAV_ADDR must be configured for verification")?,
         );
+        if args == ["run-workers"] {
+            tracing::info!("processing verification and publication preparation queues");
+            return worker_daemon::run(&pool, &store, &scanner).await;
+        }
         let worked = if args == ["verify-once"] {
             worker::once(&pool, &store, &scanner).await?
         } else if args == ["prepare-publication-once"] {
@@ -572,7 +585,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        return Err("usage: cloud-api [migrate | backup-local NEW_DIR | verify-local-backup DIR | restore-local DIR | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
+        return Err("usage: cloud-api [migrate | backup-local NEW_DIR | verify-local-backup DIR | restore-local DIR | run-workers | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
     }
     let mut auth = configured_auth_router(context.clone())?;
     let mut step_up_oauth = None;
@@ -689,6 +702,9 @@ struct RouterFlags {
     temporary_log_approvals: bool,
 }
 
+// Keep the established deployment/auth-test constructor while RouterFlags
+// remains the internal configuration boundary.
+#[allow(clippy::too_many_arguments)]
 fn app_with_proxies(
     context: AuthContext,
     pool: PgPool,
@@ -1034,6 +1050,7 @@ fn app_inner(
             "/api/v1/step-up/oauth/callback",
             axum::routing::get(step_up::oauth_callback),
         )
+        .merge(cloud_v2::routes())
         .with_state(AppState {
             auth: context,
             pool,
@@ -1173,6 +1190,8 @@ async fn proxy_boundary(
 
 #[cfg(test)]
 mod auth_tests;
+#[cfg(test)]
+mod cloud_v2_tests;
 #[cfg(test)]
 mod portal_tests;
 #[cfg(test)]
