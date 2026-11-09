@@ -725,6 +725,77 @@ mod tests {
     }
 
     #[test]
+    fn signed_candidate_uses_canonical_parent_shard() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = SigningKey::generate(KeyId::parse("root-dot").unwrap(), None).unwrap();
+        let index = SigningKey::generate(KeyId::parse("index-dot").unwrap(), None).unwrap();
+        let publisher =
+            SigningKey::generate(KeyId::parse("ab-dot").unwrap(), Some("ab".into())).unwrap();
+        let approved = TrustedKey::new(publisher.public_key(), KeyRole::Publisher).publisher("ab");
+        let root_pin = TrustedKey::new(root.public_key(), KeyRole::Root);
+        let seed = dir.path().join("seed");
+        IndexWriter::open(
+            &seed,
+            "fixture",
+            Some(SigningKey::from_json(&index.to_json()).unwrap()),
+        )
+        .init(
+            &root,
+            vec![
+                TrustedKey::new(index.public_key(), KeyRole::Index),
+                approved.clone(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        let manifest = dir.path().join("plugin.json");
+        fs::write(&manifest, serde_json::to_vec(&serde_json::json!({
+            "schemaVersion":2,"id":"ab..foo","name":"Test","version":"1.0.0",
+            "runtime":"process","entry":"index.js","protocolVersion":1,"publisher":"ab",
+            "description":"A test plugin","license":"MIT","engines":{"tiktools":">=0.4.0"},"categories":["audio"]
+        })).unwrap()).unwrap();
+        let entry = dir.path().join("entry");
+        fs::write(&entry, b"plugin content").unwrap();
+        let package = dir.path().join("sample.plugin");
+        pack(&PackRequest {
+            manifest,
+            entry: Some(entry),
+            output: package.clone(),
+            target: None,
+        })
+        .unwrap();
+        sign_archive(&package, &publisher).unwrap();
+        let digest = Sha256Digest::of_file(&package).unwrap().to_string();
+        let input = ReleaseInput {
+            source: &package,
+            expected: ExpectedRelease {
+                namespace: "ab",
+                plugin_id: "ab..foo",
+                version: "1.0.0",
+                target: "any",
+                sha256: &digest,
+            },
+            approved_key: &approved,
+            channel: "stable",
+            yanked: false,
+            advisory: None,
+        };
+        let candidate = build(
+            &seed,
+            &root_pin,
+            SigningKey::from_json(&index.to_json()).unwrap(),
+            &[input],
+        )
+        .unwrap();
+        assert!(candidate.files.contains_key("index/ab..foo.json"));
+        assert!(candidate.files.contains_key("index/ab..foo.json.sig"));
+        candidate
+            .revalidate(&root_pin, &index.public_key(), &[(&approved, "ab..foo")])
+            .unwrap();
+    }
+
+    #[test]
     fn official_legacy_release_requires_independent_root_delegation() {
         let dir = tempfile::tempdir().unwrap();
         let root = SigningKey::generate(KeyId::parse("root-legacy").unwrap(), None).unwrap();

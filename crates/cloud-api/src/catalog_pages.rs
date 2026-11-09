@@ -351,14 +351,14 @@ mod tests {
     }
 
     #[test]
-    fn metadata_paths_fail_closed_for_dot_shard_and_preserve_safe_paths() {
+    fn metadata_paths_use_canonical_dot_shard_and_preserve_safe_paths() {
         assert_eq!(
             metadata_path(5, "hotkeys").unwrap(),
             "/api/v1/registry/generations/5/files/index/ho/tk/hotkeys.json"
         );
         assert_eq!(
-            metadata_path(5, "ab..foo"),
-            Err(StatusCode::SERVICE_UNAVAILABLE)
+            metadata_path(5, "ab..foo").unwrap(),
+            "/api/v1/registry/generations/5/files/index/ab..foo.json"
         );
         assert_eq!(
             metadata_path(5, "1bad"),

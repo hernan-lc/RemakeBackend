@@ -52,10 +52,12 @@ with a lowercase letter and followed by lowercase letters, digits, `.`, `_`
 or `-`. V2 workspace plugin keys accept this grammar plus previously accepted
 numeric-leading dotted keys; v1 sync retains its original separate grammar.
 Official legacy release IDs include `hotkeys` and `textintel`, which have no dot.
-Some valid manifest IDs can produce a literal `..` shard in the existing signed
-registry path (for example `ab..c`). Clients reject these unsafe paths, which
-can make the whole catalog page unavailable. A compatible registry publication
-and sharding protocol fix is still required for these already-published IDs.
+For an ID whose second shard would be the literal `..` (for example `ab..c`),
+new registry candidates use `index/ab..c.json` and its `.sig` sidecar instead
+of an unsafe parent-directory component. Other IDs retain their prior paths.
+Existing immutable generations are not rewritten by this change: audit them
+and, where necessary, build and promote a new signed generation before relying
+on the new path. Older clients also need the updated shard handling for these IDs.
 
 Versions sort by semantic version. Release submission accepts canonical semantic
 versions of at most 128 bytes; catalog clients must preserve the same bound.
@@ -95,9 +97,8 @@ observed independently on each request and must be rechecked before install.
 Both cursors are bounded, opaque base64url values. A cursor reused with another
 generation or filter is rejected with 400; an unavailable generation or plugin
 returns 404. A page never silently truncates a record: if a single row exceeds
-the limit, the request returns 413. A known unsafe `..` shard returns 503 rather
-than emitting a misleading signed path. Empty final pages are possible after a
-valid cursor; nextCursor is null on the last page.
+the limit, the request returns 413. Empty final pages are possible after a valid
+cursor; nextCursor is null on the last page.
 
 ## Private template and profile library
 

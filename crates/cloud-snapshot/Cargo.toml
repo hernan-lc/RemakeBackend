@@ -7,9 +7,9 @@ license = "MIT"
 
 [dependencies]
 cloud-verifier = { path = "../cloud-verifier" }
-tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
-tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
-tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
+tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
+tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tempfile = "3"
 serde_json = "1"
 thiserror = "2"

@@ -1198,8 +1198,9 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
     // its separate stricter key grammar. These rows are synthetic metadata.
     let single = format!("{namespace}foo");
     let repeated_dots = format!("b..{namespace}");
+    let parent_shard = format!("ab..{namespace}");
     let mut catalog_ids = ids.clone();
-    catalog_ids.extend([single.clone(), repeated_dots.clone()]);
+    catalog_ids.extend([single.clone(), repeated_dots.clone(), parent_shard.clone()]);
     let uploads: Vec<_> = (0..catalog_ids.len())
         .map(|_| uuid::Uuid::new_v4())
         .collect();
@@ -1251,7 +1252,7 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
         .await
         .unwrap();
     assert_eq!(remainder["items"][0]["id"], ids[2]);
-    for id in [&single, &repeated_dots] {
+    for id in [&single, &repeated_dots, &parent_shard] {
         assert_eq!(
             catalog.plugin(id, Some(generation)).await.unwrap()["plugin"]["id"],
             *id
@@ -1262,6 +1263,21 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
             .is_ok());
         assert!(!crate::sync::valid_plugin_id(id));
     }
+    let canonical_path =
+        format!("/api/v1/registry/generations/{generation}/files/index/{parent_shard}.json");
+    let parent_summary = catalog
+        .plugin_summaries(Some(&parent_shard), None, Some(generation), None)
+        .await
+        .unwrap();
+    assert_eq!(parent_summary.items.len(), 1);
+    assert_eq!(parent_summary.items[0].id, parent_shard);
+    assert_eq!(parent_summary.items[0].metadata_path, canonical_path);
+    let parent_versions = catalog
+        .plugin_version_page(&parent_shard, None, Some(generation), None)
+        .await
+        .unwrap();
+    assert_eq!(parent_versions.metadata_path, canonical_path);
+    assert_eq!(parent_versions.items.len(), 1);
     for id in ["hotkeys", "textintel"] {
         // The synthetic generation does not contain these legacy IDs; 404,
         // rather than 400, proves that the route accepts their grammar.

@@ -9,15 +9,18 @@ routes and capabilities object remain unchanged. V2 workspace plugin keys now
 also accept manifest IDs and 128-byte versions while retaining previously valid
 keys. PostgreSQL fixtures passed for multi-page traversal, the 512 KiB boundary,
 legacy IDs and long versions; bounded SDK tests passed in both repositories.
-The new endpoints fail closed for the unresolved legacy `..` shard, and neither
-deployed migration nor a production catalog audit is claimed.
+The registry writer and readers now use a safe canonical path for IDs whose
+second shard would be `..`, with unchanged paths for other IDs. A signed
+candidate round-trip and a disposable PostgreSQL catalog/SDK fixture passed.
+Existing generations are immutable and require an audit and, if affected, a
+new signed promotion. No deployed migration or production catalog audit is claimed.
 
 Follow-up catalog compatibility: catalog lookup and cursors now use the plugin
 manifest ID grammar; workspace keys retain their separate rules. The shared SDK
 also accepts the release version limit of 128 bytes. Five focused SDK catalog
 tests passed in each repository, and the expanded catalog pagination test passed
-against a disposable native PostgreSQL database. IDs whose legacy index shard is
-the `..` path component remain unavailable; see [CLOUD-API-V2.md](CLOUD-API-V2.md).
+against a disposable native PostgreSQL database; see [CLOUD-API-V2.md](CLOUD-API-V2.md)
+for the canonical shard and rollout requirements.
 No production data was inspected or migrated.
 
 The current product direction is one operator-configured instance. The plan

@@ -13,9 +13,9 @@ cloud-snapshot = { path = "../cloud-snapshot" }
 tempfile = "3"
 base64 = "0.22"
 sha2 = "0.10"
-tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
-tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
-tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
+tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
+tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c", default-features = false, features = ["axum", "sqlx"] }
@@ -42,5 +42,5 @@ cloud-client = { path = "../cloud-client" }
 jsonwebtoken = "9"
 better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c", default-features = false, features = ["axum", "sqlx", "test-utils"] }
 tower = { version = "0.5", features = ["util"] }
-tiktools-plugin-installer = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "983a375c5b702681a791061ca863cea9c542528d" }
+tiktools-plugin-installer = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 semver = "1.0.28"
