@@ -142,6 +142,80 @@ async fn json_body(response: Response) -> Value {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn v1_snapshot_pagination_uses_byte_order_for_punctuation_and_rebuild() {
+    let f = fixture().await;
+    let namespace = format!("ordering{}", uuid::Uuid::new_v4().simple());
+    // The punctuation group straddles the first 100-record page, so this
+    // checks both ordering and the exclusive continuation comparison.
+    let mut ids: Vec<String> = (0..98)
+        .map(|index| format!("{namespace}.a{index:03}"))
+        .collect();
+    ids.extend(
+        ["m-0", "m.0", "m0", "m_0", "z0", "z1", "z2", "z3"]
+            .into_iter()
+            .map(|suffix| format!("{namespace}.{suffix}")),
+    );
+    ids.sort();
+    assert_eq!(ids.len(), 106);
+    assert_eq!(ids[99], format!("{namespace}.m.0"));
+    assert_eq!(ids[100], format!("{namespace}.m0"));
+
+    sqlx::query("INSERT INTO cloud_sync_cursors(user_id,cursor) VALUES($1,$2)")
+        .bind(&f.users[0].id)
+        .bind(ids.len() as i64)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_sync_records(user_id,collection,key,revision,value,deleted) SELECT $1,'plugin-selections',key,revision,jsonb_build_object('schemaVersion',1,'pluginId',key,'version','1.0.0','enabled',true),false FROM unnest($2::text[]) WITH ORDINALITY AS fixture(key,revision)")
+        .bind(&f.users[0].id).bind(&ids).execute(&f.pool).await.unwrap();
+
+    let path = "/api/v1/sync/collections/plugin-selections";
+    let first = request(&f, Some(0), "GET", path, Value::Null, None).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = json_body(first).await;
+    let first_records = first["records"].as_array().unwrap();
+    assert_eq!(first_records.len(), 100);
+    let after = first["nextAfter"].as_str().unwrap();
+    assert_eq!(after, ids[99]);
+    let second_path = format!("{path}?after={after}");
+    let second = request(&f, Some(0), "GET", &second_path, Value::Null, None).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = json_body(second).await;
+    assert!(second["nextAfter"].is_null());
+    let mut actual: Vec<String> = first_records
+        .iter()
+        .map(|row| row["key"].as_str().unwrap().to_owned())
+        .collect();
+    actual.extend(
+        second["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["key"].as_str().unwrap().to_owned()),
+    );
+    assert_eq!(actual, ids);
+    let isolated = request(&f, Some(1), "GET", path, Value::Null, None).await;
+    assert!(json_body(isolated).await["records"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // A real native SDK rebuild uses the native route and requires strictly
+    // byte-ordered pages. Existing pending edits must survive the snapshot.
+    let session = cloud_client::Session::connect(&f.origin, f.users[0].token.clone())
+        .await
+        .unwrap();
+    let mut state = session.new_state();
+    state
+        .stage("local.pending".into(), cloud_client::Edit::Delete)
+        .unwrap();
+    assert_eq!(session.rebuild_with_count(&mut state).await.unwrap(), 106);
+    assert!(state.entries["local.pending"].pending.is_some());
+    assert!(ids.iter().all(|key| state.entries[key].remote.is_some()));
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn workspace_two_sessions_conflicts_pagination_and_v1_isolation() {
     let f = fixture().await;
     let a = cloud_client::Session::connect(&f.origin, f.users[0].token.clone())

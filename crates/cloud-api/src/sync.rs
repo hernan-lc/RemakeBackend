@@ -195,7 +195,9 @@ pub async fn list(
         return Err(StatusCode::BAD_REQUEST);
     }
     limit(&state, &user.user.id, "read", 300).await?;
-    let rows = sqlx::query("SELECT collection, key, revision, deleted, value FROM cloud_sync_records WHERE user_id = $1 AND collection = $2 AND key > $3 ORDER BY key LIMIT $4")
+    // Cursor comparison and order must use the same bytewise collation as
+    // native clients, regardless of the database's configured locale.
+    let rows = sqlx::query(r#"SELECT collection, key, revision, deleted, value FROM cloud_sync_records WHERE user_id = $1 AND collection = $2 AND key COLLATE "C" > $3 ORDER BY key COLLATE "C" LIMIT $4"#)
         .bind(&user.user.id).bind(&name).bind(query.after.unwrap_or_default()).bind(PAGE_LIMIT + 1).fetch_all(&state.pool).await.map_err(internal)?;
     let has_more = rows.len() > PAGE_LIMIT as usize;
     let records: Vec<_> = rows
