@@ -3,6 +3,14 @@
 
 ## Cloud v2 integrity, recovery and admin verification 2026 11 08
 
+Follow-up catalog compatibility: catalog lookup and cursors now use the plugin
+manifest ID grammar; workspace keys retain their separate rules. The shared SDK
+also accepts the release version limit of 128 bytes. Five focused SDK catalog
+tests passed in each repository, and the expanded catalog pagination test passed
+against a disposable native PostgreSQL database. IDs whose legacy index shard is
+the `..` path component remain unavailable; see [CLOUD-API-V2.md](CLOUD-API-V2.md).
+No production data was inspected or migrated.
+
 The current product direction is one operator-configured instance. The plan
 and repository boundary are in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md); the full
 contract is in [CLOUD-API-V2.md](CLOUD-API-V2.md). This section supersedes older

@@ -1194,25 +1194,35 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
         .unwrap();
     sqlx::query("INSERT INTO cloud_publisher_keys(id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES($1,$2,$3,$4,$5,'approved',$6)")
         .bind(key).bind(publisher).bind(format!("{namespace}-key")).bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").bind(uuid::Uuid::new_v4().simple().to_string().repeat(2)).bind(&f.users[0].id).execute(&f.pool).await.unwrap();
-    let uploads: Vec<_> = (0..ids.len()).map(|_| uuid::Uuid::new_v4()).collect();
-    let releases: Vec<_> = (0..ids.len()).map(|_| uuid::Uuid::new_v4()).collect();
+    // Catalog IDs follow manifest grammar; workspace sync deliberately keeps
+    // its separate stricter key grammar. These rows are synthetic metadata.
+    let single = format!("{namespace}foo");
+    let repeated_dots = format!("b..{namespace}");
+    let mut catalog_ids = ids.clone();
+    catalog_ids.extend([single.clone(), repeated_dots.clone()]);
+    let uploads: Vec<_> = (0..catalog_ids.len())
+        .map(|_| uuid::Uuid::new_v4())
+        .collect();
+    let releases: Vec<_> = (0..catalog_ids.len())
+        .map(|_| uuid::Uuid::new_v4())
+        .collect();
     sqlx::query("INSERT INTO cloud_upload_sessions(id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at) SELECT id,$2,$3,id::text,100,$4,'ordering/uploads/'||id::text,'pending',now()+interval '1 hour' FROM unnest($1::uuid[]) AS fixture(id)")
         .bind(&uploads).bind(publisher).bind(&f.users[0].id).bind(&hash).execute(&f.pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_plugin_releases(id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) SELECT id,$4,upload_id,$5,plugin_id,'1.0.0','any','awaiting_verification',$6 FROM unnest($1::uuid[],$2::uuid[],$3::text[]) AS fixture(id,upload_id,plugin_id)")
-        .bind(&releases).bind(&uploads).bind(&ids).bind(publisher).bind(key).bind(&f.users[0].id).execute(&f.pool).await.unwrap();
+        .bind(&releases).bind(&uploads).bind(&catalog_ids).bind(publisher).bind(key).bind(&f.users[0].id).execute(&f.pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_snapshot_candidates(id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES($1,'candidate',$2,$2,$3,1)")
-        .bind(candidate).bind(&hash).bind(ids.len() as i32).execute(&f.pool).await.unwrap();
+        .bind(candidate).bind(&hash).bind(catalog_ids.len() as i32).execute(&f.pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_registry_generations(id,generation,candidate_id,inventory_sha256,manifest_sha256,root_fingerprint,index_key_id,release_count,file_count,status) VALUES($1,$2,$3,$4,$4,$4,'ordering-test-index',$5,1,'superseded')")
-        .bind(uuid::Uuid::new_v4()).bind(generation).bind(candidate).bind(&hash).bind(ids.len() as i32).execute(&f.pool).await.unwrap();
+        .bind(uuid::Uuid::new_v4()).bind(generation).bind(candidate).bind(&hash).bind(catalog_ids.len() as i32).execute(&f.pool).await.unwrap();
     sqlx::query("INSERT INTO cloud_registry_generation_releases(generation,plugin_id,version,target,release_id,sha256,size,object_key,version_id) SELECT $1,plugin_id,'1.0.0','any',release_id,$4,100,'ordering/releases/'||release_id::text,'v1' FROM unnest($2::text[],$3::uuid[]) AS fixture(plugin_id,release_id)")
-        .bind(generation).bind(&ids).bind(&releases).bind(&hash).execute(&f.pool).await.unwrap();
+        .bind(generation).bind(&catalog_ids).bind(&releases).bind(&hash).execute(&f.pool).await.unwrap();
     let catalog = cloud_client::CloudCatalog::new(&f.origin).unwrap();
     let mut received = Vec::new();
     let mut after: Option<String> = None;
     for page_number in 0..2 {
         let page = catalog
             .plugins_filtered(
-                &namespace,
+                &format!("{namespace}."),
                 after.as_deref(),
                 Some(generation),
                 Some("x86_64-unknown-linux-gnu"),
@@ -1232,8 +1242,46 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
     }
     assert_eq!(received, ids);
     let remainder = catalog
-        .plugins_filtered(&namespace, Some(checkpoint), Some(generation), None)
+        .plugins_filtered(
+            &format!("{namespace}."),
+            Some(checkpoint),
+            Some(generation),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(remainder["items"][0]["id"], ids[2]);
+    for id in [&single, &repeated_dots] {
+        assert_eq!(
+            catalog.plugin(id, Some(generation)).await.unwrap()["plugin"]["id"],
+            *id
+        );
+        assert!(catalog
+            .plugins_filtered("", Some(id), Some(generation), None)
+            .await
+            .is_ok());
+        assert!(!crate::sync::valid_plugin_id(id));
+    }
+    for id in ["hotkeys", "textintel"] {
+        // The synthetic generation does not contain these legacy IDs; 404,
+        // rather than 400, proves that the route accepts their grammar.
+        let path = format!("/api/v2/catalog/plugins/{id}?generation={generation}");
+        assert_eq!(
+            request(&f, None, "GET", &path, json!({}), None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    for path in [
+        "/api/v2/catalog/plugins/1bad",
+        "/api/v2/catalog/plugins?after=1bad",
+    ] {
+        assert_eq!(
+            request(&f, None, "GET", path, json!({}), None)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 }

@@ -44,8 +44,18 @@ returns 404. Staged generations never appear.
 Plugin IDs use ascending ASCII byte order for both listing and the exclusive
 `after` cursor. These queries explicitly use PostgreSQL `COLLATE "C"`, so a
 database's default locale does not change page order or cursor boundaries.
+Catalog IDs follow the release manifest grammar: 2–128 ASCII bytes, starting
+with a lowercase letter and followed by lowercase letters, digits, `.`, `_`
+or `-`. The stricter plugin-selection sync key grammar remains independent.
+Official legacy release IDs include `hotkeys` and `textintel`, which have no dot.
+Some valid manifest IDs can produce a literal `..` shard in the existing signed
+registry path (for example `ab..c`). Clients reject these unsafe paths, which
+can make the whole catalog page unavailable. A compatible registry publication
+and sharding protocol fix is still required for these already-published IDs.
 
-Versions sort by semantic version. `latestStableVersion` excludes prereleases,
+Versions sort by semantic version. Release submission accepts canonical semantic
+versions of at most 128 bytes; catalog clients must preserve the same bound.
+`latestStableVersion` excludes prereleases,
 yanked releases, revoked publisher keys and unapproved publishers. Current
 yank, advisory and authorization state is read even when the inventory is
 pinned to an older generation. `metadataPath` points to this instance's

@@ -100,7 +100,7 @@ fn validate_query(q: &CatalogQuery) -> Result<(), StatusCode> {
     if q.q.as_ref().is_some_and(|s| s.len() > 100)
         || q.after
             .as_ref()
-            .is_some_and(|s| !crate::sync::valid_plugin_id(s))
+            .is_some_and(|s| !tiktools_plugin_api::manifest::is_valid_plugin_id(s))
         || q.generation.is_some_and(|n| n < 1)
         || q.target.as_ref().is_some_and(|s| {
             s.is_empty()
@@ -122,7 +122,7 @@ async fn catalog_data(
     validate_query(&query)?;
     if id
         .as_ref()
-        .is_some_and(|id| !crate::sync::valid_plugin_id(id))
+        .is_some_and(|id| !tiktools_plugin_api::manifest::is_valid_plugin_id(id))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
