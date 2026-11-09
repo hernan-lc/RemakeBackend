@@ -235,6 +235,8 @@ deployment or broader operational acceptance.
 | Method | Path | Result |
 | --- | --- | --- |
 | GET | `/api/v2/sync/head` | Current account cursor |
+| GET | `/api/v2/sync/write-epoch` | Current account write epoch as a decimal string |
+| POST | `/api/v2/sync/write-barrier` | Advance the account write epoch and return the new value |
 | GET | `/api/v2/sync/collections/{collection}` | Key-paginated records, including tombstones |
 | GET, PUT, DELETE | `/api/v2/sync/collections/{collection}/{key}` | Read or conditionally mutate one record |
 | GET | `/api/v2/sync/changes?cursor=N` | Ordered incremental changes |
@@ -265,6 +267,33 @@ no-op returns the existing stored representation, including decimal/integer
 distinctions that did not change its value. Repeating a request whose
 first response was lost may conflict: read the current record before rebasing.
 Neither the server nor SDK silently chooses a side of a conflict.
+
+For clients that support the optional write barrier, GET `write-epoch` before
+preparing a write, persist that account/origin-bound epoch alongside the exact
+durable request, and send its canonical decimal value in a single
+`X-Workspace-Write-Epoch` header on PUT or DELETE. The server compares the
+epoch while holding the account workspace cursor lock, before checking record
+preconditions or changing data. An old or future epoch returns 412. Missing
+headers retain the legacy behavior. The value is a string because it spans
+the nonnegative signed 64-bit range; negative, repeated, noncanonical or
+out-of-range headers return 400.
+
+When an outcome is unknown, a successful authenticated POST to `write-barrier`
+increments the epoch under that same lock. A fenced write with an earlier epoch
+has therefore either committed before the barrier or can no longer commit;
+this includes a delayed request that has not yet entered the database. The
+client can then read the record and explicitly review its outcome. The
+barrier covers every v2 collection for the authenticated account, but not
+other accounts, v1 writes, or legacy v2 writes that omit the epoch. A client
+must not claim full recovery or clear local safety markers while any such
+unfenced emitter may still write. Each barrier call consumes the normal write
+rate limit. Retrying after a lost response advances the epoch again and is safe;
+another device's later barrier can make a returned epoch stale before use, in
+which case a subsequent write receives 412. The epoch survives server restarts
+and never wraps; exhaustion returns 503. A GET by itself is not a barrier.
+The Desktop client must persist the epoch before dispatch and perform the
+barrier before publishing any uncertain-write recovery; the endpoint alone
+does not enable that product workflow.
 
 Records are `{collection,key,revision,deleted,value}`. Snapshots are
 `{schemaVersion:2,cursor,records}`. Change pages are

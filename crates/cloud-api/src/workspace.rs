@@ -15,6 +15,7 @@ pub const MAX_BYTES: i64 = 8 * 1024 * 1024;
 const MAX_CHANGES: i64 = 10_000;
 const MAX_CHANGE_BYTES: i64 = 16 * 1024 * 1024;
 const PAGE: i64 = 50;
+const WRITE_EPOCH_HEADER: &str = "x-workspace-write-epoch";
 
 pub(crate) fn db(_: sqlx::Error) -> StatusCode {
     tracing::error!("cloud workspace database operation failed");
@@ -83,6 +84,25 @@ pub(crate) fn precondition(headers: &HeaderMap) -> Result<Option<i64>, StatusCod
                 .ok_or(StatusCode::BAD_REQUEST)
         }
         ([], []) => Err(StatusCode::PRECONDITION_REQUIRED),
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+/// Epochs use canonical decimal strings to preserve the full signed 64-bit
+/// range across JavaScript clients. Omission retains the legacy v2 behavior.
+fn request_epoch(headers: &HeaderMap) -> Result<Option<i64>, StatusCode> {
+    let values: Vec<_> = headers.get_all(WRITE_EPOCH_HEADER).iter().collect();
+    match values.as_slice() {
+        [] => Ok(None),
+        [value] => {
+            let value = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+            value
+                .parse::<i64>()
+                .ok()
+                .filter(|number| *number >= 0 && number.to_string() == value)
+                .map(Some)
+                .ok_or(StatusCode::BAD_REQUEST)
+        }
         _ => Err(StatusCode::BAD_REQUEST),
     }
 }
@@ -167,6 +187,7 @@ pub async fn put(
         return Err(StatusCode::BAD_REQUEST);
     }
     let expected = precondition(&headers)?;
+    let epoch = request_epoch(&headers)?;
     mutate(
         &state,
         &user.user.id,
@@ -174,6 +195,7 @@ pub async fn put(
         key,
         Some(value),
         expected,
+        epoch,
     )
     .await
 }
@@ -187,7 +209,17 @@ pub async fn delete(
         return Err(StatusCode::BAD_REQUEST);
     }
     let expected = precondition(&headers)?.ok_or(StatusCode::BAD_REQUEST)?;
-    mutate(&state, &user.user.id, collection, key, None, Some(expected)).await
+    let epoch = request_epoch(&headers)?;
+    mutate(
+        &state,
+        &user.user.id,
+        collection,
+        key,
+        None,
+        Some(expected),
+        epoch,
+    )
+    .await
 }
 async fn mutate(
     state: &AppState,
@@ -196,6 +228,7 @@ async fn mutate(
     key: String,
     value: Option<Value>,
     expected: Option<i64>,
+    epoch: Option<i64>,
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
     limit(state, user, "write", 120).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
@@ -220,13 +253,18 @@ async fn mutate(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    let current_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE",
+    let row = sqlx::query(
+        "SELECT cursor,write_epoch FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE",
     )
     .bind(user)
     .fetch_one(&mut *tx)
     .await
     .map_err(db)?;
+    let current_cursor: i64 = row.get("cursor");
+    let current_epoch: i64 = row.get("write_epoch");
+    if epoch.is_some_and(|epoch| epoch != current_epoch) {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
     let previous = sqlx::query("SELECT collection,key,revision,value,deleted FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key=$3").bind(user).bind(&collection).bind(&key).fetch_optional(&mut *tx).await.map_err(db)?.map(record);
     if previous
         .as_ref()
@@ -322,6 +360,50 @@ pub async fn head(
     .await
     .map_err(db)?;
     Ok(Json(serde_json::json!({"cursor":cursor})))
+}
+
+/// A client must persist this value with the request before dispatch. A value
+/// acquired after an ambiguous request cannot identify or fence that request.
+pub async fn write_epoch(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    limit(&state, &user.user.id, "read", 300).await?;
+    let epoch: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT write_epoch FROM cloud_workspace_cursors WHERE user_id=$1),0)",
+    )
+    .bind(&user.user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(db)?;
+    Ok(Json(serde_json::json!({"writeEpoch": epoch.to_string()})))
+}
+
+/// Serialize with all workspace mutations for this account. Once committed,
+/// mutations carrying an earlier epoch cannot commit, even if their HTTP
+/// handler has not reached PostgreSQL yet. Unfenced legacy writes are not
+/// covered by this guarantee.
+pub async fn write_barrier(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    limit(&state, &user.user.id, "write", 120).await?;
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    sqlx::query("INSERT INTO cloud_workspace_cursors(user_id) VALUES($1) ON CONFLICT DO NOTHING")
+        .bind(&user.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let next: Option<i64> = sqlx::query_scalar(
+        "UPDATE cloud_workspace_cursors SET write_epoch=write_epoch+1 WHERE user_id=$1 AND write_epoch<9223372036854775807 RETURNING write_epoch",
+    )
+    .bind(&user.user.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let next = next.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    tx.commit().await.map_err(db)?;
+    Ok(Json(serde_json::json!({"writeEpoch": next.to_string()})))
 }
 pub async fn changes(
     DualUser(user): DualUser,
@@ -429,5 +511,22 @@ mod tests {
             precondition(&HeaderMap::new()),
             Err(StatusCode::PRECONDITION_REQUIRED)
         );
+    }
+
+    #[test]
+    fn optional_epoch_requires_one_canonical_nonnegative_i64() {
+        assert_eq!(request_epoch(&HeaderMap::new()), Ok(None));
+        for value in ["", "00", "+1", "-1", "1 ", "1,2", "9223372036854775808"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(WRITE_EPOCH_HEADER, value.parse().unwrap());
+            assert_eq!(request_epoch(&headers), Err(StatusCode::BAD_REQUEST));
+        }
+        for value in ["0", "1", "9223372036854775807"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(WRITE_EPOCH_HEADER, value.parse().unwrap());
+            assert_eq!(request_epoch(&headers), Ok(Some(value.parse().unwrap())));
+            headers.append(WRITE_EPOCH_HEADER, value.parse().unwrap());
+            assert_eq!(request_epoch(&headers), Err(StatusCode::BAD_REQUEST));
+        }
     }
 }

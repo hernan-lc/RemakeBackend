@@ -79,6 +79,8 @@ pub fn routes() -> Router<AppState> {
                 .delete(workspace::delete),
         )
         .route("/api/v2/sync/head", get(workspace::head))
+        .route("/api/v2/sync/write-epoch", get(workspace::write_epoch))
+        .route("/api/v2/sync/write-barrier", post(workspace::write_barrier))
         .route("/api/v2/sync/changes", get(workspace::changes))
         .route("/api/v2/sync/export", get(workspace::export))
         .route("/api/v2/me/export", get(export))
@@ -94,7 +96,8 @@ async fn capabilities() -> Json<Value> {
         "library":{"documents":"/api/v2/library/documents","kinds":["template","profile"],"independentReview":true},
         "sync":{"basePath":"/api/v2/sync","schemaVersion":2,"collections":portable::COLLECTIONS,
             "maxRecords":workspace::MAX_RECORDS,"maxBytes":workspace::MAX_BYTES,"maxDocumentBytes":portable::MAX_DOCUMENT_BYTES,
-            "conflictStatus":409,"expiredCursorStatus":410,"preconditionsRequired":true},
+            "conflictStatus":409,"expiredCursorStatus":410,"preconditionsRequired":true,
+            "writeEpochBarrier":{"epochPath":"/api/v2/sync/write-epoch","barrierPath":"/api/v2/sync/write-barrier","header":"X-Workspace-Write-Epoch","staleStatus":412}},
         "registry":{"current":"/api/v1/registry/current","files":"/api/v1/registry/generations/{generation}/files/{path}","independentTrustPinsRequired":true},
         "authentication":{"providers":"/api/v1/auth/providers","nativeHandoff":"/api/v1/desktop/handoff","nativeRedeem":"/api/v1/native/handoff/redeem"}
     }))

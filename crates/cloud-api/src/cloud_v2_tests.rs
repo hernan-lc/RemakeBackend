@@ -142,6 +142,278 @@ async fn json_body(response: Response) -> Value {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn workspace_barrier_fences_a_delayed_http_write_and_is_account_scoped() {
+    use futures_util::stream;
+    use tokio::sync::oneshot;
+
+    let f = fixture().await;
+    let endpoint = "/api/v2/sync/collections/preferences/desktop";
+    assert_eq!(
+        request(
+            &f,
+            None,
+            "POST",
+            "/api/v2/sync/write-barrier",
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let initial = request(
+        &f,
+        Some(0),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(json_body(initial).await["writeEpoch"], "0");
+
+    // The body has reached the handler, but the original write cannot even
+    // open its mutation transaction until the barrier commits.
+    let (started_tx, started_rx) = oneshot::channel();
+    let (resume_tx, resume_rx) = oneshot::channel();
+    let body = Body::from_stream(stream::once(async move {
+        started_tx.send(()).unwrap();
+        resume_rx.await.unwrap();
+        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+            b"{\"schemaVersion\":1,\"theme\":\"dark\"}",
+        ))
+    }));
+    let delayed = Request::builder()
+        .method("PUT")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .header("x-workspace-write-epoch", "0")
+        .body(body)
+        .unwrap();
+    let router = f.router.clone();
+    let pending = tokio::spawn(async move { router.oneshot(delayed).await.unwrap() });
+    started_rx.await.unwrap();
+    let barrier = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/write-barrier",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(barrier.status(), StatusCode::OK);
+    assert_eq!(json_body(barrier).await["writeEpoch"], "1");
+    resume_tx.send(()).unwrap();
+    assert_eq!(
+        pending.await.unwrap().status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    assert_eq!(
+        request(&f, Some(0), "GET", endpoint, Value::Null, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let fenced = Request::builder()
+        .method("PUT")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .header("x-workspace-write-epoch", "1")
+        .body(Body::from("{\"schemaVersion\":1,\"theme\":\"dark\"}"))
+        .unwrap();
+    assert_eq!(
+        f.router.clone().oneshot(fenced).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    let repeat = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/write-barrier",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(json_body(repeat).await["writeEpoch"], "2");
+    let stale_delete = Request::builder()
+        .method("DELETE")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::IF_MATCH, "\"1\"")
+        .header("x-workspace-write-epoch", "1")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        f.router
+            .clone()
+            .oneshot(stale_delete)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    let stale_other_collection = Request::builder()
+        .method("PUT")
+        .uri("/api/v2/sync/collections/plugin-selections/hotkeys")
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .header("x-workspace-write-epoch", "1")
+        .body(Body::from(
+            "{\"schemaVersion\":1,\"pluginId\":\"hotkeys\",\"version\":\"1.0.0\",\"enabled\":true}",
+        ))
+        .unwrap();
+    assert_eq!(
+        f.router
+            .clone()
+            .oneshot(stale_other_collection)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    let other = request(
+        &f,
+        Some(1),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(json_body(other).await["writeEpoch"], "0");
+    // Unfenced legacy clients remain compatible; they are not covered by a barrier.
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            endpoint,
+            json!({"schemaVersion":1,"theme":"light"}),
+            Some(("if-match", "\"1\""))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    sqlx::query(
+        "UPDATE cloud_workspace_cursors SET write_epoch=9223372036854775807 WHERE user_id=$1",
+    )
+    .bind(&f.users[0].id)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    let overflow = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/write-barrier",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(overflow.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let max = request(
+        &f,
+        Some(0),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(json_body(max).await["writeEpoch"], "9223372036854775807");
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn workspace_barrier_waits_for_write_already_in_transaction() {
+    let f = fixture().await;
+    // A trigger pauses a real HTTP write after it has obtained the workspace
+    // cursor lock but before it can commit. This test uses a dedicated DB.
+    sqlx::query("CREATE FUNCTION barrier_test_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(5200601); RETURN NEW; END $$")
+        .execute(&f.pool).await.unwrap();
+    sqlx::query("CREATE TRIGGER barrier_test_pause BEFORE INSERT ON cloud_workspace_records FOR EACH ROW EXECUTE FUNCTION barrier_test_pause()")
+        .execute(&f.pool).await.unwrap();
+    let mut blocker = f.pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(5200601)")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let endpoint = "/api/v2/sync/collections/preferences/desktop";
+    let write = Request::builder()
+        .method("PUT")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .header("x-workspace-write-epoch", "0")
+        .body(Body::from("{\"schemaVersion\":1,\"theme\":\"dark\"}"))
+        .unwrap();
+    let router = f.router.clone();
+    let writer = tokio::spawn(async move { router.oneshot(write).await.unwrap() });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'INSERT INTO cloud_workspace_records%')")
+                .fetch_one(&f.pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("writer reached trigger while holding cursor lock");
+
+    let barrier_request = Request::builder()
+        .method("POST")
+        .uri("/api/v2/sync/write-barrier")
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::empty())
+        .unwrap();
+    let router = f.router.clone();
+    let barrier = tokio::spawn(async move { router.oneshot(barrier_request).await.unwrap() });
+    // Verify that the barrier actually reached PostgreSQL and is waiting on
+    // the writer's uncommitted cursor insert; elapsed wall time alone could
+    // also mean the barrier task had not been scheduled.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'INSERT INTO cloud_workspace_cursors%')")
+                .fetch_one(&f.pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("barrier reached PostgreSQL and waits for the writer");
+    assert!(!barrier.is_finished());
+    blocker.commit().await.unwrap();
+    assert_eq!(writer.await.unwrap().status(), StatusCode::CREATED);
+    let response = barrier.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["writeEpoch"], "1");
+    let record = request(&f, Some(0), "GET", endpoint, Value::Null, None).await;
+    assert_eq!(json_body(record).await["value"]["theme"], "dark");
+    sqlx::query("DROP TRIGGER barrier_test_pause ON cloud_workspace_records")
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP FUNCTION barrier_test_pause()")
+        .execute(&f.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
     let f = fixture().await;
     let user = &f.users[0].id;

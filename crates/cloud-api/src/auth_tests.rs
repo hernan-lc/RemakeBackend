@@ -2612,6 +2612,28 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
             .status(),
         StatusCode::OK
     );
+    // A schema can have the migration marker but still lack the write fence
+    // column; readiness must not announce a usable workspace in that state.
+    sqlx::query("CREATE TABLE cloud_workspace_cursors (user_id TEXT, cursor BIGINT)")
+        .execute(&isolated)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "GET", "/health/ready", None, None)
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    sqlx::query("DROP TABLE cloud_workspace_cursors")
+        .execute(&isolated)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "GET", "/health/ready", None, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
     sqlx::query("INSERT INTO _sqlx_migrations SELECT 99999999999999, 'unknown', now(), true, decode('00', 'hex'), 0").execute(&isolated).await.unwrap();
     assert_eq!(
         request(&app, "GET", "/health/ready", None, None)
