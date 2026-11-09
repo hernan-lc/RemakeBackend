@@ -82,6 +82,25 @@ export interface ModerationQueue {
   nextCursor: string | null
 }
 
+export interface CloudDocumentSummary {
+  id: string
+  kind: 'template' | 'profile'
+  slug: string
+  revision: number
+  title: string
+  sha256: string
+  status: 'pending' | 'published'
+}
+
+export interface CloudDocument extends CloudDocumentSummary {
+  document: unknown
+}
+
+export interface CloudDocumentPage<T extends CloudDocumentSummary> {
+  items: T[]
+  nextCursor: string | null
+}
+
 export interface Inspection {
   url: string
   expiresIn: number

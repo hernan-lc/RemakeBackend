@@ -214,6 +214,19 @@ UUID pagination. Refresh from the first page after decisions to discover the
 next pending revision of documents already processed. Its read budget is
 300/minute; decisions and moderator withdrawals share 60/minute per reviewer.
 
+The admin web panel links from release moderation to **Cloud document
+moderation**. Reviewers can inspect the complete pending document and its
+revision and digest before approving or rejecting it with a reason. The
+published tab reads the exact displayed public revision before offering
+withdrawal. The panel refreshes the queue after each attempt and does not
+automatically retry an uncertain decision. Historical published revisions
+remain addressable through the versioned API, but are not discoverable in this
+panel. The server continues to enforce cookie authentication, current roles,
+independent review and audit; a Cloud approval does not authorize local
+execution. UI component tests and a Chromium check at desktop and mobile sizes
+used mocked HTTP; they do not establish a production deployment or end-to-end
+moderation acceptance against a live database and authenticated sessions.
+
 ## Workspace synchronization
 
 | Method | Path | Result |

@@ -16,6 +16,7 @@ const routes: RouteRecordRaw[] = [
       { path: '', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'publishers', name: 'publishers', component: () => import('./views/Publishers.vue') },
       { path: 'moderation', name: 'moderation', component: () => import('./views/Moderation.vue') },
+      { path: 'moderation/documents', name: 'document-moderation', component: () => import('./views/DocumentModeration.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
       { path: 'portal', name: 'portal', component: () => import('./views/Portal.vue') },
       { path: 'account', name: 'account', component: () => import('./views/Account.vue') },

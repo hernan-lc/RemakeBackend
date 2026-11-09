@@ -3,6 +3,9 @@
 // (no localStorage, no sessionStorage).
 import type {
   AuditPage,
+  CloudDocument,
+  CloudDocumentPage,
+  CloudDocumentSummary,
   Inspection,
   KeyChallenge,
   Me,
@@ -111,6 +114,26 @@ export const api = {
     request<ModerationQueue>(
       `/api/v1/moderation/releases${after ? `?after=${encodeURIComponent(after)}` : ''}`,
     ),
+  documentReviewQueue: (after?: string) =>
+    request<CloudDocumentPage<CloudDocument>>(
+      `/api/v2/moderation/documents${after ? `?after=${encodeURIComponent(after)}` : ''}`,
+      { cache: 'no-store' },
+    ),
+  publishedDocuments: (after?: string) =>
+    request<CloudDocumentPage<CloudDocumentSummary>>(
+      `/api/v2/catalog/documents${after ? `?after=${encodeURIComponent(after)}` : ''}`,
+      { cache: 'no-store' },
+    ),
+  publishedDocumentVersion: (id: string, revision: number) =>
+    request<CloudDocument>(`/api/v2/catalog/documents/${encodeURIComponent(id)}/versions/${revision}`, { cache: 'no-store' }),
+  decideDocument: (id: string, revision: number, decision: 'approve' | 'reject', reason: string) =>
+    request<void>(`/api/v2/moderation/documents/${encodeURIComponent(id)}/versions/${revision}/decision`, {
+      method: 'POST', body: JSON.stringify({ decision, reason }),
+    }),
+  withdrawDocument: (id: string, revision: number, reason: string) =>
+    request<void>(`/api/v2/moderation/documents/${encodeURIComponent(id)}/versions/${revision}/withdraw`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }),
   inspectRelease: (id: string) =>
     request<Inspection>(`/api/v1/moderation/releases/${id}/inspection`, { method: 'POST' }),
   decideRelease: (id: string, decision: 'approve' | 'reject', reasonCode: string) =>

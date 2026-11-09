@@ -26,7 +26,7 @@
           <AppButton variant="secondary" @click="$emit('cancel')">
             {{ t('states.cancel') }}
           </AppButton>
-          <AppButton :variant="danger ? 'dangerFill' : 'primary'" :loading="busy" :disabled="busy || (promptLabel != null && !promptValue.trim()) || (confirmMatch != null && promptValue !== confirmMatch)" @click="$emit('confirm')">
+          <AppButton :variant="danger ? 'dangerFill' : 'primary'" :loading="busy" :disabled="busy || confirmDisabled || (promptLabel != null && !promptValue.trim()) || (confirmMatch != null && promptValue !== confirmMatch)" @click="$emit('confirm')">
             {{ t('states.confirm') }}
           </AppButton>
         </div>
@@ -47,6 +47,7 @@ withDefaults(
     title: string
     body: string
     busy?: boolean
+    confirmDisabled?: boolean
     danger?: boolean
     promptLabel?: string
     promptValue?: string
@@ -54,7 +55,7 @@ withDefaults(
     confirmMatch?: string
     error?: string
   }>(),
-  { busy: false, danger: true, promptLabel: undefined, promptValue: '', promptPlaceholder: undefined, confirmMatch: undefined, error: undefined },
+  { busy: false, confirmDisabled: false, danger: true, promptLabel: undefined, promptValue: '', promptPlaceholder: undefined, confirmMatch: undefined, error: undefined },
 )
 
 const emit = defineEmits<{

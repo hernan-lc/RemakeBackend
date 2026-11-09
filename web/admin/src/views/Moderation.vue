@@ -1,6 +1,7 @@
 <template>
   <div class="flex flex-col gap-4">
     <PageHeader :title="t('moderation.title')" :description="copy.description" />
+    <RouterLink to="/app/moderation/documents" class="self-start rounded-lg px-3 py-2 text-sm font-medium text-indigo-700 underline dark:text-indigo-300">{{ locale === 'es' ? 'Moderar documentos Cloud' : 'Review Cloud documents' }}</RouterLink>
     <AppToolbar v-model="search" :search-label="t('moderation.searchPage')" :refresh-label="t('states.refresh')" @refresh="refetch" />
     <StateBlock :loading="isPending" :error="!!error && !forbidden" :detail="errorDetail" :retry="true" @retry="refetch">
       <template v-if="forbidden">
