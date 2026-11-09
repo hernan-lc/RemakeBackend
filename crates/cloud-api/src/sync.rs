@@ -231,6 +231,32 @@ pub struct ChangesResponse {
 pub struct SyncHead {
     cursor: i64,
 }
+
+/// Cursor allocation and feed insertion are committed together under the
+/// account lock. A hole in the retained suffix means the page cannot safely
+/// advance a client, even when the surviving records are ordered.
+pub(crate) fn complete_feed_page(
+    after: i64,
+    current: i64,
+    revisions: impl IntoIterator<Item = i64>,
+    has_more: bool,
+) -> bool {
+    if after < 0 || after > current {
+        return false;
+    }
+    let mut last = after;
+    for revision in revisions {
+        if last.checked_add(1) != Some(revision) || revision > current {
+            return false;
+        }
+        last = revision;
+    }
+    if has_more {
+        last > after
+    } else {
+        last == current
+    }
+}
 pub async fn head(
     AuthUser(user): AuthUser,
     State(state): State<AppState>,
@@ -284,13 +310,19 @@ pub async fn changes(
     }
     let rows = sqlx::query("SELECT collection, key, cursor AS revision, deleted, value FROM cloud_sync_changes WHERE user_id = $1 AND cursor > $2 ORDER BY cursor LIMIT $3")
         .bind(&user.user.id).bind(cursor).bind(PAGE_LIMIT + 1).fetch_all(&mut *tx).await.map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
     let has_more = rows.len() > PAGE_LIMIT as usize;
-    let changes: Vec<_> = rows
-        .into_iter()
-        .take(PAGE_LIMIT as usize)
-        .map(record)
-        .collect();
+    let mut changes: Vec<_> = rows.into_iter().map(record).collect();
+    if !complete_feed_page(
+        cursor,
+        current,
+        changes.iter().map(|r| r.revision),
+        has_more,
+    ) {
+        tracing::error!("sync change history has a missing or invalid cursor");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    changes.truncate(PAGE_LIMIT as usize);
+    tx.commit().await.map_err(internal)?;
     let cursor = changes.last().map_or(cursor, |r| r.revision);
     Ok(Json(ChangesResponse {
         changes,
@@ -489,6 +521,17 @@ pub async fn native_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_feed_page_rejects_missing_middle_and_tail_without_overflow() {
+        assert!(complete_feed_page(0, 3, [1, 2, 3], false));
+        assert!(complete_feed_page(0, 3, [1, 2], true));
+        assert!(!complete_feed_page(0, 3, [1, 3], false));
+        assert!(!complete_feed_page(0, 3, [1, 2], false));
+        assert!(!complete_feed_page(1, 3, [], false));
+        assert!(complete_feed_page(i64::MAX, i64::MAX, [], false));
+        assert!(!complete_feed_page(i64::MAX, i64::MAX, [i64::MAX], false));
+    }
+
     #[test]
     fn rejects_credentials_and_unreviewed_fields() {
         let good = serde_json::json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.2.3","enabled":true});

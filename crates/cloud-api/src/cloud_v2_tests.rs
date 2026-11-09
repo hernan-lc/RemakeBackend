@@ -142,6 +142,79 @@ async fn json_body(response: Response) -> Value {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
+    let f = fixture().await;
+    let user = &f.users[0].id;
+    for (cursors, changes, endpoint) in [
+        (
+            "cloud_sync_cursors",
+            "cloud_sync_changes",
+            "/api/v1/sync/changes",
+        ),
+        (
+            "cloud_workspace_cursors",
+            "cloud_workspace_changes",
+            "/api/v2/sync/changes",
+        ),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO {cursors}(user_id,cursor) VALUES($1,3)"
+        ))
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) SELECT $1,n,'plugin-selections','acme.p'||n,NULL,true FROM generate_series(1,3) n"))
+            .bind(user).execute(&f.pool).await.unwrap();
+        let path = format!("{endpoint}?cursor=0");
+        let original = request(&f, Some(0), "GET", &path, Value::Null, None).await;
+        assert_eq!(original.status(), StatusCode::OK);
+        assert_eq!(json_body(original).await["cursor"], 3);
+        sqlx::query(&format!(
+            "DELETE FROM {changes} WHERE user_id=$1 AND cursor=2"
+        ))
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            request(&f, Some(0), "GET", &path, Value::Null, None)
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let later = format!("{endpoint}?cursor=2");
+        assert_eq!(
+            request(&f, Some(0), "GET", &later, Value::Null, None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        sqlx::query(&format!(
+            "DELETE FROM {changes} WHERE user_id=$1 AND cursor=3"
+        ))
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            request(&f, Some(0), "GET", &later, Value::Null, None)
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let saved: i64 =
+            sqlx::query_scalar(&format!("SELECT cursor FROM {cursors} WHERE user_id=$1"))
+                .bind(user)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        assert_eq!(saved, 3);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn v1_snapshot_pagination_uses_byte_order_for_punctuation_and_rebuild() {
     let f = fixture().await;
     let namespace = format!("ordering{}", uuid::Uuid::new_v4().simple());

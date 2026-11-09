@@ -327,20 +327,25 @@ pub async fn changes(
     if cursor > current {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let earliest: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(min(cursor),$2+1) FROM cloud_workspace_changes WHERE user_id=$1",
-    )
-    .bind(&user.user.id)
-    .bind(current)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db)?;
-    if cursor < earliest - 1 {
+    let earliest: Option<i64> =
+        sqlx::query_scalar("SELECT min(cursor) FROM cloud_workspace_changes WHERE user_id=$1")
+            .bind(&user.user.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+    if earliest.is_some_and(|first| cursor < first.saturating_sub(1))
+        || (earliest.is_none() && cursor < current)
+    {
         return Err(StatusCode::GONE);
     }
     let rows = sqlx::query("SELECT collection,key,cursor AS revision,deleted,value FROM cloud_workspace_changes WHERE user_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3").bind(&user.user.id).bind(cursor).bind(PAGE+1).fetch_all(&mut *tx).await.map_err(db)?;
     let more = rows.len() > PAGE as usize;
-    let changes: Vec<_> = rows.into_iter().take(PAGE as usize).map(record).collect();
+    let mut changes: Vec<_> = rows.into_iter().map(record).collect();
+    if !crate::sync::complete_feed_page(cursor, current, changes.iter().map(|r| r.revision), more) {
+        tracing::error!("workspace change history has a missing or invalid cursor");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    changes.truncate(PAGE as usize);
     let cursor = changes.last().map_or(cursor, |r| r.revision);
     tx.commit().await.map_err(db)?;
     Ok(Json(

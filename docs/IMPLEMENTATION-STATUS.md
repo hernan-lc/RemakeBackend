@@ -1,5 +1,16 @@
 # Implementation status
 
+## Retained feed gap checks
+
+V1 and v2 change endpoints now reject a missing cursor within the requested
+retained suffix instead of returning a later cursor that hides the omission.
+The shared account lock still covers validation and the page read; normal
+retention expiry retains its 410 behavior. A dedicated local PostgreSQL fixture
+passed for middle and tail gaps in both APIs, as did the existing v1 retention
+and v2 two-session pagination tests. A focused boundary unit test also passed.
+This does not detect omissions behind an already-saved client cursor, repair
+existing data, inspect production, or prove deployment.
+
 
 ## Cloud v2 integrity, recovery and admin verification 2026 11 08
 

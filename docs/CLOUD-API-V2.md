@@ -266,7 +266,12 @@ The feed retains a suffix bounded by 10,000 changes and 16 MiB of JSONB text
 plus a per-row allowance. A cursor older than that suffix returns 410; rebuild
 from `/sync/export` and resume at the snapshot cursor. Negative/future cursors
 return 400. The feed expiry check and page read hold a shared cursor lock to
-prevent concurrent pruning from skipping changes.
+prevent concurrent pruning from skipping changes. If retained history has a
+missing or invalid cursor within a requested page, the server returns 500
+instead of advancing the client past the missing change. A fully expired
+prefix still returns 410. Operators must investigate damaged retained history;
+the error does not silently repair it or detect a gap that the client has
+already passed.
 
 Each account allows 1,000 records (including tombstones) and 8 MiB of current
 JSONB value text. Writes share 120/minute; reads share 300/minute; exports

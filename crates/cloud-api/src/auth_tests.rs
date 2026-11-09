@@ -1979,6 +1979,13 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
         .execute(&pool)
         .await
         .unwrap();
+    // Preserve the invariant of an unbroken retained suffix while advancing
+    // the synthetic cursor: the real writer appends one row per revision.
+    sqlx::query("INSERT INTO cloud_sync_changes(user_id,cursor,collection,key,value,deleted) SELECT $1,n,'plugin-selections','acme.plugin',NULL,true FROM generate_series(4,10001) n")
+        .bind(&user_ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
     let new_value =
         json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.2.0","enabled":true});
     assert_eq!(
