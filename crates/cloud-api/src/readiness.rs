@@ -306,7 +306,7 @@ async fn check(state: &AppState) -> bool {
         ("cloud_sync_cursors", &["user_id", "cursor"]),
         (
             "cloud_workspace_cursors",
-            &["user_id", "cursor", "write_epoch"],
+            &["user_id", "cursor", "write_epoch", "write_epoch_required"],
         ),
         (
             "cloud_workspace_records",

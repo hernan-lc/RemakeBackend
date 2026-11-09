@@ -2624,6 +2624,16 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
             .status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+    sqlx::query("ALTER TABLE cloud_workspace_cursors ADD COLUMN write_epoch BIGINT")
+        .execute(&isolated)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "GET", "/health/ready", None, None)
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
     sqlx::query("DROP TABLE cloud_workspace_cursors")
         .execute(&isolated)
         .await

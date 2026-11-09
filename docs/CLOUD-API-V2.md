@@ -235,8 +235,9 @@ deployment or broader operational acceptance.
 | Method | Path | Result |
 | --- | --- | --- |
 | GET | `/api/v2/sync/head` | Current account cursor |
-| GET | `/api/v2/sync/write-epoch` | Current account write epoch as a decimal string |
+| GET | `/api/v2/sync/write-epoch` | Current account write epoch as a decimal string and whether it is required |
 | POST | `/api/v2/sync/write-barrier` | Advance the account write epoch and return the new value |
+| POST | `/api/v2/sync/require-write-epoch` | Irreversibly require fenced v2 writes for this account and advance its epoch |
 | GET | `/api/v2/sync/collections/{collection}` | Key-paginated records, including tombstones |
 | GET, PUT, DELETE | `/api/v2/sync/collections/{collection}/{key}` | Read or conditionally mutate one record |
 | GET | `/api/v2/sync/changes?cursor=N` | Ordered incremental changes |
@@ -274,7 +275,8 @@ durable request, and send its canonical decimal value in a single
 `X-Workspace-Write-Epoch` header on PUT or DELETE. The server compares the
 epoch while holding the account workspace cursor lock, before checking record
 preconditions or changing data. An old or future epoch returns 412. Missing
-headers retain the legacy behavior. The value is a string because it spans
+headers retain the legacy behavior until the account enables the required mode
+described below. The value is a string because it spans
 the nonnegative signed 64-bit range; negative, repeated, noncanonical or
 out-of-range headers return 400.
 
@@ -294,6 +296,28 @@ and never wraps; exhaustion returns 503. A GET by itself is not a barrier.
 The Desktop client must persist the epoch before dispatch and perform the
 barrier before publishing any uncertain-write recovery; the endpoint alone
 does not enable that product workflow.
+
+After explicit account-owner consent and migration of all v2 clients and
+emitters, POST `require-write-epoch` permanently enables the required mode for
+the authenticated account. Its response is
+`{"writeEpoch":"N","epochRequired":true}`; GET `write-epoch` also returns
+both fields, with `epochRequired:false` before activation. Each activation
+attempt that succeeds advances the epoch, including repeated attempts after a
+lost response. The flag and increment commit atomically under the same account
+cursor lock as the writes. An unfenced request that already entered the
+transaction completes before activation, while one reaching the lock later
+fails with 428; stale fenced requests fail with 412. No endpoint turns this
+mode off. Account deletion remains separate. This mode does not change or
+reconcile v1: a v1 client can still write its distinct v1 dataset, which must
+be handled by the migration and product reconciliation flow.
+
+**Deployment prerequisite:** every backend instance serving this database
+must run a version that enforces this policy before activation. Older backend
+binaries ignore the flag and can accept unfenced writes even after activation;
+this application-level guarantee does not fence noncooperating database
+writers or rollbacks to old binaries. Do not enable the mode while such
+instances or writes remain possible. The setting affects all v2 devices on the
+account and is intentionally not enabled by the Desktop product yet.
 
 Records are `{collection,key,revision,deleted,value}`. Snapshots are
 `{schemaVersion:2,cursor,records}`. Change pages are

@@ -338,7 +338,242 @@ async fn workspace_barrier_fences_a_delayed_http_write_and_is_account_scoped() {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn workspace_required_epoch_blocks_delayed_legacy_and_is_irreversible() {
+    use futures_util::stream;
+    use tokio::sync::oneshot;
+    let f = fixture().await;
+    let endpoint = "/api/v2/sync/collections/preferences/desktop";
+    assert_eq!(
+        request(
+            &f,
+            None,
+            "POST",
+            "/api/v2/sync/require-write-epoch",
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let initial = request(
+        &f,
+        Some(0),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(initial).await,
+        json!({"writeEpoch":"0","epochRequired":false})
+    );
+    let (started_tx, started_rx) = oneshot::channel();
+    let (resume_tx, resume_rx) = oneshot::channel();
+    let body = Body::from_stream(stream::once(async move {
+        started_tx.send(()).unwrap();
+        resume_rx.await.unwrap();
+        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+            b"{\"schemaVersion\":1,\"theme\":\"dark\"}",
+        ))
+    }));
+    let delayed = Request::builder()
+        .method("PUT")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .body(body)
+        .unwrap();
+    let router = f.router.clone();
+    let pending = tokio::spawn(async move { router.oneshot(delayed).await.unwrap() });
+    started_rx.await.unwrap();
+    let enabled = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/require-write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(enabled.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(enabled).await,
+        json!({"writeEpoch":"1","epochRequired":true})
+    );
+    resume_tx.send(()).unwrap();
+    assert_eq!(
+        pending.await.unwrap().status(),
+        StatusCode::PRECONDITION_REQUIRED
+    );
+    let repeat = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/require-write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(repeat).await,
+        json!({"writeEpoch":"2","epochRequired":true})
+    );
+    let epoch = request(
+        &f,
+        Some(0),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(epoch).await,
+        json!({"writeEpoch":"2","epochRequired":true})
+    );
+    let other = request(
+        &f,
+        Some(1),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(other).await,
+        json!({"writeEpoch":"0","epochRequired":false})
+    );
+    assert_eq!(
+        request(
+            &f,
+            Some(1),
+            "PUT",
+            endpoint,
+            json!({"schemaVersion":1}),
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            endpoint,
+            json!({"schemaVersion":1}),
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::PRECONDITION_REQUIRED
+    );
+    let valid = Request::builder()
+        .method("PUT")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_NONE_MATCH, "*")
+        .header("x-workspace-write-epoch", "2")
+        .body(Body::from("{\"schemaVersion\":1}"))
+        .unwrap();
+    assert_eq!(
+        f.router.clone().oneshot(valid).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "DELETE",
+            endpoint,
+            Value::Null,
+            Some(("if-match", "\"1\""))
+        )
+        .await
+        .status(),
+        StatusCode::PRECONDITION_REQUIRED
+    );
+    let stale = Request::builder()
+        .method("DELETE")
+        .uri(endpoint)
+        .header(header::COOKIE, &f.users[0].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::IF_MATCH, "\"1\"")
+        .header("x-workspace-write-epoch", "1")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        f.router.clone().oneshot(stale).await.unwrap().status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    // The separate v1 API is unaffected by this v2 policy.
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            "/api/v1/sync/collections/plugin-selections/acme.hotkeys",
+            json!({"schemaVersion":1,"pluginId":"acme.hotkeys","version":"1.0.0","enabled":true}),
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    // Exhaustion cannot partially activate the required mode.
+    sqlx::query(
+        "INSERT INTO cloud_workspace_cursors(user_id,write_epoch) VALUES($1,9223372036854775807)",
+    )
+    .bind(&f.users[2].id)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    let exhausted = request(
+        &f,
+        Some(2),
+        "POST",
+        "/api/v2/sync/require-write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(exhausted.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let state = request(
+        &f,
+        Some(2),
+        "GET",
+        "/api/v2/sync/write-epoch",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(state).await,
+        json!({"writeEpoch":"9223372036854775807","epochRequired":false})
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn workspace_barrier_waits_for_write_already_in_transaction() {
+    workspace_fence_waits_for_earlier_write(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn workspace_required_epoch_waits_for_legacy_write_already_in_transaction() {
+    workspace_fence_waits_for_earlier_write(true).await;
+}
+
+async fn workspace_fence_waits_for_earlier_write(require: bool) {
     let f = fixture().await;
     // A trigger pauses a real HTTP write after it has obtained the workspace
     // cursor lock but before it can commit. This test uses a dedicated DB.
@@ -353,14 +588,17 @@ async fn workspace_barrier_waits_for_write_already_in_transaction() {
         .unwrap();
 
     let endpoint = "/api/v2/sync/collections/preferences/desktop";
-    let write = Request::builder()
+    let mut write = Request::builder()
         .method("PUT")
         .uri(endpoint)
         .header(header::COOKIE, &f.users[0].cookie)
         .header(header::ORIGIN, ORIGIN)
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::IF_NONE_MATCH, "*")
-        .header("x-workspace-write-epoch", "0")
+        .header(header::IF_NONE_MATCH, "*");
+    if !require {
+        write = write.header("x-workspace-write-epoch", "0");
+    }
+    let write = write
         .body(Body::from("{\"schemaVersion\":1,\"theme\":\"dark\"}"))
         .unwrap();
     let router = f.router.clone();
@@ -376,7 +614,11 @@ async fn workspace_barrier_waits_for_write_already_in_transaction() {
 
     let barrier_request = Request::builder()
         .method("POST")
-        .uri("/api/v2/sync/write-barrier")
+        .uri(if require {
+            "/api/v2/sync/require-write-epoch"
+        } else {
+            "/api/v2/sync/write-barrier"
+        })
         .header(header::COOKIE, &f.users[0].cookie)
         .header(header::ORIGIN, ORIGIN)
         .body(Body::empty())
@@ -399,7 +641,11 @@ async fn workspace_barrier_waits_for_write_already_in_transaction() {
     assert_eq!(writer.await.unwrap().status(), StatusCode::CREATED);
     let response = barrier.await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json_body(response).await["writeEpoch"], "1");
+    let response = json_body(response).await;
+    assert_eq!(response["writeEpoch"], "1");
+    if require {
+        assert_eq!(response["epochRequired"], true);
+    }
     let record = request(&f, Some(0), "GET", endpoint, Value::Null, None).await;
     assert_eq!(json_body(record).await["value"]["theme"], "dark");
     sqlx::query("DROP TRIGGER barrier_test_pause ON cloud_workspace_records")

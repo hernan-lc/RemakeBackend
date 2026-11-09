@@ -254,7 +254,7 @@ async fn mutate(
         .await
         .map_err(db)?;
     let row = sqlx::query(
-        "SELECT cursor,write_epoch FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE",
+        "SELECT cursor,write_epoch,write_epoch_required FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE",
     )
     .bind(user)
     .fetch_one(&mut *tx)
@@ -262,6 +262,10 @@ async fn mutate(
     .map_err(db)?;
     let current_cursor: i64 = row.get("cursor");
     let current_epoch: i64 = row.get("write_epoch");
+    let epoch_required: bool = row.get("write_epoch_required");
+    if epoch_required && epoch.is_none() {
+        return Err(StatusCode::PRECONDITION_REQUIRED);
+    }
     if epoch.is_some_and(|epoch| epoch != current_epoch) {
         return Err(StatusCode::PRECONDITION_FAILED);
     }
@@ -369,14 +373,18 @@ pub async fn write_epoch(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
     limit(&state, &user.user.id, "read", 300).await?;
-    let epoch: i64 = sqlx::query_scalar(
-        "SELECT COALESCE((SELECT write_epoch FROM cloud_workspace_cursors WHERE user_id=$1),0)",
+    let row = sqlx::query(
+        "SELECT COALESCE((SELECT write_epoch FROM cloud_workspace_cursors WHERE user_id=$1),0) AS write_epoch, COALESCE((SELECT write_epoch_required FROM cloud_workspace_cursors WHERE user_id=$1),false) AS write_epoch_required",
     )
     .bind(&user.user.id)
     .fetch_one(&state.pool)
     .await
     .map_err(db)?;
-    Ok(Json(serde_json::json!({"writeEpoch": epoch.to_string()})))
+    let epoch: i64 = row.get("write_epoch");
+    let required: bool = row.get("write_epoch_required");
+    Ok(Json(
+        serde_json::json!({"writeEpoch": epoch.to_string(), "epochRequired": required}),
+    ))
 }
 
 /// Serialize with all workspace mutations for this account. Once committed,
@@ -404,6 +412,30 @@ pub async fn write_barrier(
     let next = next.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     tx.commit().await.map_err(db)?;
     Ok(Json(serde_json::json!({"writeEpoch": next.to_string()})))
+}
+
+/// One-way account transition. It must be explicitly requested after the
+/// client has assessed the impact on older devices. Epoch advancement and
+/// policy activation use the same lock and transaction as workspace writes.
+pub async fn require_write_epoch(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    limit(&state, &user.user.id, "write", 120).await?;
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    sqlx::query("INSERT INTO cloud_workspace_cursors(user_id) VALUES($1) ON CONFLICT DO NOTHING")
+        .bind(&user.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let next: Option<i64> = sqlx::query_scalar(
+        "UPDATE cloud_workspace_cursors SET write_epoch=write_epoch+1,write_epoch_required=true WHERE user_id=$1 AND write_epoch<9223372036854775807 RETURNING write_epoch",
+    ).bind(&user.user.id).fetch_optional(&mut *tx).await.map_err(db)?;
+    let next = next.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    tx.commit().await.map_err(db)?;
+    Ok(Json(
+        serde_json::json!({"writeEpoch": next.to_string(), "epochRequired": true}),
+    ))
 }
 pub async fn changes(
     DualUser(user): DualUser,
