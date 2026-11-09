@@ -114,7 +114,7 @@ fn sync_dir(path: &Path) -> Result<()> {
 
 /// Supply libpq settings through the environment rather than exposing the
 /// credential-bearing URL in pg_dump/pg_restore process arguments.
-fn configure_pg_command(
+pub(crate) fn configure_pg_command(
     command: &mut tokio::process::Command,
     database_url: &str,
 ) -> Result<String> {

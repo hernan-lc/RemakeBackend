@@ -41,6 +41,10 @@ publication. Without an active generation, listing returns an empty catalog
 and `generation: null`; an unknown/unpublished requested generation or plugin
 returns 404. Staged generations never appear.
 
+Plugin IDs use ascending ASCII byte order for both listing and the exclusive
+`after` cursor. These queries explicitly use PostgreSQL `COLLATE "C"`, so a
+database's default locale does not change page order or cursor boundaries.
+
 Versions sort by semantic version. `latestStableVersion` excludes prereleases,
 yanked releases, revoked publisher keys and unapproved publishers. Current
 yank, advisory and authorization state is read even when the inventory is
@@ -62,10 +66,22 @@ display metadata remains in the signed package documents.
 | POST | `/api/v2/library/documents/{id}/versions/{revision}/withdraw` | Author withdrawal with a reason |
 
 Create takes `{"kind":"template","document":{...}}` or kind `profile`.
-The original `.tiktemplate.json` / `.tikprofile.json` v1 object is stored in
-`document`; the envelope is not itself an interchange document. Duplicate
+The `.tiktemplate.json` / `.tikprofile.json` v1 object is stored as JSONB in
+`document`; the envelope is not itself an interchange document. PostgreSQL
+normalizes numeric representations, so original upload bytes are not retained.
+Duplicate
 `(owner, kind, document.id)` creates return 409. Read responses contain `id`,
 `kind`, `slug`, `revision`, `title`, `sha256`, `status` and `document`.
+
+`sha256` is the lowercase SHA-256 of `serde_json::to_vec(document)` after
+decoding the actual stored JSONB value, using the backend/SDK serde JSON
+contract, including round-trip float parsing. It is not a hash of the upload
+bytes or PostgreSQL's whitespace-bearing `jsonb::text`. Create and update hash
+the `INSERT ... RETURNING document` value inside the transaction and revalidate
+its portable limits before commit. A value such as `1e18` can become the integer
+`1000000000000000000`; `-0.0` can become `0.0`. Readers validate the stored
+identity before returning either metadata or content. A mismatched digest or
+nonportable stored body returns 503; it is never silently repaired on read.
 
 PUT takes `{"document":{...}}` and `If-Match: "N"`. The kind and interchange
 document ID cannot change. Each edit appends a new immutable document revision
@@ -80,6 +96,46 @@ per document and 8 MiB of JSONB document text per account, including history.
 Quota violations return 507. Private reads share the 300/minute read budget;
 library writes allow 60/minute per account. Owners serialize quota checks in
 the transaction, so concurrent creates cannot bypass quotas.
+
+### Auditing and repairing legacy derived digests
+
+Deployments created before stored-value hashing can contain a digest of the
+pre-JSONB input. Migration `20261108000002` adds only a metadata repair audit
+table; it does not rewrite existing digests, content, approvals or publication
+pointers. Back up the database, apply the migration, deploy the corrected
+binary, then use the explicit operator commands:
+
+```sh
+cloud-api audit-library-digests
+cloud-api audit-library-digests AFTER_DOCUMENT_UUID AFTER_REVISION
+cloud-api repair-library-digest DOCUMENT_UUID REVISION OLD_SHA256 NORMALIZED_SHA256 OPERATOR
+```
+
+The audit scans 100 revisions per page in document UUID/revision order and
+prints mismatches as `items` plus `nextAfter`. Continue using the returned
+cursor even when `items` is empty: the cursor tracks scanned rows, not just
+invalid rows. Each item contains the document UUID, revision, status, stored
+and normalized digests, and whether the stored document remains portable.
+No document body, account credentials or secret values are printed. Audit is
+read-only and is not a transactionally frozen global snapshot; repair checks
+the reviewed tuple again under row locks.
+
+Repair requires both exact hashes from a reviewed audit item and a nonempty
+operator identifier of at most 200 bytes. It refuses changed hashes/source,
+missing revisions, invalid arguments and nonportable documents. It updates
+only `sha256` and atomically records old/new hashes, document UUID, revision,
+operator and timestamp in `cloud_library_digest_repairs`. The document JSONB,
+revision, review status, reviewer, reason and public pointer remain unchanged;
+the operation never submits or republishes content. Repeating an already
+applied old-hash tuple conflicts. Repair evidence survives document/account
+deletion as metadata, consistent with the existing audit log.
+
+The normalized digest restores the identity of the stored typed body. It
+cannot reconstruct or authenticate original upload bytes that were never
+retained. Until a mismatch is explicitly repaired, reads, exports, submission
+and moderation decisions fail closed with 503. Withdrawal and deletion remain
+available. A nonportable body requires withdrawal or a new valid revision;
+changing a digest cannot make unsupported content acceptable.
 
 ## Public documents and moderation
 
@@ -138,7 +194,13 @@ Create uses `If-None-Match: *`. Replace/delete use exactly one strong
 `If-Match: "N"`. Missing preconditions return 428, malformed/weak/repeated
 preconditions return 400 and a stale base returns 409. Delete requires an
 existing revision and records a tombstone. A matching write with identical
-content preserves its revision and emits no change. Repeating a request whose
+content preserves its revision and emits no change. Numeric JSON values compare
+by their exact decimal value, so JSONB normalization (`1e18` to its integer
+form, or `-0.0` to zero) cannot create a spurious revision. PUT normalizes via
+PostgreSQL and revalidates portable limits before writing; its acknowledgement
+contains the stored value returned by GET, snapshot and feed. An equivalent
+no-op returns the existing stored representation, including decimal/integer
+distinctions that did not change its value. Repeating a request whose
 first response was lost may conflict: read the current record before rebasing.
 Neither the server nor SDK silently chooses a side of a conflict.
 
@@ -149,6 +211,10 @@ Records are `{collection,key,revision,deleted,value}`. Snapshots are
 collections share a monotonically increasing account cursor. Its allocation,
 record mutation and feed append commit atomically under the account cursor
 lock. Pagination and snapshot rebuilds never use another account's cursor.
+
+Collection keys also use ascending ASCII byte order and an exclusive `after`
+cursor, with explicit `COLLATE "C"` for both comparison and ordering. UUID
+document cursors and numeric revision/change cursors retain their own order.
 
 The feed retains a suffix bounded by 10,000 changes and 16 MiB of JSONB text
 plus a per-row allowance. A cursor older than that suffix returns 410; rebuild

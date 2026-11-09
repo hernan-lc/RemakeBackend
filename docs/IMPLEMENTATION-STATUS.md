@@ -1,14 +1,17 @@
 # Implementation status
 
 
-## Cloud v2 backend delivery verified 2026 11 08
+## Cloud v2 integrity, recovery and admin verification 2026 11 08
 
 The current product direction is one operator-configured instance. The plan
 and repository boundary are in [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md); the full
 contract is in [CLOUD-API-V2.md](CLOUD-API-V2.md). This section supersedes older
 missing-feature descriptions below for registry serving/promotion/rollback,
-template/profile management and expanded workspace synchronization. Historical
-verification notes remain below.
+template/profile management and expanded workspace synchronization. It also
+supersedes the earlier browser and upgrade/restore evidence gaps for the
+specific local scenarios described here. Historical verification notes remain
+below; they do not imply that Desktop product integration or production
+deployment is complete.
 
 Implemented in RemakeBackend only:
 
@@ -26,30 +29,72 @@ Implemented in RemakeBackend only:
 - Anonymous catalog and authenticated v2 SDK adapters, continuous fenced
   verification/preparation workers, migration/readiness updates and proxy body
   limits compatible with bounded portable documents.
+- Library hashes derived from the actual stored JSONB value returned by
+  PostgreSQL, with portable limits revalidated after numeric normalization.
+  Metadata/content reads, exports, submission and review return 503 for a
+  mismatched stored identity; they never silently repair it. Original upload
+  bytes are not retained and are not claimed as the digest input.
+- Explicit paginated operator digest audit and compare-and-swap repair. Both
+  reviewed old/new hashes bind the locked revision. Repair updates only the
+  derived hash and records metadata evidence; source, revision, review and
+  publication pointers remain unchanged. Migration `20261108000002` adds the
+  audit table without rewriting old rows. See [CLOUD-API-V2.md](CLOUD-API-V2.md).
+- Strict SDK document/body SHA checks, complete bounded v2 response validation,
+  round-trip JSON float parsing and exact decimal numeric equivalence without
+  rounding every value through `f64`. Workspace PUT acknowledges the stored
+  JSONB representation; equivalent repeated writes preserve its revision and
+  cursor, including exponent/integer and negative-zero normalization.
+- Workspace collection pagination uses explicit PostgreSQL `COLLATE "C"` for
+  both its key comparison and ordering, matching the SDK's byte ordering
+  independently of database locale. Punctuation-bearing plugin IDs retain
+  exact order across page boundaries without skips or duplicate records.
+- A maintained populated pre-v2 upgrade and actual `pg_dump`/`pg_restore` drill,
+  including the audit-only digest migration and explicit repair. Synthetic old
+  and new domains, review/publication state, tombstones, cursors, worker lease
+  metadata and repair evidence survive; restored database guards are tested.
+  See [DATABASE-RECOVERY.md](DATABASE-RECOVERY.md) for its scope and limits.
+- An `admin-web` CI job for guard/unit checks, production build and real
+  authenticated Chromium cookie/Origin coverage against the ordinary API and
+  a dedicated pgrust database. The rejected-Origin write must return 403 with
+  no mutation; the same trusted write through Vue must return 201. Login waits
+  for an actual HTTP 200 response before the unchanged navigation/identity
+  checks. See [ADMIN-WEB-DEPLOYMENT.md](ADMIN-WEB-DEPLOYMENT.md).
+- The Rust test CI job pins Ubuntu 24.04, provisions the explicit PostgreSQL 18
+  client package from the [official PGDG repository](https://www.postgresql.org/download/linux/ubuntu/)
+  and selects its archive-tool directory before the ignored recovery suite.
+  This configuration avoids the runner's older default client; the hosted
+  provisioning/workflow has not been executed here.
 - Repaired the existing login test harness, which referenced a removed JS
   asset. It now exercises the current Vue controller and actual TypeScript
-  handoff/API modules with Vue/DOM stand-ins. CI selects Node 22 for type
-  stripping. No product UI or Desktop repository file was edited.
+  handoff/API modules with Vue/DOM stand-ins. The admin CI job uses the existing
+  project Node 22.23.4 baseline.
 
 Executed checks:
 
 | Check | Result |
 | --- | --- |
-| `cargo test --workspace --locked` | 80 passed; database/network/staging tests are separately opt-in |
-| PostgreSQL 18.6 ignored suite, one test thread, excluding the three live/staging checks below | 70 API tests and 2 process tests passed |
-| Focused rerun of v2 two-session sync after adding simultaneous writes | Passed; exactly one same-base writer succeeds, the other conflicts |
-| `cargo test -p cloud-client --all-features --locked --quiet` | 12 passed |
+| `cargo test --workspace --all-features --locked --offline` | 100 passed; database/network/staging tests remain separately opt-in |
+| Recovery fixture URL guard unit tests added after that workspace run | 2 passed; literal loopback test targets accepted, remote/ambiguous overrides refused |
+| Native PostgreSQL 18.6 API integration checks, serialized | 73 passed: 5 focused v2 tests, 67 existing regression tests and 1 collection byte-order pagination regression |
+| Actual `malisper/pgrust:v0.4-beta` v2 integration checks, serialized | 6 passed: the same 5 focused v2 tests and 1 collection byte-order pagination regression |
+| Ordinary binary startup/process checks on native PostgreSQL | 2 passed |
+| Populated pre-v2 upgrade and actual archive restore | Passed on native PostgreSQL (17.31 seconds) and pgrust (18.61 seconds); two executions of the maintained recovery drill |
+| Admin `npm test`, fixture launcher tests, typecheck and production build | 56 UI tests and 8 launcher guard tests passed; typecheck/build passed |
+| Real Chromium admin tests with actual login, rejected-Origin write and trusted UI write | 2/2 passed on native PostgreSQL (10.6 seconds); 2/2 passed on pgrust (11.4 seconds) |
 | `node --test scripts/test-desktop-login.cjs` | 5 passed on local Node 26.13.0; controller/transport tests, not browser rendering |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
 | `cargo fmt --all -- --check` and `git diff --check` | Passed |
-| `cargo +1.95.0 check --workspace --locked --quiet` | Passed |
-| `cargo +1.89.0 check -p cloud-client --all-features --locked` | Passed |
-| Isolated worker process smoke | Explicit migration succeeded; idle worker stayed running and exited 0 on SIGTERM |
+| `cargo +1.95.0 check --workspace --all-targets --all-features --locked --offline` | Passed |
+| `cargo +1.89.0 check -p cloud-client --all-targets --all-features --locked --offline` | Passed |
+| GitHub Actions | Jobs configured; no hosted workflow run executed here |
 
-The database suite ran in a newly initialized temporary PostgreSQL cluster,
-not the configured application database. The worker smoke used another empty
-database in that cluster; it verifies idle operation/shutdown, not scanner I/O.
-The database-suite command was:
+Database verification used a dedicated temporary native PostgreSQL cluster
+and a separately started pgrust container, not the configured application
+database. The recovery drill creates and cleans its own isolated source schema
+and restore database. These are local synthetic-data results, not a production
+cutover, object-store recovery or live signing/scanner proof. The counts above
+come from separate focused and regression invocations. A general invocation
+for ignored checks, excluding the three live/staging checks, is:
 
 ```sh
 CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- \
@@ -64,8 +109,10 @@ production infrastructure validation, KMS/HSM integration, live Google/OS
 integration and the existing social-only/native account-deletion limitations
 remain separate work. Generic settings/free text require author care and
 independent public review; field validation is not a universal secret detector.
-Desktop v2 application, offline conflict persistence and removal of end-user
-registry controls wait for the user's subsequent authorization.
+The sibling Desktop v2 source foundation is under implementation. Its product
+UI, removal of end-user registry controls, reviewed activation flow and actual
+two-Desktop acceptance remain separate integration work; this backend evidence
+does not establish their completion.
 
 ## Earlier implementation evidence
 

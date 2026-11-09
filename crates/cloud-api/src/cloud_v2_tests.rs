@@ -597,3 +597,643 @@ async fn workspace_quotas_and_untrusted_inputs_are_enforced_by_the_api() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+fn wire_digest(document: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(serde_json::to_vec(document).unwrap()))
+}
+
+fn numeric_template() -> Value {
+    let mut document = template();
+    document["actions"][0]["config"]["numbers"] = serde_json::from_str(
+        r#"{"large":1e18,"negativeZero":-0.0,"fraction":1e-6,"whole":1.0,"exact":18446744073709551615}"#,
+    )
+    .unwrap();
+    document
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn jsonb_numeric_normalization_preserves_library_identity_and_workspace_noops() {
+    let f = fixture().await;
+    let owner = cloud_client::Session::connect(&f.origin, f.users[0].token.clone())
+        .await
+        .unwrap();
+    let input = numeric_template();
+    let created = owner
+        .library_create("template", input.clone())
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let stored = owner.library_document(id).await.unwrap();
+    assert_ne!(wire_digest(&input), wire_digest(&stored["document"]));
+    assert_eq!(stored["sha256"], wire_digest(&stored["document"]));
+    assert_eq!(
+        stored["document"]["actions"][0]["config"]["numbers"]["large"],
+        json!(1_000_000_000_000_000_000_u64)
+    );
+    assert_eq!(
+        stored["document"]["actions"][0]["config"]["numbers"]["exact"],
+        json!(u64::MAX)
+    );
+    let mut edited = input.clone();
+    edited["title"] = json!("Numeric update");
+    owner
+        .library_update(id, "template", edited.clone(), 1)
+        .await
+        .unwrap();
+    let updated = owner.library_document(id).await.unwrap();
+    assert_ne!(wire_digest(&edited), wire_digest(&updated["document"]));
+    assert_eq!(updated["sha256"], wire_digest(&updated["document"]));
+    let immutable_response = request(
+        &f,
+        Some(0),
+        "GET",
+        &format!("/api/v2/library/documents/{id}/versions/1"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(immutable_response.status(), StatusCode::OK);
+    let immutable = json_body(immutable_response).await;
+    assert_eq!(immutable["sha256"], stored["sha256"]);
+    assert_eq!(immutable["document"], stored["document"]);
+
+    let value = json!({"schemaVersion":1,"pluginId":"acme.numeric","settings":input["actions"][0]["config"]["numbers"]});
+    let ack = owner
+        .workspace_put("plugin-settings", "acme.numeric", value.clone(), None)
+        .await
+        .unwrap();
+    let get = owner
+        .workspace_record("plugin-settings", "acme.numeric")
+        .await
+        .unwrap();
+    let feed = owner.workspace_changes(0).await.unwrap();
+    let snapshot = owner.workspace_snapshot().await.unwrap();
+    assert_eq!(ack, get);
+    assert_eq!(feed.changes, vec![ack.clone()]);
+    assert_eq!(snapshot.records, vec![ack.clone()]);
+    // A repeated original exponent-form request is a true no-op, and its ACK
+    // still contains the stored representation used by the unchanged feed.
+    let repeat = owner
+        .workspace_put("plugin-settings", "acme.numeric", value, Some(ack.revision))
+        .await
+        .unwrap();
+    assert_eq!(repeat, ack);
+    assert!(owner
+        .workspace_changes(ack.revision)
+        .await
+        .unwrap()
+        .changes
+        .is_empty());
+    // Equal integer/decimal representations also preserve the original body.
+    let mut equivalent = ack.value.clone().unwrap();
+    equivalent["settings"]["whole"] = json!(1);
+    let repeat = owner
+        .workspace_put(
+            "plugin-settings",
+            "acme.numeric",
+            equivalent,
+            Some(ack.revision),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeat, ack);
+    assert_eq!(
+        owner.workspace_snapshot().await.unwrap().cursor,
+        ack.revision
+    );
+
+    // JSONB can expand exponent notation past the portable document limit.
+    // Both APIs revalidate before committing any source, revision or cursor.
+    let expanded_settings =
+        json!({"numbers":vec![vec![json!(1e18);256];8],"padding":vec!["a".repeat(8000);30]});
+    let expanded_workspace =
+        json!({"schemaVersion":1,"pluginId":"acme.expanded","settings":expanded_settings});
+    assert!(portable::validate(
+        "plugin-settings",
+        "acme.expanded",
+        &expanded_workspace
+    ));
+    let normalized: Value = sqlx::query_scalar("SELECT $1::jsonb")
+        .bind(&expanded_workspace)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert!(!portable::validate(
+        "plugin-settings",
+        "acme.expanded",
+        &normalized
+    ));
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            "/api/v2/sync/collections/plugin-settings/acme.expanded",
+            expanded_workspace,
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        owner.workspace_snapshot().await.unwrap().cursor,
+        ack.revision
+    );
+    let mut expanded_document = template();
+    expanded_document["id"] = json!("expanded-rule");
+    expanded_document["actions"][0]["config"] = expanded_settings;
+    assert!(portable::document("template", &expanded_document));
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "POST",
+            "/api/v2/library/documents",
+            json!({"kind":"template","document":expanded_document}),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1")
+            .bind(&f.users[0].id)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    expanded_document["id"] = json!("gift-rule");
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            &format!("/api/v2/library/documents/{id}"),
+            json!({"document":expanded_document}),
+            Some(("if-match", "\"2\""))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(owner.library_document(id).await.unwrap()["revision"], 2);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn legacy_library_digest_mismatch_fails_closed_and_repairs_only_reviewed_metadata() {
+    use crate::library_digest_repair::{self as repair, AuditCursor, RepairError};
+    let f = fixture().await;
+    let owner = cloud_client::Session::connect(&f.origin, f.users[0].token.clone())
+        .await
+        .unwrap();
+    let input = numeric_template();
+    let created = owner
+        .library_create("template", input.clone())
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    owner.library_submit(id, 1).await.unwrap();
+    sqlx::query("INSERT INTO cloud_account_roles(user_id,role) VALUES($1,'moderator')")
+        .bind(&f.users[1].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let decision = format!("/api/v2/moderation/documents/{id}/versions/1/decision");
+    assert_eq!(
+        request(
+            &f,
+            Some(1),
+            "POST",
+            &decision,
+            json!({"decision":"approve","reason":"Reviewed stored numeric content"}),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let current = owner.library_document(id).await.unwrap();
+    let old_hash = wire_digest(&input);
+    let normalized_hash = current["sha256"].as_str().unwrap();
+    assert_ne!(old_hash, normalized_hash);
+    // Simulate exactly the pre-fix write, without changing approved content.
+    sqlx::query("UPDATE cloud_library_versions SET sha256=$2 WHERE document_id=$1 AND revision=1")
+        .bind(id)
+        .bind(&old_hash)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let before: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(v) FROM cloud_library_versions v WHERE document_id=$1 AND revision=1",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    let document_before: Value =
+        sqlx::query_scalar("SELECT to_jsonb(d) FROM cloud_library_documents d WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    for (user, path) in [
+        (Some(0), format!("/api/v2/library/documents/{id}")),
+        (
+            Some(0),
+            format!("/api/v2/library/documents/{id}/versions/1"),
+        ),
+        (Some(0), format!("/api/v2/library/documents/{id}/versions")),
+        (Some(0), "/api/v2/library/documents".into()),
+        (Some(0), "/api/v2/me/export".into()),
+        (None, format!("/api/v2/catalog/documents/{id}")),
+        (None, format!("/api/v2/catalog/documents/{id}/versions/1")),
+        (None, "/api/v2/catalog/documents?q=Gift%20rule".into()),
+    ] {
+        assert_eq!(
+            request(&f, user, "GET", &path, Value::Null, None)
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{path}"
+        );
+    }
+    let audit = repair::audit(&f.pool, None, 100).await.unwrap();
+    // Other tests can leave rows in this dedicated database; scan all pages.
+    let mut items = audit.items;
+    let mut cursor = audit.next_after;
+    while let Some(after) = cursor {
+        let page = repair::audit(&f.pool, Some(after), 100).await.unwrap();
+        items.extend(page.items);
+        cursor = page.next_after;
+    }
+    let issue = items
+        .iter()
+        .find(|item| item.document_id == id && item.revision == 1)
+        .unwrap();
+    assert_eq!(issue.status, "published");
+    assert_eq!(issue.stored_sha256, old_hash);
+    assert_eq!(issue.normalized_sha256, normalized_hash);
+    assert!(issue.portable);
+    let still_bad: String = sqlx::query_scalar(
+        "SELECT sha256 FROM cloud_library_versions WHERE document_id=$1 AND revision=1",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(still_bad, old_hash);
+    assert!(matches!(
+        repair::repair(
+            &f.pool,
+            id,
+            1,
+            &"f".repeat(64),
+            normalized_hash,
+            "fixture-operator"
+        )
+        .await,
+        Err(RepairError::Conflict)
+    ));
+    assert!(matches!(
+        repair::repair(
+            &f.pool,
+            id,
+            1,
+            &old_hash,
+            &"e".repeat(64),
+            "fixture-operator"
+        )
+        .await,
+        Err(RepairError::Conflict)
+    ));
+    let receipt = repair::repair(
+        &f.pool,
+        id,
+        1,
+        &old_hash,
+        normalized_hash,
+        "fixture-operator",
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt.normalized_sha256, normalized_hash);
+    let after: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(v) FROM cloud_library_versions v WHERE document_id=$1 AND revision=1",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    let mut expected = before;
+    expected["sha256"] = json!(normalized_hash);
+    assert_eq!(after, expected);
+    let document_after: Value =
+        sqlx::query_scalar("SELECT to_jsonb(d) FROM cloud_library_documents d WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(document_after, document_before);
+    assert_eq!(
+        cloud_client::CloudCatalog::new(&f.origin)
+            .unwrap()
+            .document(id, None)
+            .await
+            .unwrap(),
+        current
+    );
+    assert!(matches!(
+        repair::repair(
+            &f.pool,
+            id,
+            1,
+            &old_hash,
+            normalized_hash,
+            "fixture-operator"
+        )
+        .await,
+        Err(RepairError::Conflict)
+    ));
+    let evidence: Value = sqlx::query_scalar("SELECT jsonb_build_object('old',old_sha256,'new',normalized_sha256,'operator',operator) FROM cloud_library_digest_repairs WHERE document_id=$1 AND revision=1").bind(id).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(
+        evidence,
+        json!({"old":old_hash,"new":normalized_hash,"operator":"fixture-operator"})
+    );
+
+    // An empty audit page still advances past valid rows to a later mismatch.
+    owner
+        .library_update(id, "template", input.clone(), 1)
+        .await
+        .unwrap();
+    owner
+        .library_update(id, "template", input.clone(), 2)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cloud_library_versions SET sha256=$2 WHERE document_id=$1 AND revision=3")
+        .bind(id)
+        .bind(&old_hash)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let empty = repair::audit(
+        &f.pool,
+        Some(AuditCursor {
+            document_id: id,
+            revision: 1,
+        }),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(empty.items.is_empty());
+    let next = empty.next_after.unwrap();
+    assert_eq!(next.document_id, id);
+    assert_eq!(next.revision, 2);
+    let page = repair::audit(&f.pool, Some(next), 1).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].revision, 3);
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "POST",
+            &format!("/api/v2/library/documents/{id}/versions/3/submit"),
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    sqlx::query(
+        "UPDATE cloud_library_versions SET status='pending' WHERE document_id=$1 AND revision=3",
+    )
+    .bind(id)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(
+            &f,
+            Some(1),
+            "GET",
+            "/api/v2/moderation/documents?q=Gift%20rule",
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        request(
+            &f,
+            Some(1),
+            "POST",
+            &format!("/api/v2/moderation/documents/{id}/versions/3/decision"),
+            json!({"decision":"approve","reason":"Must not approve a false identity"}),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM cloud_library_versions WHERE document_id=$1 AND revision=3",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "pending");
+    // Corrective withdrawal remains available even for a broken digest.
+    owner
+        .library_withdraw(id, 3, "Withdraw invalid identity")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cloud_library_versions SET document=jsonb_set(document,'{title}','\"\"'::jsonb) WHERE document_id=$1 AND revision=3").bind(id).execute(&f.pool).await.unwrap();
+    let invalid: Value = sqlx::query_scalar(
+        "SELECT document FROM cloud_library_versions WHERE document_id=$1 AND revision=3",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        repair::repair(
+            &f.pool,
+            id,
+            3,
+            &old_hash,
+            &wire_digest(&invalid),
+            "fixture-operator"
+        )
+        .await,
+        Err(RepairError::InvalidPortable)
+    ));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_library_digest_repairs WHERE document_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "DELETE",
+            &format!("/api/v2/library/documents/{id}"),
+            Value::Null,
+            Some(("if-match", "\"3\""))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_library_digest_repairs WHERE document_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive_cursors() {
+    let f = fixture().await;
+    let namespace = format!("ordering{}", uuid::Uuid::new_v4().simple());
+    let mut ids: Vec<String> = ["a-b", "a.b", "a_b", "aa"]
+        .into_iter()
+        .map(|suffix| format!("{namespace}.{suffix}"))
+        .collect();
+    ids.extend((0..52).map(|index| format!("{namespace}.p{index:02}")));
+    ids.sort();
+    assert_eq!(ids.len(), 56);
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+
+    // Where libc locales exist, prove these IDs distinguish byte order from
+    // locale order. The HTTP assertions below always run; they neither change
+    // the database locale nor depend on a non-C locale being installed in CI.
+    for locale in ["en_US.utf8", "es_PE.utf8"] {
+        let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_collation c JOIN pg_namespace n ON n.oid=c.collnamespace WHERE n.nspname='pg_catalog' AND c.collname=$1 AND c.collprovider='c' AND c.collencoding IN (-1,pg_char_to_encoding('UTF8')))").bind(locale).fetch_one(&f.pool).await.unwrap();
+        if available {
+            let query = format!(
+                r#"SELECT id FROM unnest($1::text[]) AS id ORDER BY id COLLATE pg_catalog."{locale}""#
+            );
+            let localized: Vec<String> = sqlx::query_scalar(&query)
+                .bind(&ids)
+                .fetch_all(&f.pool)
+                .await
+                .unwrap();
+            assert_ne!(
+                localized, ids,
+                "punctuation fixture must distinguish installed libc locale {locale}"
+            );
+            break;
+        }
+    }
+
+    // Seed only metadata/data for pagination: this test does not claim signed
+    // publication, package verification, or plugin execution authorization.
+    sqlx::query("INSERT INTO cloud_workspace_cursors(user_id,cursor) VALUES($1,$2)")
+        .bind(&f.users[0].id)
+        .bind(ids.len() as i64)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_workspace_records(user_id,collection,key,revision,value,deleted) SELECT $1,'plugin-settings',key,revision,jsonb_build_object('schemaVersion',1,'pluginId',key,'settings','{}'::jsonb),false FROM unnest($2::text[]) WITH ORDINALITY AS fixture(key,revision)")
+        .bind(&f.users[0].id).bind(&ids).execute(&f.pool).await.unwrap();
+    let owner = cloud_client::Session::connect(&f.origin, f.users[0].token.clone())
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    let mut after: Option<String> = None;
+    for page_number in 0..2 {
+        let page = owner
+            .workspace_collection("plugin-settings", after.as_deref())
+            .await
+            .unwrap();
+        let rows = page["records"].as_array().unwrap();
+        assert_eq!(rows.len(), if page_number == 0 { 50 } else { 6 });
+        received.extend(
+            rows.iter()
+                .map(|row| row["key"].as_str().unwrap().to_owned()),
+        );
+        after = page["nextAfter"].as_str().map(str::to_owned);
+        assert_eq!(after.is_some(), page_number == 0);
+    }
+    assert_eq!(received, ids);
+    let checkpoint = &ids[1];
+    let remainder = owner
+        .workspace_collection("plugin-settings", Some(checkpoint))
+        .await
+        .unwrap();
+    let first = remainder["records"][0]["key"].as_str().unwrap();
+    assert_eq!(first, ids[2]);
+
+    let publisher = uuid::Uuid::new_v4();
+    let key = uuid::Uuid::new_v4();
+    let candidate = uuid::Uuid::new_v4();
+    let generation = (uuid::Uuid::new_v4().as_u128() & 0x3fff_ffff_ffff_ffff) as i64 + 1;
+    let hash = "a".repeat(64);
+    sqlx::query("INSERT INTO cloud_publishers(id,namespace,status) VALUES($1,$2,'approved')")
+        .bind(publisher)
+        .bind(&namespace)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_publisher_keys(id,publisher_id,key_id,public_key,fingerprint,status,requested_by) VALUES($1,$2,$3,$4,$5,'approved',$6)")
+        .bind(key).bind(publisher).bind(format!("{namespace}-key")).bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").bind(uuid::Uuid::new_v4().simple().to_string().repeat(2)).bind(&f.users[0].id).execute(&f.pool).await.unwrap();
+    let uploads: Vec<_> = (0..ids.len()).map(|_| uuid::Uuid::new_v4()).collect();
+    let releases: Vec<_> = (0..ids.len()).map(|_| uuid::Uuid::new_v4()).collect();
+    sqlx::query("INSERT INTO cloud_upload_sessions(id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at) SELECT id,$2,$3,id::text,100,$4,'ordering/uploads/'||id::text,'pending',now()+interval '1 hour' FROM unnest($1::uuid[]) AS fixture(id)")
+        .bind(&uploads).bind(publisher).bind(&f.users[0].id).bind(&hash).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_plugin_releases(id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) SELECT id,$4,upload_id,$5,plugin_id,'1.0.0','any','awaiting_verification',$6 FROM unnest($1::uuid[],$2::uuid[],$3::text[]) AS fixture(id,upload_id,plugin_id)")
+        .bind(&releases).bind(&uploads).bind(&ids).bind(publisher).bind(key).bind(&f.users[0].id).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_snapshot_candidates(id,status,root_fingerprint,inventory_sha256,release_count,file_count) VALUES($1,'candidate',$2,$2,$3,1)")
+        .bind(candidate).bind(&hash).bind(ids.len() as i32).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_registry_generations(id,generation,candidate_id,inventory_sha256,manifest_sha256,root_fingerprint,index_key_id,release_count,file_count,status) VALUES($1,$2,$3,$4,$4,$4,'ordering-test-index',$5,1,'superseded')")
+        .bind(uuid::Uuid::new_v4()).bind(generation).bind(candidate).bind(&hash).bind(ids.len() as i32).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_registry_generation_releases(generation,plugin_id,version,target,release_id,sha256,size,object_key,version_id) SELECT $1,plugin_id,'1.0.0','any',release_id,$4,100,'ordering/releases/'||release_id::text,'v1' FROM unnest($2::text[],$3::uuid[]) AS fixture(plugin_id,release_id)")
+        .bind(generation).bind(&ids).bind(&releases).bind(&hash).execute(&f.pool).await.unwrap();
+    let catalog = cloud_client::CloudCatalog::new(&f.origin).unwrap();
+    let mut received = Vec::new();
+    let mut after: Option<String> = None;
+    for page_number in 0..2 {
+        let page = catalog
+            .plugins_filtered(
+                &namespace,
+                after.as_deref(),
+                Some(generation),
+                Some("x86_64-unknown-linux-gnu"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page["generation"], generation);
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), if page_number == 0 { 50 } else { 6 });
+        received.extend(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap().to_owned()),
+        );
+        after = page["nextCursor"].as_str().map(str::to_owned);
+        assert_eq!(after.is_some(), page_number == 0);
+    }
+    assert_eq!(received, ids);
+    let remainder = catalog
+        .plugins_filtered(&namespace, Some(checkpoint), Some(generation), None)
+        .await
+        .unwrap();
+    assert_eq!(remainder["items"][0]["id"], ids[2]);
+}

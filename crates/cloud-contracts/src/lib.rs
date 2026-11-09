@@ -15,6 +15,19 @@ pub struct WorkspaceRecord {
     pub value: Option<Value>,
 }
 impl WorkspaceRecord {
+    /// Identity and revision are immutable; JSONB may change only the decimal
+    /// representation of a numeric value, without changing its exact value.
+    pub fn equivalent(&self, other: &Self) -> bool {
+        self.collection == other.collection
+            && self.key == other.key
+            && self.revision == other.revision
+            && self.deleted == other.deleted
+            && match (&self.value, &other.value) {
+                (Some(left), Some(right)) => portable::values_equivalent(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
     pub fn valid(&self, cursor: i64) -> bool {
         portable::valid_key(&self.collection, &self.key)
             && self.revision > 0

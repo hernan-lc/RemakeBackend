@@ -147,7 +147,7 @@ async fn catalog_data(
         }
         return Ok(json!({"generation":null,"items":[],"nextCursor":null}));
     };
-    let ids: Vec<String>=sqlx::query_scalar("SELECT DISTINCT plugin_id FROM cloud_registry_generation_releases WHERE generation=$1 AND ($2::text IS NULL OR plugin_id=$2) AND ($3::text IS NULL OR plugin_id>$3) AND ($4::text IS NULL OR strpos(lower(plugin_id),lower($4))>0) AND ($5::text IS NULL OR target=$5 OR target='any') ORDER BY plugin_id LIMIT 51")
+    let ids: Vec<String>=sqlx::query_scalar(r#"SELECT DISTINCT plugin_id COLLATE "C" AS plugin_id FROM cloud_registry_generation_releases WHERE generation=$1 AND ($2::text IS NULL OR plugin_id=$2) AND ($3::text IS NULL OR plugin_id COLLATE "C">$3) AND ($4::text IS NULL OR strpos(lower(plugin_id),lower($4))>0) AND ($5::text IS NULL OR target=$5 OR target='any') ORDER BY plugin_id COLLATE "C" LIMIT 51"#)
         .bind(generation).bind(&id).bind(query.after).bind(query.q).bind(&query.target).fetch_all(&mut *tx).await.map_err(workspace::db)?;
     if id.is_some() && ids.is_empty() {
         return Err(StatusCode::NOT_FOUND);

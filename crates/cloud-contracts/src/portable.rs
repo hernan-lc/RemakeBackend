@@ -325,6 +325,65 @@ fn plugin_selection(key: &str, value: &Value) -> bool {
             .is_some_and(|s| s.len() <= 64 && semver::Version::parse(s).is_ok())
 }
 
+/// Compare JSON data across PostgreSQL JSONB numeric normalization. Numbers
+/// retain their exact decimal wire value; converting them all to f64 would
+/// collapse distinct large integers and misread shortest float encodings.
+/// Object keys, strings, array order and every other JSON type stay exact.
+pub fn values_equivalent(left: &Value, right: &Value) -> bool {
+    fn decimal(number: &serde_json::Number) -> Option<(bool, String, i64)> {
+        let token = number.to_string();
+        let (negative, token) = match token.strip_prefix('-') {
+            Some(token) => (true, token),
+            None => (false, token.as_str()),
+        };
+        let (mantissa, exponent) = match token.find(['e', 'E']) {
+            Some(index) => (&token[..index], token[index + 1..].parse::<i64>().ok()?),
+            None => (token, 0),
+        };
+        let fractional = mantissa
+            .split_once('.')
+            .map_or(0, |(_, fraction)| fraction.len());
+        let digits: String = mantissa
+            .chars()
+            .filter(|character| *character != '.')
+            .collect();
+        if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+            return None;
+        }
+        let significant = digits.trim_start_matches('0');
+        if significant.is_empty() {
+            return Some((false, "0".into(), 0));
+        }
+        let reduced = significant.trim_end_matches('0');
+        let exponent = exponent
+            .checked_sub(i64::try_from(fractional).ok()?)?
+            .checked_add(i64::try_from(significant.len() - reduced.len()).ok()?)?;
+        Some((negative, reduced.into(), exponent))
+    }
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => match (decimal(left), decimal(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        },
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| values_equivalent(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| values_equivalent(left, right))
+                })
+        }
+        _ => left == right,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +444,38 @@ mod tests {
             deep = json!([deep]);
         }
         assert!(!safe(&deep));
+    }
+    #[test]
+    fn jsonb_numeric_equivalence_preserves_exact_decimal_wire_values() {
+        let parse = |text| serde_json::from_str::<Value>(text).unwrap();
+        for (left, right) in [
+            ("1e18", "1000000000000000000"),
+            ("1.0000000000000001e18", "1000000000000000100"),
+            ("1.0", "1"),
+            ("-0.0", "0"),
+            ("1e-6", "0.000001"),
+            (
+                r#"{"data":[1e18,-0.0,{"n":1.0}],"text":"ñ"}"#,
+                r#"{"text":"ñ","data":[1000000000000000000,0,{"n":1}]}"#,
+            ),
+        ] {
+            let (left, right) = (parse(left), parse(right));
+            assert!(values_equivalent(&left, &right), "{left} != {right}");
+            assert!(values_equivalent(&right, &left));
+        }
+        for (left, right) in [
+            ("18446744073709551615", "18446744073709551614"),
+            ("18446744073709551615", "1.8446744073709552e19"),
+            ("1.0000000000000001e18", "1000000000000000128"),
+            ("1e18", "1000000000000000001"),
+            (r#"[1,2]"#, r#"[2,1]"#),
+            (r#"{"n":1}"#, r#"{"n":"1"}"#),
+            (r#"{"n":1}"#, r#"{"n":1,"extra":null}"#),
+        ] {
+            assert!(
+                !values_equivalent(&parse(left), &parse(right)),
+                "{left} == {right}"
+            );
+        }
     }
 }

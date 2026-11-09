@@ -6,6 +6,7 @@ mod config;
 mod desktop;
 mod dual_auth;
 mod library;
+mod library_digest_repair;
 mod local_backup;
 mod local_objects;
 mod moderation;
@@ -173,6 +174,8 @@ fn startup_mode(args: &[String]) -> &'static str {
                     | "retry-publication"
                     | "grant-role"
                     | "revoke-role"
+                    | "audit-library-digests"
+                    | "repair-library-digest"
             ) =>
         {
             "maintenance"
@@ -272,6 +275,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // One-shot completion: the process exits 0 here and never binds the HTTP listener.
         tracing::info!("migrations applied; exiting without starting the HTTP server");
         return Ok(());
+    }
+    if args == ["audit-library-digests"]
+        || matches!(args.as_slice(), [command, _, _] if command == "audit-library-digests")
+    {
+        let after = match args.as_slice() {
+            [_, document, revision] => Some(library_digest_repair::AuditCursor {
+                document_id: uuid::Uuid::parse_str(document)?,
+                revision: revision.parse()?,
+            }),
+            _ => None,
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&config.database_url)
+            .await?;
+        let page = library_digest_repair::audit(&pool, after, 100).await?;
+        println!("{}", serde_json::to_string_pretty(&page)?);
+        return Ok(());
+    }
+    if let [command, document, revision, old, normalized, operator] = args.as_slice() {
+        if command == "repair-library-digest" {
+            let pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&config.database_url)
+                .await?;
+            let receipt = library_digest_repair::repair(
+                &pool,
+                uuid::Uuid::parse_str(document)?,
+                revision.parse()?,
+                old,
+                normalized,
+                operator,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&receipt)?);
+            return Ok(());
+        }
     }
     if let [command, candidate] = args.as_slice() {
         if command == "verify-candidate" {
@@ -585,7 +625,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        return Err("usage: cloud-api [migrate | backup-local NEW_DIR | verify-local-backup DIR | restore-local DIR | run-workers | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR]".into());
+        return Err("usage: cloud-api [migrate | backup-local NEW_DIR | verify-local-backup DIR | restore-local DIR | run-workers | verify-once | prepare-publication-once | build-initial-candidate | export-candidate ID OUTPUT_DIR | verify-candidate ID | list-promotion-checks ID | check-promotion-readiness ID OPERATOR | publish-generation CANDIDATE_ID OPERATOR | rollback-generation GENERATION OPERATOR | list-generations | gc-registry-artifacts LIMIT OPERATOR | retry-verification UPLOAD_ID OPERATOR | retry-publication JOB_ID OPERATOR | grant-role USER ROLE OPERATOR | revoke-role USER ROLE OPERATOR | audit-library-digests [AFTER_DOCUMENT AFTER_REVISION] | repair-library-digest DOCUMENT REVISION OLD_SHA NORMALIZED_SHA OPERATOR]".into());
     }
     let mut auth = configured_auth_router(context.clone())?;
     let mut step_up_oauth = None;
@@ -1196,5 +1236,7 @@ mod cloud_v2_tests;
 mod portal_tests;
 #[cfg(test)]
 mod registry_tests;
+#[cfg(test)]
+mod schema_v2_recovery_tests;
 #[cfg(test)]
 mod step_up_tests;

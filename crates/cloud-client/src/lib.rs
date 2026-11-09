@@ -433,6 +433,10 @@ impl Session {
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
+    /// Canonical operator instance identity, suitable for account-scoped storage.
+    pub fn instance_origin(&self) -> String {
+        self.origin.origin().ascii_serialization()
+    }
     /// List Cloud-owned deletion blockers. An empty page is not a deletion guarantee.
     pub async fn deletion_blockers(
         &self,

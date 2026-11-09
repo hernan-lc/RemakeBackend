@@ -39,6 +39,75 @@ Covered against the real server by the Rust suite, not by mocks:
   then invalidates the TanStack Query session cache; anonymous `/app` visits
   redirect to `/login` (Playwright `auth.spec.ts`).
 
+### Real-browser cookie and Origin regression
+
+The `admin-web` CI job installs dependencies, runs the admin unit tests, builds
+the production Vue application, builds the ordinary API, explicitly migrates
+a dedicated disposable database and runs Chromium against the built UI served
+by that API. It does not use the backend-free demo or a Vite proxy.
+
+The authenticated test creates a disposable account through Better Auth and
+signs in through the actual Vue email/password form. Before clicking Sign in,
+it registers a bounded 30-second wait for the actual POST
+`/api/auth/sign-in/email` response and requires HTTP 200. It then keeps the
+five-second navigation assertion and verifies the authenticated identity.
+Only this test has a 60-second total budget for real signup/password hashing
+and sign-in; it has no retries. Playwright's API request
+context shares that browser's real cookie jar and sends a namespace-request
+POST with an explicitly rejected Origin. It requires exactly 403 and verifies the
+namespace list is unchanged and the session remains valid. The identical
+trusted-Origin write through the Vue form must then return 201 and appear in the UI and API. A
+missing session, GET-only 405 or authorization failure cannot satisfy that
+positive control. No admin role or authentication bypass is seeded.
+
+To run locally, prepare a dedicated loopback PostgreSQL database named
+`cloud_admin_e2e` or `cloud_admin_e2e_<suffix>`. Never use an application
+database. Build the API and admin UI, then explicitly apply migrations to
+that disposable target:
+
+```sh
+cargo build --locked -p cloud-api
+cd web/admin
+npm ci --ignore-scripts
+npm run build
+npx playwright install chromium
+cd ../..
+export CLOUD_ADMIN_E2E_DATABASE_URL=postgres://cloud:test-only@127.0.0.1:5432/cloud_admin_e2e
+DATABASE_URL="$CLOUD_ADMIN_E2E_DATABASE_URL" \
+  AUTH_SECRET=admin-e2e-only-disposable-auth-secret-2026 \
+  APP_ORIGIN=http://127.0.0.1:5183 target/debug/cloud-api migrate
+cd web/admin
+npm run e2e
+```
+
+`scripts/admin-e2e-server.mjs` starts the prebuilt API with an isolated
+environment, the production `dist` directory and a test-only auth secret.
+It refuses a missing, non-loopback or differently named database and never
+reads `.env`, migrates, grants roles or contacts Google/object storage.
+`ADMIN_URL` may select another explicit HTTP 127.0.0.1 port;
+`CLOUD_ADMIN_E2E_BINARY` may select a prebuilt API. The test refuses to reuse
+an existing server. Failure traces/screenshots are retained under
+`web/admin/test-results` (or `CLOUD_ADMIN_E2E_OUTPUT_DIR`) and contain only
+disposable fixture identities/sessions; do not run the harness with real users.
+
+This proves the tested browser-cookie and backend Origin boundary. It does not
+prove real Google OAuth, production reverse-proxy behavior, a deployed GitHub
+Actions run, or an independent security review.
+
+Local verification on 2026-11-08 used Node 26.13.0, explicitly migrated
+disposable databases and the ordinary API serving the production UI build.
+Admin typecheck and production build passed, 56 unit tests passed and eight
+fixture target-refusal tests passed. Both Chromium tests passed against native
+PostgreSQL 18.6 (2/2, 10.6 seconds) and the actual
+`malisper/pgrust:v0.4-beta` container (2/2, 11.4 seconds). An earlier pgrust
+trace showed signup taking 8.78 seconds and sign-in still pending when the
+old five-second navigation deadline expired; the response wait above now
+requires real login success before that navigation deadline begins. The
+failed trace was preserved and the final run used a separate artifact path.
+Workflow YAML and whitespace checks passed. GitHub Actions is configured,
+including its pgrust service, but no hosted workflow run was executed here;
+the local pgrust browser result is separate evidence.
+
 ## Reverse proxy, CSP, secrets policy
 
 - Serve `web/admin/dist` and the backend from one HTTPS origin per

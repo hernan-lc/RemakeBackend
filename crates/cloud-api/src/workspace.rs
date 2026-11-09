@@ -113,7 +113,7 @@ pub async fn list(
         return Err(StatusCode::BAD_REQUEST);
     }
     limit(&state, &user.user.id, "read", 300).await?;
-    let rows = sqlx::query("SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key>$3 ORDER BY key LIMIT $4")
+    let rows = sqlx::query(r#"SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key COLLATE "C">$3 ORDER BY key COLLATE "C" LIMIT $4"#)
         .bind(&user.user.id).bind(collection).bind(page.after.unwrap_or_default()).bind(PAGE + 1).fetch_all(&state.pool).await.map_err(db)?;
     let more = rows.len() > PAGE as usize;
     let records: Vec<_> = rows.into_iter().take(PAGE as usize).map(record).collect();
@@ -184,6 +184,22 @@ async fn mutate(
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
     limit(state, user, "write", 120).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
+    // JSONB normalizes numeric representations. Validate and acknowledge the
+    // exact typed value that subsequent GET/snapshot/feed reads will decode.
+    let value = match value {
+        Some(input) => {
+            let stored: Value = sqlx::query_scalar("SELECT $1::jsonb")
+                .bind(input)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            if !portable::validate(&collection, &key, &stored) {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            Some(stored)
+        }
+        None => None,
+    };
     sqlx::query("INSERT INTO cloud_workspace_cursors(user_id) VALUES($1) ON CONFLICT DO NOTHING")
         .bind(user)
         .execute(&mut *tx)
@@ -201,8 +217,12 @@ async fn mutate(
     }
     // A retried no-op preserves its revision and does not create a sync loop.
     if previous.as_ref().is_some_and(|r| {
-        r.get::<Option<Value>, _>("value") == value
-            && r.get::<bool, _>("deleted") == value.is_none()
+        let same_value = match (r.get::<Option<Value>, _>("value").as_ref(), value.as_ref()) {
+            (Some(previous), Some(next)) => portable::values_equivalent(previous, next),
+            (None, None) => true,
+            _ => false,
+        };
+        same_value && r.get::<bool, _>("deleted") == value.is_none()
     }) {
         let revision = revision.expect("existing revision");
         tx.commit().await.map_err(db)?;
@@ -214,7 +234,7 @@ async fn mutate(
                 key,
                 revision,
                 deleted: value.is_none(),
-                value,
+                value: previous.as_ref().expect("existing record").get("value"),
             }),
         ));
     }

@@ -62,15 +62,52 @@ fn title(kind: &str, value: &Value) -> String {
         .unwrap_or_default()
         .into()
 }
-fn digest(doc: &Value) -> String {
+pub(crate) fn digest(doc: &Value) -> String {
     hex::encode(Sha256::digest(serde_json::to_vec(doc).expect("JSON value")))
 }
-fn view(row: &sqlx::postgres::PgRow, content: bool) -> Value {
+fn check_identity(row: &sqlx::postgres::PgRow) -> Result<Value, StatusCode> {
+    let document: Value = row.get("document");
+    if digest(&document) != row.get::<String, _>("sha256")
+        || !portable::document(&row.get::<String, _>("kind"), &document)
+    {
+        // Legacy hashes made before JSONB normalization require an explicit,
+        // audited repair. Never advertise a false identity or rewrite on GET.
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(document)
+}
+fn view(row: &sqlx::postgres::PgRow, content: bool) -> Result<Value, StatusCode> {
+    let document = check_identity(row)?;
     let mut result = json!({"id":row.get::<Uuid,_>("id"),"kind":row.get::<String,_>("kind"),"slug":row.get::<String,_>("slug"),"revision":row.get::<i64,_>("revision"),"title":row.get::<String,_>("title"),"sha256":row.get::<String,_>("sha256"),"status":row.get::<String,_>("status")});
     if content {
-        result["document"] = row.get::<Value, _>("document");
+        result["document"] = document;
     }
-    result
+    Ok(result)
+}
+async fn insert_version(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    revision: i64,
+    kind: &str,
+    document: &Value,
+) -> Result<(), StatusCode> {
+    // The input's number representation may change in JSONB (1e18 becomes an
+    // integer; -0.0 becomes 0.0). Hash the actual returned, typed stored value.
+    // The temporary digest is unobservable outside this transaction.
+    let stored: Value = sqlx::query_scalar("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256) VALUES($1,$2,$3,$4,$5) RETURNING document")
+        .bind(id).bind(revision).bind(title(kind,document)).bind(document)
+        .bind("0".repeat(64)).fetch_one(&mut **tx).await.map_err(db)?;
+    if !portable::document(kind, &stored) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    sqlx::query("UPDATE cloud_library_versions SET sha256=$3 WHERE document_id=$1 AND revision=$2")
+        .bind(id)
+        .bind(revision)
+        .bind(digest(&stored))
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 async fn owner_lock(tx: &mut Transaction<'_, Postgres>, user: &str) -> Result<(), StatusCode> {
     // Serialize owner quotas and document changes. The FK prevents orphan writes.
@@ -149,7 +186,7 @@ pub async fn create(
     if created.rows_affected() == 0 {
         return Err(StatusCode::CONFLICT);
     }
-    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256) VALUES($1,1,$2,$3,$4)").bind(id).bind(title(&input.kind,&input.document)).bind(&input.document).bind(digest(&input.document)).execute(&mut *tx).await.map_err(db)?;
+    insert_version(&mut tx, id, 1, &input.kind, &input.document).await?;
     audit(&mut tx, &user.user.id, id, "library.created").await?;
     tx.commit().await.map_err(db)?;
     Ok((
@@ -165,18 +202,22 @@ pub async fn list(
 ) -> Result<Json<Value>, StatusCode> {
     check_page(&page)?;
     workspace::limit(&state, &user.user.id, "read", 300).await?;
-    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.owner_user_id=$1 AND ($2::uuid IS NULL OR d.id>$2) AND ($3::text IS NULL OR d.kind=$3) AND ($4::text IS NULL OR strpos(lower(v.title),lower($4))>0) ORDER BY d.id LIMIT 51").bind(&user.user.id).bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
-    Ok(Json(listing(rows)))
+    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.owner_user_id=$1 AND ($2::uuid IS NULL OR d.id>$2) AND ($3::text IS NULL OR d.kind=$3) AND ($4::text IS NULL OR strpos(lower(v.title),lower($4))>0) ORDER BY d.id LIMIT 51").bind(&user.user.id).bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
+    Ok(Json(listing(rows)?))
 }
-fn listing(rows: Vec<sqlx::postgres::PgRow>) -> Value {
+fn listing(rows: Vec<sqlx::postgres::PgRow>) -> Result<Value, StatusCode> {
     let more = rows.len() > 50;
-    let items: Vec<_> = rows.iter().take(50).map(|r| view(r, false)).collect();
+    let items: Vec<_> = rows
+        .iter()
+        .take(50)
+        .map(|r| view(r, false))
+        .collect::<Result<_, _>>()?;
     let next = if more {
         items.last().map(|v| v["id"].clone())
     } else {
         None
     };
-    json!({"items":items,"nextCursor":next})
+    Ok(json!({"items":items,"nextCursor":next}))
 }
 pub async fn get(
     DualUser(user): DualUser,
@@ -185,7 +226,10 @@ pub async fn get(
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     workspace::limit(&state, &user.user.id, "read", 300).await?;
     let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.id=$1 AND d.owner_user_id=$2").bind(id).bind(&user.user.id).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
-    Ok((workspace::etag(row.get("revision")), Json(view(&row, true))))
+    Ok((
+        workspace::etag(row.get("revision")),
+        Json(view(&row, true)?),
+    ))
 }
 pub async fn update(
     DualUser(user): DualUser,
@@ -214,7 +258,7 @@ pub async fn update(
     }
     quota(&mut tx, &user.user.id, &input.document).await?;
     let revision = revision + 1;
-    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256) VALUES($1,$2,$3,$4,$5)").bind(id).bind(revision).bind(title(&kind,&input.document)).bind(&input.document).bind(digest(&input.document)).execute(&mut *tx).await.map_err(db)?;
+    insert_version(&mut tx, id, revision, &kind, &input.document).await?;
     sqlx::query("UPDATE cloud_library_documents SET revision=$2 WHERE id=$1")
         .bind(id)
         .bind(revision)
@@ -285,9 +329,13 @@ pub async fn versions(
     if !owned {
         return Err(StatusCode::NOT_FOUND);
     }
-    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision>$3 ORDER BY v.revision LIMIT 51").bind(id).bind(&user.user.id).bind(page.after.unwrap_or(0)).fetch_all(&state.pool).await.map_err(db)?;
+    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision>$3 ORDER BY v.revision LIMIT 51").bind(id).bind(&user.user.id).bind(page.after.unwrap_or(0)).fetch_all(&state.pool).await.map_err(db)?;
     let more = rows.len() > 50;
-    let items: Vec<_> = rows.iter().take(50).map(|r| view(r, false)).collect();
+    let items: Vec<_> = rows
+        .iter()
+        .take(50)
+        .map(|r| view(r, false))
+        .collect::<Result<_, _>>()?;
     let next = if more {
         items.last().map(|v| v["revision"].clone())
     } else {
@@ -302,7 +350,7 @@ pub async fn version(
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     workspace::limit(&state, &user.user.id, "read", 300).await?;
     let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision=$3").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
-    Ok((workspace::etag(revision), Json(view(&row, true))))
+    Ok((workspace::etag(revision), Json(view(&row, true)?)))
 }
 pub async fn submit(
     DualUser(user): DualUser,
@@ -311,7 +359,8 @@ pub async fn submit(
 ) -> Result<StatusCode, StatusCode> {
     workspace::limit(&state, &user.user.id, "library-write", 60).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
-    let row = sqlx::query("SELECT v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision=$3 FOR UPDATE OF d,v").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row = sqlx::query("SELECT d.kind,v.status,v.sha256,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision=$3 FOR UPDATE OF d,v").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    check_identity(&row)?;
     match row.get::<String, _>("status").as_str() {
         "pending" => return Ok(StatusCode::NO_CONTENT),
         "draft" => (),
@@ -334,22 +383,25 @@ pub async fn catalog(
     Query(page): Query<Page>,
 ) -> Result<Json<Value>, StatusCode> {
     check_page(&page)?;
-    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.published_revision WHERE v.status='published' AND ($1::uuid IS NULL OR d.id>$1) AND ($2::text IS NULL OR d.kind=$2) AND ($3::text IS NULL OR strpos(lower(v.title),lower($3))>0) ORDER BY d.id LIMIT 51").bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
-    Ok(Json(listing(rows)))
+    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.published_revision WHERE v.status='published' AND ($1::uuid IS NULL OR d.id>$1) AND ($2::text IS NULL OR d.kind=$2) AND ($3::text IS NULL OR strpos(lower(v.title),lower($3))>0) ORDER BY d.id LIMIT 51").bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
+    Ok(Json(listing(rows)?))
 }
 pub async fn published(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.published_revision WHERE d.id=$1 AND v.status='published'").bind(id).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
-    Ok((workspace::etag(row.get("revision")), Json(view(&row, true))))
+    Ok((
+        workspace::etag(row.get("revision")),
+        Json(view(&row, true)?),
+    ))
 }
 pub async fn published_version(
     State(state): State<AppState>,
     Path((id, revision)): Path<(Uuid, i64)>,
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND v.revision=$2 AND v.status='published'").bind(id).bind(revision).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
-    Ok((workspace::etag(revision), Json(view(&row, true))))
+    Ok((workspace::etag(revision), Json(view(&row, true)?)))
 }
 pub async fn queue(
     AuthUser(user): AuthUser,
@@ -364,7 +416,11 @@ pub async fn queue(
     // next version becomes visible after that decision, avoiding cursor skips.
     let rows = sqlx::query("SELECT DISTINCT ON (d.id) d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE v.status='pending' AND d.owner_user_id<>$1 AND ($2::uuid IS NULL OR d.id>$2) AND ($3::text IS NULL OR d.kind=$3) AND ($4::text IS NULL OR strpos(lower(v.title),lower($4))>0) ORDER BY d.id,v.revision LIMIT 51").bind(&user.user.id).bind(page.after).bind(page.kind).bind(page.q).fetch_all(&mut *tx).await.map_err(db)?;
     let more = rows.len() > 50;
-    let items: Vec<_> = rows.iter().take(50).map(|r| view(r, true)).collect();
+    let items: Vec<_> = rows
+        .iter()
+        .take(50)
+        .map(|r| view(r, true))
+        .collect::<Result<_, _>>()?;
     let next = if more {
         items.last().map(|v| v["id"].clone())
     } else {
@@ -394,19 +450,14 @@ pub async fn decide(
     workspace::limit(&state, &user.user.id, "library-review", 60).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
     crate::moderation::reviewer(&mut tx, &user.user.id).await?;
-    let row=sqlx::query("SELECT d.owner_user_id,v.status,v.document,d.kind,d.published_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND v.revision=$2 FOR UPDATE OF d,v").bind(id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row=sqlx::query("SELECT d.owner_user_id,v.status,v.document,v.sha256,d.kind,d.published_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND v.revision=$2 FOR UPDATE OF d,v").bind(id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     if row.get::<String, _>("owner_user_id") == user.user.id {
         return Err(StatusCode::FORBIDDEN);
     }
     if row.get::<String, _>("status") != "pending" {
         return Err(StatusCode::CONFLICT);
     }
-    if !portable::document(
-        &row.get::<String, _>("kind"),
-        &row.get::<Value, _>("document"),
-    ) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    check_identity(&row)?;
     let status = if input.decision == "approve" {
         "published"
     } else {
@@ -507,7 +558,10 @@ pub(crate) async fn export(pool: &sqlx::PgPool, user: &str) -> Result<Value, Sta
     if rows.len() > 10000 {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    let items: Vec<_> = rows.iter().map(|r| view(r, true)).collect();
+    let items: Vec<_> = rows
+        .iter()
+        .map(|r| view(r, true))
+        .collect::<Result<_, _>>()?;
     tx.commit().await.map_err(db)?;
     Ok(json!({"items":items}))
 }

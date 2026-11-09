@@ -345,6 +345,18 @@ async fn check(state: &AppState) -> bool {
             ],
         ),
         (
+            "cloud_library_digest_repairs",
+            &[
+                "id",
+                "document_id",
+                "revision",
+                "old_sha256",
+                "normalized_sha256",
+                "operator",
+                "repaired_at",
+            ],
+        ),
+        (
             "cloud_sync_records",
             &[
                 "user_id",
