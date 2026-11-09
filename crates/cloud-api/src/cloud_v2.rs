@@ -15,6 +15,18 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v2/capabilities", get(capabilities))
         .route("/api/v2/catalog/plugins", get(plugins))
         .route("/api/v2/catalog/plugins/{id}", get(plugin))
+        .route(
+            "/api/v2/catalog/pagination-capabilities",
+            get(crate::catalog_pages::capabilities),
+        )
+        .route(
+            "/api/v2/catalog/plugin-summaries",
+            get(crate::catalog_pages::summaries),
+        )
+        .route(
+            "/api/v2/catalog/plugins/{id}/version-pages",
+            get(crate::catalog_pages::versions),
+        )
         .route("/api/v2/catalog/documents", get(library::catalog))
         .route("/api/v2/catalog/documents/{id}", get(library::published))
         .route(

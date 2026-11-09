@@ -1284,4 +1284,206 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
             StatusCode::BAD_REQUEST
         );
     }
+    // The additive bounded summary endpoint pins the complete query in its cursor.
+    let q = format!("{namespace}.");
+    let prefix = format!("/api/v2/catalog/plugin-summaries?generation={generation}&q={q}&target=x86_64-unknown-linux-gnu");
+    let first = request(&f, None, "GET", &prefix, json!({}), None).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = json_body(first).await;
+    assert_eq!(first["generation"], generation.to_string());
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    let cursor = first["nextCursor"].as_str().unwrap();
+    let changed = format!("/api/v2/catalog/plugin-summaries?generation={generation}&q=other&target=x86_64-unknown-linux-gnu&cursor={cursor}");
+    assert_eq!(
+        request(&f, None, "GET", &changed, json!({}), None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let second = request(
+        &f,
+        None,
+        "GET",
+        &format!("{prefix}&cursor={cursor}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = json_body(second).await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 6);
+    assert!(second["nextCursor"].is_null());
+    let got: Vec<_> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .map(|item| item["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(got, ids);
+
+    // Add many releases of one ID. A second page must observe current yank
+    // state without dropping or repeating immutable generation members.
+    let plugin = &ids[0];
+    let additional: Vec<String> = (1..=70)
+        .map(|i| {
+            let prefix = format!("1.0.{i}+");
+            format!("{prefix}{}", "a".repeat(128 - prefix.len()))
+        })
+        .collect();
+    let long_target = "x".repeat(128);
+    let more_uploads: Vec<_> = additional.iter().map(|_| uuid::Uuid::new_v4()).collect();
+    let more_releases: Vec<_> = additional.iter().map(|_| uuid::Uuid::new_v4()).collect();
+    sqlx::query("INSERT INTO cloud_upload_sessions(id,publisher_id,requested_by,idempotency_key,expected_size,expected_sha256,object_key,status,expires_at) SELECT id,$2,$3,id::text,100,$4,'ordering/uploads/'||id::text,'pending',now()+interval '1 hour' FROM unnest($1::uuid[]) AS fixture(id)")
+        .bind(&more_uploads).bind(publisher).bind(&f.users[0].id).bind(&hash).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_plugin_releases(id,publisher_id,upload_id,publisher_key_id,plugin_id,version,target,status,requested_by) SELECT id,$4,upload_id,$5,$6,version,$8,'awaiting_verification',$7 FROM unnest($1::uuid[],$2::uuid[],$3::text[]) AS fixture(id,upload_id,version)")
+        .bind(&more_releases).bind(&more_uploads).bind(&additional).bind(publisher).bind(key).bind(plugin).bind(&f.users[0].id).bind(&long_target).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_registry_generation_releases(generation,plugin_id,version,target,release_id,sha256,size,object_key,version_id) SELECT $1,$2,version,$6,release_id,$5,100,'ordering/releases/'||release_id::text,'v1' FROM unnest($3::text[],$4::uuid[]) AS fixture(version,release_id)")
+        .bind(generation).bind(plugin).bind(&additional).bind(&more_releases).bind(&hash).bind(&long_target).execute(&f.pool).await.unwrap();
+    // Advisory fields satisfy the actual moderation validator, including its
+    // 1024-byte message limit; JSON escaping and the multibyte URL make a
+    // valid row large enough to exercise the page byte boundary.
+    let mut advisory_releases = more_releases.clone();
+    advisory_releases.push(releases[0]);
+    let advisory_message = "\"".repeat(1024);
+    let advisory_url = format!("https://example.test/{}", "𐀀".repeat(2027));
+    assert!(
+        crate::moderation::valid_advisory("low", &advisory_message, Some(&advisory_url)).is_ok()
+    );
+    sqlx::query("INSERT INTO cloud_release_advisories(release_id,severity,message,url,created_by) SELECT id,'low',$2,$3,'fixture' FROM unnest($1::uuid[]) AS fixture(id)")
+        .bind(&advisory_releases).bind(&advisory_message).bind(&advisory_url).execute(&f.pool).await.unwrap();
+    let version_prefix = format!("/api/v2/catalog/plugins/{plugin}/version-pages?generation={generation}&target={long_target}");
+    let first_versions = request(&f, None, "GET", &version_prefix, json!({}), None).await;
+    assert_eq!(first_versions.status(), StatusCode::OK);
+    let first_versions = json_body(first_versions).await;
+    let first_len = first_versions["items"].as_array().unwrap().len();
+    assert!(
+        (1..50).contains(&first_len),
+        "the byte limit must end this page before the item limit"
+    );
+    assert!(serde_json::to_vec(&first_versions).unwrap().len() <= 512 * 1024);
+    let cursor = first_versions["nextCursor"].as_str().unwrap();
+    let changed = format!("/api/v2/catalog/plugins/{plugin}/version-pages?generation={generation}&target=other&cursor={cursor}");
+    assert_eq!(
+        request(&f, None, "GET", &changed, json!({}), None)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query(
+        "INSERT INTO cloud_release_yanks(release_id,yanked_by,reason) VALUES($1,'fixture','test')",
+    )
+    .bind(more_releases[8])
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    let second_versions = request(
+        &f,
+        None,
+        "GET",
+        &format!("{version_prefix}&cursor={cursor}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(second_versions.status(), StatusCode::OK);
+    let second_versions = json_body(second_versions).await;
+    assert_eq!(
+        second_versions["items"].as_array().unwrap().len(),
+        71 - first_len
+    );
+    assert!(serde_json::to_vec(&second_versions).unwrap().len() <= 512 * 1024);
+    assert!(second_versions["nextCursor"].is_null());
+    let rows: Vec<_> = first_versions["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second_versions["items"].as_array().unwrap())
+        .collect();
+    assert_eq!(rows.len(), 71);
+    assert!(rows
+        .windows(2)
+        .all(|v| v[0]["version"].as_str().unwrap() < v[1]["version"].as_str().unwrap()));
+    assert_eq!(
+        rows.iter()
+            .find(|v| v["version"].as_str().unwrap().starts_with("1.0.9+"))
+            .unwrap()["yanked"],
+        true
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn workspace_selection_accepts_legacy_ids_and_release_version_boundaries() {
+    let f = fixture().await;
+    let version = format!("1.0.0+{}", "a".repeat(122));
+    assert_eq!(version.len(), 128);
+    let valid = json!({"schemaVersion":1,"pluginId":"hotkeys","version":version,"enabled":false});
+    let response = request(
+        &f,
+        Some(0),
+        "PUT",
+        "/api/v2/sync/collections/plugin-selections/hotkeys",
+        valid.clone(),
+        Some(("if-none-match", "*")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(json_body(response).await["value"], valid);
+    let returned = request(
+        &f,
+        Some(0),
+        "GET",
+        "/api/v2/sync/collections/plugin-selections/hotkeys",
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(returned.status(), StatusCode::OK);
+    assert_eq!(json_body(returned).await["value"], valid);
+    let previous_v2_key =
+        json!({"schemaVersion":1,"pluginId":"1.old","version":"1.0.0","enabled":false});
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            "/api/v2/sync/collections/plugin-selections/1.old",
+            previous_v2_key,
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let invalid_id = json!({"schemaVersion":1,"pluginId":"1bad","version":"1.0.0","enabled":false});
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            "/api/v2/sync/collections/plugin-selections/1bad",
+            invalid_id,
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let too_long = format!("1.0.0+{}", "a".repeat(123));
+    let invalid_version =
+        json!({"schemaVersion":1,"pluginId":"textintel","version":too_long,"enabled":false});
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "PUT",
+            "/api/v2/sync/collections/plugin-selections/textintel",
+            invalid_version,
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
 }

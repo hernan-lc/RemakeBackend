@@ -3,6 +3,15 @@
 
 ## Cloud v2 integrity, recovery and admin verification 2026 11 08
 
+Further local v2 work adds separate byte-bounded catalog summary and per-plugin
+version endpoints, with context-bound cursors and typed SDK adapters. The older
+routes and capabilities object remain unchanged. V2 workspace plugin keys now
+also accept manifest IDs and 128-byte versions while retaining previously valid
+keys. PostgreSQL fixtures passed for multi-page traversal, the 512 KiB boundary,
+legacy IDs and long versions; bounded SDK tests passed in both repositories.
+The new endpoints fail closed for the unresolved legacy `..` shard, and neither
+deployed migration nor a production catalog audit is claimed.
+
 Follow-up catalog compatibility: catalog lookup and cursors now use the plugin
 manifest ID grammar; workspace keys retain their separate rules. The shared SDK
 also accepts the release version limit of 128 bytes. Five focused SDK catalog

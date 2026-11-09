@@ -32,6 +32,9 @@ existing cookie/native identity, publisher, upload or registry routes move.
 | GET | `/api/v2/capabilities` | API version, single-instance policy, relative routes, collections and limits |
 | GET | `/api/v2/catalog/plugins` | Generation-scoped plugin listing |
 | GET | `/api/v2/catalog/plugins/{id}` | Published versions, targets, sizes, digests and signed metadata path |
+| GET | `/api/v2/catalog/pagination-capabilities` | Additive bounded-pagination routes and limits |
+| GET | `/api/v2/catalog/plugin-summaries` | Byte-bounded plugin summaries |
+| GET | `/api/v2/catalog/plugins/{id}/version-pages` | Byte-bounded version rows for one plugin |
 
 Plugin queries accept `q` (at most 100 bytes, literal substring of the plugin
 ID), `after` (plugin ID), `target`, and `generation` (positive integer).
@@ -46,7 +49,8 @@ Plugin IDs use ascending ASCII byte order for both listing and the exclusive
 database's default locale does not change page order or cursor boundaries.
 Catalog IDs follow the release manifest grammar: 2–128 ASCII bytes, starting
 with a lowercase letter and followed by lowercase letters, digits, `.`, `_`
-or `-`. The stricter plugin-selection sync key grammar remains independent.
+or `-`. V2 workspace plugin keys accept this grammar plus previously accepted
+numeric-leading dotted keys; v1 sync retains its original separate grammar.
 Official legacy release IDs include `hotkeys` and `textintel`, which have no dot.
 Some valid manifest IDs can produce a literal `..` shard in the existing signed
 registry path (for example `ab..c`). Clients reject these unsafe paths, which
@@ -63,6 +67,37 @@ existing signed index document; its `.sig` sidecar and package signatures
 remain authoritative. Catalog JSON and its digests never replace independent
 signature verification or root pins. Discovery searches plugin IDs; rich
 display metadata remains in the signed package documents.
+
+### Bounded plugin discovery
+
+The additive bounded routes leave the original `/plugins` responses and the
+closed `/api/v2/capabilities` object unchanged. They do not establish trust.
+The separate pagination-capabilities route returns their paths, schema version,
+maximum 50 items and 512 KiB serialized JSON per page.
+
+`plugin-summaries` accepts `q`, `target`, `generation` and `cursor` and returns
+`{generation,items,nextCursor}`. Each item has `id`, `metadataPath` and
+`latestStableVersion`; the latter uses all matching versions and the current
+yank/publisher/key state. `generation` is a decimal string in responses and
+an integer query parameter. Without an active generation the first page is
+empty and its generation is null. Pass the returned generation and the same
+`q` and `target` with `nextCursor` on every continuation.
+
+`plugins/{id}/version-pages` accepts `target`, `generation` and `cursor` and
+returns `{generation,id,metadataPath,items,nextCursor}`. Items have the same
+version metadata and current status fields as the old detail response, except
+that `size` is a decimal string. Order is ascending ASCII byte order of the
+`(version,target)` pair, not semantic-version precedence. The continuation is
+exclusive; it binds the plugin ID, generation and target. Version membership
+is pinned to the generation while yanks, advisories and authorization are
+observed independently on each request and must be rechecked before install.
+
+Both cursors are bounded, opaque base64url values. A cursor reused with another
+generation or filter is rejected with 400; an unavailable generation or plugin
+returns 404. A page never silently truncates a record: if a single row exceeds
+the limit, the request returns 413. A known unsafe `..` shard returns 503 rather
+than emitting a misleading signed path. Empty final pages are possible after a
+valid cursor; nextCursor is null on the last page.
 
 ## Private template and profile library
 
@@ -190,7 +225,7 @@ next pending revision of documents already processed. Its read budget is
 
 | Collection | Key | Value |
 | --- | --- | --- |
-| `plugin-selections` | plugin ID | Existing `{schemaVersion:1,pluginId,version,enabled}` schema |
+| `plugin-selections` | plugin ID | `{schemaVersion:1,pluginId,version,enabled}`; semantic version up to 128 bytes |
 | `rule-templates` | document ID | Original template v1 object |
 | `profiles` | document ID | Original profile v1 object with inline templates |
 | `plugin-settings` | plugin ID | `{schemaVersion:1,pluginId,settings:{...}}` |

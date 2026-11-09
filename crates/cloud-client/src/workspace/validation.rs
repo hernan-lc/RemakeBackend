@@ -311,12 +311,14 @@ impl Plugin {
                 .map(|index| chars.get(index).copied().unwrap_or('_'))
                 .collect::<String>()
         };
-        // URL parsers normalize a literal parent segment before requesting
-        // it. Do not accept metadata that could resolve outside index/.
-        if shard(2) == ".." {
-            return false;
-        }
-        if path != format!("index/{}/{}/{}.json", shard(0), shard(2), self.id) {
+        // Never accept a literal parent segment; use the canonical index
+        // location for the legacy shard whose second component is `..`.
+        let expected = if shard(2) == ".." {
+            format!("index/{}.json", self.id)
+        } else {
+            format!("index/{}/{}/{}.json", shard(0), shard(2), self.id)
+        };
+        if path != expected {
             return false;
         }
         let mut previous = None;

@@ -1,6 +1,7 @@
 mod account;
 mod admin;
 mod admin_static;
+mod catalog_pages;
 mod cloud_v2;
 mod config;
 mod desktop;
