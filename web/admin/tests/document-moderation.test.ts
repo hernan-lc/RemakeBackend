@@ -17,10 +17,15 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 
-async function render(overrides: { forbidden?: boolean; decisionFails?: boolean; mismatch?: boolean } = {}) {
+async function render(overrides: { forbidden?: boolean; decisionFails?: boolean; mismatch?: boolean; switchDuringQueue?: boolean } = {}) {
+  let identity = session
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/v1/me') return json(session)
-    if (url === '/api/v2/moderation/documents') return overrides.forbidden ? json({}, 403) : json({ items: [pending], nextCursor: null })
+    if (url === '/api/v1/me') return json(identity)
+    if (url === '/api/v2/moderation/documents') {
+      if (overrides.forbidden || identity.id !== session.id) return json({}, 403)
+      if (overrides.switchDuringQueue) identity = { ...session, id: 'different-user' }
+      return json({ items: [pending], nextCursor: null })
+    }
     if (url === '/api/v2/catalog/documents') return json({ items: [published], nextCursor: null })
     if (url === `/api/v2/catalog/documents/${id}/versions/2`) return json(overrides.mismatch ? { ...published, sha256: 'b'.repeat(64) } : published)
     if (url.startsWith(`/api/v2/moderation/documents/${id}/versions/2/`) && init?.method === 'POST') return new Response(null, { status: overrides.decisionFails ? 409 : 204 })
@@ -64,6 +69,14 @@ describe('Cloud document moderation', () => {
 
   it('does not expose review actions when the server denies access', async () => {
     const { wrapper } = await render({ forbidden: true })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('cannot moderate'))
+    expect(wrapper.find('[data-testid="document-content"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((item) => item.text() === 'Approve')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('discards pending content when the browser account changes during the request', async () => {
+    const { wrapper } = await render({ switchDuringQueue: true })
     await vi.waitFor(() => expect(wrapper.text()).toContain('cannot moderate'))
     expect(wrapper.find('[data-testid="document-content"]').exists()).toBe(false)
     expect(wrapper.findAll('button').some((item) => item.text() === 'Approve')).toBe(false)

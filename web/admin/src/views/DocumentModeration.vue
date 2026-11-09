@@ -81,10 +81,21 @@ const resultMessage = ref('')
 const session = useSession()
 const queryClient = useQueryClient()
 const userId = computed(() => session.error.value ? undefined : session.data.value?.id)
+async function sessionBound<T>(actor: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    if ((await api.me()).id !== actor || userId.value !== actor) throw new Error('session changed')
+    const result = await operation()
+    if ((await api.me()).id !== actor || userId.value !== actor) throw new Error('session changed')
+    return result
+  } catch (error) {
+    void session.refetch()
+    throw error
+  }
+}
 const { data, isPending, error, refetch } = useQuery({
   queryKey: computed(() => ['cloud-document-review', userId.value, mode.value, after.value]),
   enabled: computed(() => !!userId.value),
-  queryFn: ({ queryKey }) => queryKey[2] === 'pending' ? api.documentReviewQueue(queryKey[3] as string | undefined) : api.publishedDocuments(queryKey[3] as string | undefined),
+  queryFn: ({ queryKey }) => sessionBound(queryKey[1] as string, () => queryKey[2] === 'pending' ? api.documentReviewQueue(queryKey[3] as string | undefined) : api.publishedDocuments(queryKey[3] as string | undefined)),
   retry: false,
 })
 const items = computed(() => error.value || !userId.value ? [] : data.value?.items ?? [])
@@ -92,7 +103,7 @@ const selected = computed(() => items.value.find((item) => item.id === selectedI
 const detailQuery = useQuery({
   queryKey: computed(() => ['cloud-document-review-content', userId.value, selected.value?.id, selected.value?.revision, selected.value?.sha256]),
   enabled: computed(() => mode.value === 'published' && !!userId.value && !!selected.value && Number.isSafeInteger(selected.value.revision) && selected.value.revision > 0),
-  queryFn: ({ queryKey }) => api.publishedDocumentVersion(queryKey[2] as string, queryKey[3] as number),
+  queryFn: ({ queryKey }) => sessionBound(queryKey[1] as string, () => api.publishedDocumentVersion(queryKey[2] as string, queryKey[3] as number)),
   retry: false,
 })
 const reviewedDocument = computed<CloudDocument | null>(() => {
