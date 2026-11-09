@@ -26,8 +26,8 @@ fn document_digest(value: &Value) -> Result<String, SyncError> {
         .map(|byte| format!("{byte:02x}"))
         .collect())
 }
-// Catalog releases use the plugin manifest ID grammar, independently of the
-// stricter plugin-selection sync key grammar.
+// Catalog releases use the manifest ID grammar. V2 workspace keys also retain
+// previously accepted sync IDs for backward compatibility.
 pub(super) fn valid_catalog_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     (2..=128).contains(&bytes.len())
