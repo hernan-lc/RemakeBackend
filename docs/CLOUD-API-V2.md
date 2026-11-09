@@ -411,3 +411,33 @@ adds validated workspace snapshots, change pages, conditional records,
 library create/read/update/submit/withdraw and v2 account export. It retains
 same-origin transport and redirect refusal. Offline persistence/application
 of v2 conflicts in Desktop belongs to the later authorized integration.
+
+## Application SDK integration fixture
+
+An ignored cross-repository test runs the actual application `cloud-client`
+against this backend over loopback HTTP and a disposable PostgreSQL database.
+It creates synthetic accounts, passes their tokens only through a private child
+process stdin, and deletes those accounts after the child completes or times
+out. The database URL must use `127.0.0.1`, an explicit port and a database name
+starting with `tiktools_sdk_epoch_`; provision that dedicated database before
+running, then remove it afterward. The fixture applies migrations to it.
+
+First, from the application checkout, run:
+
+```sh
+cargo test -p cloud-client --test real_backend_epoch --locked --offline --no-run
+```
+
+Set `CLOUD_V2_APP_SDK_TEST_BIN` to the **absolute executable path printed by
+Cargo**, and `CLOUD_TEST_DATABASE_URL` to the dedicated loopback PostgreSQL
+database. From the backend checkout run:
+
+```sh
+cargo test -p cloud-api --locked --offline actual_app_sdk_epoch_contract_against_postgres -- --ignored --nocapture
+```
+
+This verifies the pre-enforcement to required-epoch transition, rejection of
+missing or stale epochs, a subsequent barrier, fenced writes and deletes,
+account isolation, and an uncertain application workspace saved and reopened
+with a newer local edit. It does not run the complete synchronization
+coordinator, verify recovery after a barrier, or establish two-PC acceptance.

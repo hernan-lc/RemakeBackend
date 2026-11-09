@@ -140,6 +140,79 @@ async fn json_body(response: Response) -> Value {
     }
 }
 
+/// Run the actual application SDK from the other checkout against this
+/// fixture, without a build-time path dependency on that checkout. The
+/// executable is an ignored test binary built by the caller; credentials are
+/// passed only through a pipe and never placed in argv or environment.
+#[tokio::test]
+#[ignore = "requires disposable CLOUD_TEST_DATABASE_URL and CLOUD_V2_APP_SDK_TEST_BIN"]
+async fn actual_app_sdk_epoch_contract_against_postgres() {
+    use std::{path::Path, process::Stdio, time::Duration};
+    use tokio::io::AsyncWriteExt;
+
+    let binary = std::env::var_os("CLOUD_V2_APP_SDK_TEST_BIN")
+        .expect("provide the separately built application SDK test binary");
+    assert!(Path::new(&binary).is_absolute());
+    assert!(Path::new(&binary).is_file());
+    // This fixture applies migrations. Refuse ordinary local or remote
+    // databases even if the caller accidentally supplies one in the env.
+    let database = std::env::var("CLOUD_TEST_DATABASE_URL").expect("disposable database URL");
+    let database = url::Url::parse(&database).expect("invalid disposable database URL");
+    assert!(matches!(database.scheme(), "postgres" | "postgresql"));
+    assert_eq!(database.host_str(), Some("127.0.0.1"));
+    assert!(database.port().is_some());
+    assert!(database.path().starts_with("/tiktools_sdk_epoch_"));
+    assert!(database.query().is_none() && database.fragment().is_none());
+    let f = fixture().await;
+    let input = serde_json::to_vec(&json!({
+        "origin": f.origin,
+        "first_token": f.users[0].token,
+        "second_token": f.users[1].token
+    }))
+    .unwrap();
+    let execution = tokio::time::timeout(Duration::from_secs(40), async {
+        let mut child = tokio::process::Command::new(binary)
+            .env_clear()
+            .arg("--exact")
+            .arg("real_backend_epoch_contract")
+            .arg("--ignored")
+            .arg("--nocapture")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut stdin = child.stdin.take().expect("child stdin");
+        stdin.write_all(&input).await?;
+        drop(stdin);
+        child.wait_with_output().await
+    })
+    .await;
+    // Always remove exactly these synthetic accounts, including on timeout or
+    // child failure. The dedicated disposable database remains caller-owned.
+    let ids: Vec<_> = f.users.iter().map(|user| user.id.as_str()).collect();
+    let cleanup = sqlx::query("DELETE FROM \"user\" WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(&f.pool)
+        .await;
+    cleanup.expect("remove isolated fixture accounts");
+    let output = execution
+        .expect("SDK test timed out")
+        .expect("SDK test execution failed");
+    let sanitized = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .replace(&f.users[0].token, "[redacted]")
+            .replace(&f.users[1].token, "[redacted]")
+    };
+    assert!(
+        output.status.success(),
+        "application SDK fixture failed (exit: {:?})\n{}\n{}",
+        output.status.code(),
+        sanitized(&output.stdout),
+        sanitized(&output.stderr)
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn workspace_barrier_fences_a_delayed_http_write_and_is_account_scoped() {
