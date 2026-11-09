@@ -257,6 +257,15 @@ Records are `{collection,key,revision,deleted,value}`. Snapshots are
 collections share a monotonically increasing account cursor. Its allocation,
 record mutation and feed append commit atomically under the account cursor
 lock. Pagination and snapshot rebuilds never use another account's cursor.
+List, point-read and change-feed responses revalidate stored record shape,
+portable content and revision against the account cursor read in the same
+database statement or locked transaction. Invalid stored data returns 500
+without exposing the value or advancing a client cursor. A list also checks
+its extra pagination sentinel: corruption there makes the preceding page
+unavailable until repaired. Snapshot validation uses its consistent cursor.
+Updates also validate the previous stored record against the locked account
+cursor before evaluating the write; an invalid record cannot be silently
+overwritten or cause a revision to be reused.
 
 Collection keys also use ascending ASCII byte order and an exclusive `after`
 cursor, with explicit `COLLATE "C"` for both comparison and ordering. UUID

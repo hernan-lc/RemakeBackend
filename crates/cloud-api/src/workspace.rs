@@ -113,10 +113,20 @@ pub async fn list(
         return Err(StatusCode::BAD_REQUEST);
     }
     limit(&state, &user.user.id, "read", 300).await?;
-    let rows = sqlx::query(r#"SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key COLLATE "C">$3 ORDER BY key COLLATE "C" LIMIT $4"#)
+    let rows = sqlx::query(r#"SELECT r.collection,r.key,r.revision,r.deleted,r.value,COALESCE(c.cursor,0) AS observed_cursor FROM cloud_workspace_records r LEFT JOIN cloud_workspace_cursors c ON c.user_id=r.user_id WHERE r.user_id=$1 AND r.collection=$2 AND r.key COLLATE "C">$3 ORDER BY r.key COLLATE "C" LIMIT $4"#)
         .bind(&user.user.id).bind(collection).bind(page.after.unwrap_or_default()).bind(PAGE + 1).fetch_all(&state.pool).await.map_err(db)?;
     let more = rows.len() > PAGE as usize;
-    let records: Vec<_> = rows.into_iter().take(PAGE as usize).map(record).collect();
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        let observed_cursor: i64 = row.get("observed_cursor");
+        let value = record(row);
+        if !valid_record(&value, observed_cursor) {
+            tracing::error!("workspace listing contains invalid or unsupported data");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        records.push(value);
+    }
+    records.truncate(PAGE as usize);
     let next_after = if more {
         records.last().map(|r| r.key.clone())
     } else {
@@ -136,9 +146,14 @@ pub async fn get(
         return Err(StatusCode::BAD_REQUEST);
     }
     limit(&state, &user.user.id, "read", 300).await?;
-    let row = sqlx::query("SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key=$3")
+    let row = sqlx::query("SELECT r.collection,r.key,r.revision,r.deleted,r.value,COALESCE(c.cursor,0) AS observed_cursor FROM cloud_workspace_records r LEFT JOIN cloud_workspace_cursors c ON c.user_id=r.user_id WHERE r.user_id=$1 AND r.collection=$2 AND r.key=$3")
         .bind(&user.user.id).bind(collection).bind(key).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let observed_cursor: i64 = row.get("observed_cursor");
     let r = record(row);
+    if !valid_record(&r, observed_cursor) {
+        tracing::error!("workspace record contains invalid or unsupported data");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     Ok((etag(r.revision), Json(r)))
 }
 pub async fn put(
@@ -205,24 +220,33 @@ async fn mutate(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    sqlx::query("SELECT cursor FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE")
-        .bind(user)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-    let previous = sqlx::query("SELECT revision,value,deleted FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key=$3").bind(user).bind(&collection).bind(&key).fetch_optional(&mut *tx).await.map_err(db)?;
-    let revision = previous.as_ref().map(|r| r.get::<i64, _>("revision"));
+    let current_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor FROM cloud_workspace_cursors WHERE user_id=$1 FOR UPDATE",
+    )
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
+    let previous = sqlx::query("SELECT collection,key,revision,value,deleted FROM cloud_workspace_records WHERE user_id=$1 AND collection=$2 AND key=$3").bind(user).bind(&collection).bind(&key).fetch_optional(&mut *tx).await.map_err(db)?.map(record);
+    if previous
+        .as_ref()
+        .is_some_and(|value| !valid_record(value, current_cursor))
+    {
+        tracing::error!("workspace write encountered an invalid stored record");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let revision = previous.as_ref().map(|r| r.revision);
     if expected != revision {
         return Err(StatusCode::CONFLICT);
     }
     // A retried no-op preserves its revision and does not create a sync loop.
     if previous.as_ref().is_some_and(|r| {
-        let same_value = match (r.get::<Option<Value>, _>("value").as_ref(), value.as_ref()) {
+        let same_value = match (r.value.as_ref(), value.as_ref()) {
             (Some(previous), Some(next)) => portable::values_equivalent(previous, next),
             (None, None) => true,
             _ => false,
         };
-        same_value && r.get::<bool, _>("deleted") == value.is_none()
+        same_value && r.deleted == value.is_none()
     }) {
         let revision = revision.expect("existing revision");
         tx.commit().await.map_err(db)?;
@@ -234,7 +258,7 @@ async fn mutate(
                 key,
                 revision,
                 deleted: value.is_none(),
-                value: previous.as_ref().expect("existing record").get("value"),
+                value: previous.as_ref().expect("existing record").value.clone(),
             }),
         ));
     }
@@ -341,6 +365,10 @@ pub async fn changes(
     let rows = sqlx::query("SELECT collection,key,cursor AS revision,deleted,value FROM cloud_workspace_changes WHERE user_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3").bind(&user.user.id).bind(cursor).bind(PAGE+1).fetch_all(&mut *tx).await.map_err(db)?;
     let more = rows.len() > PAGE as usize;
     let mut changes: Vec<_> = rows.into_iter().map(record).collect();
+    if changes.iter().any(|r| !valid_record(r, current)) {
+        tracing::error!("workspace change history contains invalid or unsupported data");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     if !crate::sync::complete_feed_page(cursor, current, changes.iter().map(|r| r.revision), more) {
         tracing::error!("workspace change history has a missing or invalid cursor");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);

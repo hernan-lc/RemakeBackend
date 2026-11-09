@@ -1,5 +1,18 @@
 # Implementation status
 
+## Validate stored sync records on reads and writes
+
+V1 listing and change-feed reads, and v2 listing, point-read and change-feed
+reads, now validate stored shape, portable content and revision against the
+account cursor before returning a record. Existing records are also validated
+under the account lock before mutation. A local disposable PostgreSQL test
+inserted invalid content, future revisions and an invalid pagination sentinel;
+the endpoints returned 500 without exposing or silently replacing the data,
+and another account remained isolated. Existing v1 conflict/retention and v2
+two-session pagination tests also passed. The checks do not repair data or
+prove that values inside otherwise allowed strings are nonsecret; no
+production database was inspected.
+
 ## Retained feed gap checks
 
 V1 and v2 change endpoints now reject a missing cursor within the requested

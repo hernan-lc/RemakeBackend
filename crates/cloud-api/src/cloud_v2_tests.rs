@@ -215,6 +215,166 @@ async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
 
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn sync_reads_refuse_corrupt_records_without_disclosing_their_contents() {
+    let f = fixture().await;
+    let user = &f.users[0].id;
+    let invalid = json!({"schemaVersion":1,"pluginId":"acme.bad","version":"1.0.0","enabled":true,"token":"private-sentinel"});
+    for (cursors, records, changes, prefix) in [
+        (
+            "cloud_sync_cursors",
+            "cloud_sync_records",
+            "cloud_sync_changes",
+            "/api/v1/sync",
+        ),
+        (
+            "cloud_workspace_cursors",
+            "cloud_workspace_records",
+            "cloud_workspace_changes",
+            "/api/v2/sync",
+        ),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO {cursors}(user_id,cursor) VALUES($1,1)"
+        ))
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.bad',1,$2,false)"))
+            .bind(user).bind(&invalid).execute(&f.pool).await.unwrap();
+        sqlx::query(&format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) VALUES($1,1,'plugin-selections','acme.bad',$2,false)"))
+            .bind(user).bind(&invalid).execute(&f.pool).await.unwrap();
+        for path in [
+            format!("{prefix}/changes?cursor=0"),
+            format!("{prefix}/collections/plugin-selections"),
+        ] {
+            let response = request(&f, Some(0), "GET", &path, Value::Null, None).await;
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("private-sentinel"));
+        }
+        if prefix == "/api/v2/sync" {
+            let path = format!("{prefix}/collections/plugin-selections/acme.bad");
+            let response = request(&f, Some(0), "GET", &path, Value::Null, None).await;
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("private-sentinel"));
+        }
+        let record_path = format!("{prefix}/collections/plugin-selections/acme.bad");
+        let replacement =
+            json!({"schemaVersion":1,"pluginId":"acme.bad","version":"1.0.0","enabled":false});
+        let refused = request(
+            &f,
+            Some(0),
+            "PUT",
+            &record_path,
+            replacement.clone(),
+            Some(("if-match", "\"1\"")),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let retained: Value = sqlx::query_scalar(&format!(
+            "SELECT value FROM {records} WHERE user_id=$1 AND key='acme.bad'"
+        ))
+        .bind(user)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, invalid);
+        // Even a structurally valid record cannot claim a revision ahead of
+        // the account head observed in the same database statement.
+        let valid =
+            json!({"schemaVersion":1,"pluginId":"acme.bad","version":"1.0.0","enabled":true});
+        sqlx::query(&format!(
+            "UPDATE {records} SET value=$2, revision=2 WHERE user_id=$1 AND key='acme.bad'"
+        ))
+        .bind(user)
+        .bind(&valid)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        let listing = format!("{prefix}/collections/plugin-selections");
+        assert_eq!(
+            request(&f, Some(0), "GET", &listing, Value::Null, None)
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        if prefix == "/api/v2/sync" {
+            assert_eq!(
+                request(
+                    &f,
+                    Some(0),
+                    "GET",
+                    &format!("{listing}/acme.bad"),
+                    Value::Null,
+                    None
+                )
+                .await
+                .status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+        let refused = request(
+            &f,
+            Some(0),
+            "PUT",
+            &record_path,
+            replacement,
+            Some(("if-match", "\"2\"")),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let cursor: i64 =
+            sqlx::query_scalar(&format!("SELECT cursor FROM {cursors} WHERE user_id=$1"))
+                .bind(user)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        assert_eq!(cursor, 1);
+
+        // The extra row used to decide whether another page exists is also
+        // validated; a corrupt sentinel must not be returned or concealed.
+        let sentinel_user = &f.users[2].id;
+        let page_size: i32 = if prefix == "/api/v1/sync" { 100 } else { 50 };
+        sqlx::query(&format!(
+            "INSERT INTO {cursors}(user_id,cursor) VALUES($1,$2)"
+        ))
+        .bind(sentinel_user)
+        .bind(i64::from(page_size + 1))
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) SELECT $1,'plugin-selections','acme.a'||lpad(n::text,4,'0'),n,NULL,true FROM generate_series(1,$2::integer) n"))
+            .bind(sentinel_user).bind(page_size).execute(&f.pool).await.unwrap();
+        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.z',$2,$3,false)"))
+            .bind(sentinel_user).bind(i64::from(page_size + 1)).bind(&invalid).execute(&f.pool).await.unwrap();
+        let response = request(&f, Some(2), "GET", &listing, Value::Null, None).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("private-sentinel"));
+        let other = request(
+            &f,
+            Some(1),
+            "GET",
+            &format!("{prefix}/changes?cursor=0"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(other.status(), StatusCode::OK);
+        assert_eq!(json_body(other).await["cursor"], 0);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn v1_snapshot_pagination_uses_byte_order_for_punctuation_and_rebuild() {
     let f = fixture().await;
     let namespace = format!("ordering{}", uuid::Uuid::new_v4().simple());

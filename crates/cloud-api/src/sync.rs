@@ -112,6 +112,21 @@ fn record(row: sqlx::postgres::PgRow) -> Record {
     }
 }
 
+fn valid_record(record: &Record, cursor: i64) -> bool {
+    record.collection == COLLECTION
+        && valid_plugin_id(&record.key)
+        && record.revision > 0
+        && record.revision <= cursor
+        && if record.deleted {
+            record.value.is_none()
+        } else {
+            record
+                .value
+                .as_ref()
+                .is_some_and(|value| validate(&record.collection, &record.key, value))
+        }
+}
+
 /// A bounded, consistent export of the Cloud-owned sync dataset only.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,19 +158,7 @@ pub async fn export(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     let records: Vec<_> = rows.into_iter().map(record).collect();
-    if records.iter().any(|r| {
-        r.collection != COLLECTION
-            || !valid_plugin_id(&r.key)
-            || r.revision <= 0
-            || r.revision > cursor
-            || if r.deleted {
-                r.value.is_some()
-            } else {
-                r.value
-                    .as_ref()
-                    .is_none_or(|value| !validate(&r.collection, &r.key, value))
-            }
-    }) {
+    if records.iter().any(|r| !valid_record(r, cursor)) {
         tracing::error!("sync export contains invalid or unsupported data");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -197,14 +200,22 @@ pub async fn list(
     limit(&state, &user.user.id, "read", 300).await?;
     // Cursor comparison and order must use the same bytewise collation as
     // native clients, regardless of the database's configured locale.
-    let rows = sqlx::query(r#"SELECT collection, key, revision, deleted, value FROM cloud_sync_records WHERE user_id = $1 AND collection = $2 AND key COLLATE "C" > $3 ORDER BY key COLLATE "C" LIMIT $4"#)
+    // Read record and cursor in one statement so a concurrent commit cannot
+    // make an otherwise valid record appear newer than an older head read.
+    let rows = sqlx::query(r#"SELECT r.collection, r.key, r.revision, r.deleted, r.value, COALESCE(c.cursor,0) AS observed_cursor FROM cloud_sync_records r LEFT JOIN cloud_sync_cursors c ON c.user_id=r.user_id WHERE r.user_id = $1 AND r.collection = $2 AND r.key COLLATE "C" > $3 ORDER BY r.key COLLATE "C" LIMIT $4"#)
         .bind(&user.user.id).bind(&name).bind(query.after.unwrap_or_default()).bind(PAGE_LIMIT + 1).fetch_all(&state.pool).await.map_err(internal)?;
     let has_more = rows.len() > PAGE_LIMIT as usize;
-    let records: Vec<_> = rows
-        .into_iter()
-        .take(PAGE_LIMIT as usize)
-        .map(record)
-        .collect();
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        let observed_cursor: i64 = row.get("observed_cursor");
+        let value = record(row);
+        if !valid_record(&value, observed_cursor) {
+            tracing::error!("sync listing contains invalid or unsupported data");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        records.push(value);
+    }
+    records.truncate(PAGE_LIMIT as usize);
     let next_after = if has_more {
         records.last().map(|r| r.key.clone())
     } else {
@@ -312,6 +323,10 @@ pub async fn changes(
         .bind(&user.user.id).bind(cursor).bind(PAGE_LIMIT + 1).fetch_all(&mut *tx).await.map_err(internal)?;
     let has_more = rows.len() > PAGE_LIMIT as usize;
     let mut changes: Vec<_> = rows.into_iter().map(record).collect();
+    if changes.iter().any(|r| !valid_record(r, current)) {
+        tracing::error!("sync change history contains invalid or unsupported data");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     if !complete_feed_page(
         cursor,
         current,
@@ -402,23 +417,32 @@ async fn mutate(
         .execute(&mut *tx)
         .await
         .map_err(internal)?;
-    sqlx::query("SELECT cursor FROM cloud_sync_cursors WHERE user_id = $1 FOR UPDATE")
-        .bind(user)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(internal)?;
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT revision FROM cloud_sync_records WHERE user_id=$1 AND collection=$2 AND key=$3",
+    let current_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor FROM cloud_sync_cursors WHERE user_id = $1 FOR UPDATE")
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(internal)?;
+    let existing = sqlx::query(
+        "SELECT collection,key,revision,deleted,value FROM cloud_sync_records WHERE user_id=$1 AND collection=$2 AND key=$3",
     )
     .bind(user)
     .bind(&collection)
     .bind(&key)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(internal)?;
+    .map_err(internal)?
+    .map(record);
+    if existing
+        .as_ref()
+        .is_some_and(|value| !valid_record(value, current_cursor))
+    {
+        tracing::error!("sync write encountered an invalid stored record");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     match condition {
         Precondition::Create if existing.is_none() => (),
-        Precondition::Revision(n) if existing == Some(n) => (),
+        Precondition::Revision(n) if existing.as_ref().is_some_and(|r| r.revision == n) => (),
         _ => return Err(StatusCode::CONFLICT),
     }
     if existing.is_none() {
