@@ -223,9 +223,12 @@ automatically retry an uncertain decision. Historical published revisions
 remain addressable through the versioned API, but are not discoverable in this
 panel. The server continues to enforce cookie authentication, current roles,
 independent review and audit; a Cloud approval does not authorize local
-execution. UI component tests and a Chromium check at desktop and mobile sizes
-used mocked HTTP; they do not establish a production deployment or end-to-end
-moderation acceptance against a live database and authenticated sessions.
+execution. Component tests and a Chromium layout check use mocked HTTP. A
+separate Playwright test exercised the built panel against a disposable local
+PostgreSQL database and real cookie sessions: an author could not approve their
+own revision, an independent moderator approved it, and the moderator then
+withdrew the published revision. This does not establish a production
+deployment or broader operational acceptance.
 
 ## Workspace synchronization
 
