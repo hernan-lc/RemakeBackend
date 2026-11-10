@@ -7,7 +7,7 @@
 //! `unknown` and is never resent automatically.
 
 use super::{
-    canonical_json, db, is_command_id, now_ms, operation_class, role_admits, sha256_hex,
+    canonical_json, cluster, db, is_command_id, now_ms, operation_class, role_admits, sha256_hex,
     MAX_COMMAND_ARGS_BYTES, MAX_COMMAND_LIFETIME_MS, MAX_RESULT_BYTES,
 };
 use crate::{
@@ -53,12 +53,14 @@ enum Outbound {
 struct HostLink {
     connection: u64,
     device: Uuid,
+    fencing: i64,
     tx: mpsc::Sender<Outbound>,
 }
 
 struct SessionLink {
     host: Uuid,
     connection: u64,
+    fencing: i64,
     tx: mpsc::Sender<Outbound>,
 }
 
@@ -68,14 +70,31 @@ struct HubState {
     sessions: HashMap<Uuid, SessionLink>,
 }
 
-/// In-memory routing table for live connections.
-#[derive(Default)]
+/// Routing for live connections on this node, plus cross-node delivery through
+/// the coordination tables. Local state is never shared between nodes; the
+/// lease tables say which node owns each connection.
 pub struct Hub {
+    node: String,
     state: Mutex<HubState>,
     next_connection: AtomicU64,
 }
 
+/// Frame types used only between nodes to close a connection owned elsewhere.
+const CLOSE_FRAME: &str = "__close";
+
 impl Hub {
+    pub fn new(node: impl Into<String>) -> Self {
+        Self {
+            node: node.into(),
+            state: Mutex::new(HubState::default()),
+            next_connection: AtomicU64::new(0),
+        }
+    }
+
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
     fn connection_id(&self) -> u64 {
         self.next_connection.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -87,16 +106,31 @@ impl Hub {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn host_online(&self, host: Uuid) -> bool {
-        self.lock().hosts.contains_key(&host)
+    /// Live on this node, or owned by another node with an unexpired lease.
+    pub async fn host_online(&self, pool: &PgPool, host: Uuid) -> bool {
+        if self.lock().hosts.contains_key(&host) {
+            return true;
+        }
+        matches!(
+            cluster::owner(pool, cluster::Kind::Host, host).await,
+            Ok(Some(_))
+        )
     }
 
-    fn register_host(&self, host: Uuid, device: Uuid, connection: u64, tx: mpsc::Sender<Outbound>) {
+    fn register_host(
+        &self,
+        host: Uuid,
+        device: Uuid,
+        connection: u64,
+        fencing: i64,
+        tx: mpsc::Sender<Outbound>,
+    ) {
         let previous = self.lock().hosts.insert(
             host,
             HostLink {
                 connection,
                 device,
+                fencing,
                 tx,
             },
         );
@@ -105,17 +139,16 @@ impl Hub {
         }
     }
 
-    fn unregister_host(&self, host: Uuid, connection: u64) -> bool {
+    fn unregister_host(&self, host: Uuid, connection: u64) -> Option<i64> {
         let mut state = self.lock();
         if state
             .hosts
             .get(&host)
             .is_some_and(|link| link.connection == connection)
         {
-            state.hosts.remove(&host);
-            true
+            state.hosts.remove(&host).map(|link| link.fencing)
         } else {
-            false
+            None
         }
     }
 
@@ -124,6 +157,7 @@ impl Hub {
         session: Uuid,
         host: Uuid,
         connection: u64,
+        fencing: i64,
         tx: mpsc::Sender<Outbound>,
     ) {
         self.lock().sessions.insert(
@@ -131,22 +165,26 @@ impl Hub {
             SessionLink {
                 host,
                 connection,
+                fencing,
                 tx,
             },
         );
     }
 
-    fn unregister_session(&self, session: Uuid, connection: u64) {
+    fn unregister_session(&self, session: Uuid, connection: u64) -> Option<i64> {
         let mut state = self.lock();
         if state
             .sessions
             .get(&session)
             .is_some_and(|link| link.connection == connection)
         {
-            state.sessions.remove(&session);
+            state.sessions.remove(&session).map(|link| link.fencing)
+        } else {
+            None
         }
     }
 
+    /// Controllers attached to this node for one team.
     fn controllers_for(&self, host: Uuid) -> usize {
         self.lock()
             .sessions
@@ -155,9 +193,7 @@ impl Hub {
             .count()
     }
 
-    /// Sends a host-directed frame without blocking. A full or closed outbox fails
-    /// instead of queueing, so a slow host cannot accumulate commands.
-    pub fn send_host(&self, host: Uuid, frame: &Value) -> bool {
+    fn local_send_host(&self, host: Uuid, frame: &Value) -> bool {
         let state = self.lock();
         match state.hosts.get(&host) {
             Some(link) => link.tx.try_send(Outbound::Text(frame.to_string())).is_ok(),
@@ -165,7 +201,7 @@ impl Hub {
         }
     }
 
-    pub fn route_to_session(&self, session: Uuid, frame: &Value) -> bool {
+    fn local_send_session(&self, session: Uuid, frame: &Value) -> bool {
         let state = self.lock();
         match state.sessions.get(&session) {
             Some(link) => link.tx.try_send(Outbound::Text(frame.to_string())).is_ok(),
@@ -173,45 +209,211 @@ impl Hub {
         }
     }
 
-    pub fn notify_grants_changed(&self, host: Uuid) {
-        self.send_host(host, &json!({"type": "grants.changed"}));
+    /// Sends a host-directed frame. A full or closed outbox fails instead of
+    /// queueing, so a slow host cannot accumulate commands. Remote hosts receive
+    /// the frame through the owning node's queue.
+    pub async fn send_host(&self, pool: &PgPool, host: Uuid, frame: &Value) -> bool {
+        if self.local_send_host(host, frame) {
+            return true;
+        }
+        self.enqueue_remote(pool, cluster::Kind::Host, host, frame)
+            .await
     }
 
-    pub fn close_session(&self, session: Uuid, reason: &'static str) {
-        if let Some(link) = self.lock().sessions.remove(&session) {
-            let _ = link.tx.try_send(Outbound::Close(reason));
+    pub async fn route_to_session(&self, pool: &PgPool, session: Uuid, frame: &Value) -> bool {
+        if self.local_send_session(session, frame) {
+            return true;
+        }
+        self.enqueue_remote(pool, cluster::Kind::Session, session, frame)
+            .await
+    }
+
+    async fn enqueue_remote(
+        &self,
+        pool: &PgPool,
+        kind: cluster::Kind,
+        id: Uuid,
+        frame: &Value,
+    ) -> bool {
+        match cluster::owner(pool, kind, id).await {
+            Ok(Some(node)) if node != self.node => cluster::enqueue(pool, &node, kind, id, frame)
+                .await
+                .unwrap_or(false),
+            _ => false,
         }
     }
 
-    pub fn close_device(&self, device: Uuid, reason: &'static str) {
-        let mut state = self.lock();
-        let hosts: Vec<Uuid> = state
-            .hosts
-            .iter()
-            .filter(|(_, link)| link.device == device)
-            .map(|(host, _)| *host)
-            .collect();
-        for host in hosts {
-            if let Some(link) = state.hosts.remove(&host) {
-                let _ = link.tx.try_send(Outbound::Close(reason));
+    pub async fn notify_grants_changed(&self, pool: &PgPool, host: Uuid) {
+        self.send_host(pool, host, &json!({"type": "grants.changed"}))
+            .await;
+    }
+
+    pub async fn close_session(&self, pool: &PgPool, session: Uuid, reason: &'static str) {
+        let local = self.lock().sessions.remove(&session);
+        if let Some(link) = local {
+            let _ = link.tx.try_send(Outbound::Close(reason));
+            return;
+        }
+        self.enqueue_remote(
+            pool,
+            cluster::Kind::Session,
+            session,
+            &json!({"type": CLOSE_FRAME, "reason": reason}),
+        )
+        .await;
+    }
+
+    /// Closes the host link of a revoked device. Remote links are told through the owner queue.
+    pub async fn close_device(
+        &self,
+        pool: &PgPool,
+        device: Uuid,
+        host: Option<Uuid>,
+        reason: &'static str,
+    ) {
+        let local: Vec<Uuid> = {
+            let mut state = self.lock();
+            let found: Vec<Uuid> = state
+                .hosts
+                .iter()
+                .filter(|(_, link)| link.device == device)
+                .map(|(h, _)| *h)
+                .collect();
+            for host in &found {
+                if let Some(link) = state.hosts.remove(host) {
+                    let _ = link.tx.try_send(Outbound::Close(reason));
+                }
+            }
+            found
+        };
+        if local.is_empty() {
+            if let Some(host) = host {
+                self.enqueue_remote(
+                    pool,
+                    cluster::Kind::Host,
+                    host,
+                    &json!({"type": CLOSE_FRAME, "reason": reason}),
+                )
+                .await;
             }
         }
     }
 
-    pub fn close_host(&self, host: Uuid, reason: &'static str) {
-        let mut state = self.lock();
-        if let Some(link) = state.hosts.remove(&host) {
-            let _ = link.tx.try_send(Outbound::Close(reason));
+    /// Closes the team's host link and every controller session of that team,
+    /// wherever those connections live.
+    pub async fn close_host(&self, pool: &PgPool, host: Uuid, reason: &'static str) {
+        {
+            let mut state = self.lock();
+            if let Some(link) = state.hosts.remove(&host) {
+                let _ = link.tx.try_send(Outbound::Close(reason));
+            }
+            let sessions: Vec<Uuid> = state
+                .sessions
+                .iter()
+                .filter(|(_, link)| link.host == host)
+                .map(|(s, _)| *s)
+                .collect();
+            for session in sessions {
+                if let Some(link) = state.sessions.remove(&session) {
+                    let _ = link.tx.try_send(Outbound::Close(reason));
+                }
+            }
         }
-        let sessions: Vec<Uuid> = state
+        self.enqueue_remote(
+            pool,
+            cluster::Kind::Host,
+            host,
+            &json!({"type": CLOSE_FRAME, "reason": reason}),
+        )
+        .await;
+        let remote_sessions: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT s.id FROM cloud_remote_sessions s JOIN cloud_relay_leases l ON l.resource_kind='session' AND l.resource_id=s.id \
+             WHERE s.host_id=$1 AND s.status='active' AND l.expires_at > now()",
+        )
+        .bind(host)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for session in remote_sessions {
+            self.enqueue_remote(
+                pool,
+                cluster::Kind::Session,
+                session,
+                &json!({"type": CLOSE_FRAME, "reason": reason}),
+            )
+            .await;
+        }
+    }
+
+    /// Applies a frame that another node queued for a connection on this node.
+    fn deliver_local(&self, kind: cluster::Kind, id: Uuid, frame: &Value) {
+        if frame["type"] == CLOSE_FRAME {
+            let reason = match frame["reason"].as_str() {
+                Some("deviceRevoked") => "deviceRevoked",
+                Some("hostDisabled") => "hostDisabled",
+                Some("sessionRevoked") => "sessionRevoked",
+                Some("grantChanged") => "grantChanged",
+                Some("grantRevoked") => "grantRevoked",
+                _ => "closed",
+            };
+            match kind {
+                cluster::Kind::Host => {
+                    if let Some(link) = self.lock().hosts.remove(&id) {
+                        let _ = link.tx.try_send(Outbound::Close(reason));
+                    }
+                }
+                cluster::Kind::Session => {
+                    if let Some(link) = self.lock().sessions.remove(&id) {
+                        let _ = link.tx.try_send(Outbound::Close(reason));
+                    }
+                }
+            }
+            return;
+        }
+        match kind {
+            cluster::Kind::Host => {
+                self.local_send_host(id, frame);
+            }
+            cluster::Kind::Session => {
+                self.local_send_session(id, frame);
+            }
+        }
+    }
+
+    /// Renews every local lease. A connection whose lease was lost is closed here
+    /// so that two nodes never serve the same connection.
+    async fn renew_local(&self, pool: &PgPool) {
+        let _ = cluster::heartbeat(pool, &self.node).await;
+        let hosts: Vec<(Uuid, i64)> = self
+            .lock()
+            .hosts
+            .iter()
+            .map(|(h, l)| (*h, l.fencing))
+            .collect();
+        for (host, fencing) in hosts {
+            if !matches!(
+                cluster::renew(pool, &self.node, cluster::Kind::Host, host, fencing).await,
+                Ok(true)
+            ) {
+                if let Some(link) = self.lock().hosts.remove(&host) {
+                    let _ = link.tx.try_send(Outbound::Close("leaseLost"));
+                }
+            }
+        }
+        let sessions: Vec<(Uuid, i64)> = self
+            .lock()
             .sessions
             .iter()
-            .filter(|(_, link)| link.host == host)
-            .map(|(session, _)| *session)
+            .map(|(s, l)| (*s, l.fencing))
             .collect();
-        for session in sessions {
-            if let Some(link) = state.sessions.remove(&session) {
-                let _ = link.tx.try_send(Outbound::Close(reason));
+        for (session, fencing) in sessions {
+            if !matches!(
+                cluster::renew(pool, &self.node, cluster::Kind::Session, session, fencing).await,
+                Ok(true)
+            ) {
+                if let Some(link) = self.lock().sessions.remove(&session) {
+                    let _ = link.tx.try_send(Outbound::Close("leaseLost"));
+                }
             }
         }
     }
@@ -392,10 +594,18 @@ async fn run(state: AppState, socket: WebSocket) {
     let hub = &state.remote;
     let connection = hub.connection_id();
     let (tx, mut rx) = mpsc::channel::<Outbound>(OUTBOX_CAPACITY);
+    let link_kind = match authorized.role {
+        Role::Host => cluster::Kind::Host,
+        Role::Controller => cluster::Kind::Session,
+    };
+    let link_id = match authorized.role {
+        Role::Host => authorized.host,
+        Role::Controller => authorized.session.unwrap_or_else(Uuid::new_v4),
+    };
     match authorized.role {
-        Role::Host => hub.register_host(authorized.host, authorized.device, connection, tx),
+        Role::Host => {}
         Role::Controller => {
-            let session = authorized.session.unwrap_or_else(Uuid::new_v4);
+            let session = link_id;
             if hub.controllers_for(authorized.host) >= MAX_CONTROLLERS_PER_HOST {
                 let _ = sink
                     .send(Message::Text(
@@ -406,8 +616,25 @@ async fn run(state: AppState, socket: WebSocket) {
                 close_session_row(&state.pool, session).await;
                 return;
             }
-            hub.register_session(session, authorized.host, connection, tx);
         }
+    }
+    let fencing = match cluster::acquire(&state.pool, hub.node(), link_kind, link_id).await {
+        Ok(Some(fencing)) => fencing,
+        _ => {
+            let _ = sink
+                .send(Message::Text(
+                    frame("error", json!({"code": "busy"})).into(),
+                ))
+                .await;
+            let _ = sink.send(Message::Close(None)).await;
+            return;
+        }
+    };
+    match authorized.role {
+        Role::Host => {
+            hub.register_host(authorized.host, authorized.device, connection, fencing, tx)
+        }
+        Role::Controller => hub.register_session(link_id, authorized.host, connection, fencing, tx),
     }
     let ready = match authorized.role {
         Role::Host => frame("ready", json!({"role": "host", "hostId": authorized.host})),
@@ -427,7 +654,8 @@ async fn run(state: AppState, socket: WebSocket) {
     }
     if matches!(authorized.role, Role::Host) {
         // The host resynchronizes persisted grants through the owner API after every connect.
-        hub.notify_grants_changed(authorized.host);
+        hub.notify_grants_changed(&state.pool, authorized.host)
+            .await;
     }
     loop {
         tokio::select! {
@@ -481,7 +709,15 @@ async fn close_session_row(pool: &PgPool, session: Uuid) {
 async fn cleanup(state: &AppState, authorized: &Authorized, connection: u64) {
     match authorized.role {
         Role::Host => {
-            if state.remote.unregister_host(authorized.host, connection) {
+            if let Some(fencing) = state.remote.unregister_host(authorized.host, connection) {
+                let _ = cluster::release(
+                    &state.pool,
+                    state.remote.node(),
+                    cluster::Kind::Host,
+                    authorized.host,
+                    fencing,
+                )
+                .await;
                 let lost = sqlx::query("UPDATE cloud_remote_commands SET status='unknown', code='hostDisconnected', updated_at=now() WHERE host_id=$1 AND status IN ('accepted','running') RETURNING command_id,session_id")
                     .bind(authorized.host)
                     .fetch_all(&state.pool)
@@ -490,13 +726,22 @@ async fn cleanup(state: &AppState, authorized: &Authorized, connection: u64) {
                 for row in lost {
                     let session: Uuid = row.get("session_id");
                     let command: String = row.get("command_id");
-                    state.remote.route_to_session(session, &json!({"type": "result", "commandId": command, "status": "unknown", "code": "hostDisconnected"}));
+                    state.remote.route_to_session(&state.pool, session, &json!({"type": "result", "commandId": command, "status": "unknown", "code": "hostDisconnected"})).await;
                 }
             }
         }
         Role::Controller => {
             if let Some(session) = authorized.session {
-                state.remote.unregister_session(session, connection);
+                if let Some(fencing) = state.remote.unregister_session(session, connection) {
+                    let _ = cluster::release(
+                        &state.pool,
+                        state.remote.node(),
+                        cluster::Kind::Session,
+                        session,
+                        fencing,
+                    )
+                    .await;
+                }
                 close_session_row(&state.pool, session).await;
             }
         }
@@ -617,16 +862,20 @@ async fn host_result(state: &AppState, host: Uuid, value: &Value) -> String {
     if !matches!(updated, Ok(ref r) if r.rows_affected() == 1) {
         return frame("error", json!({"code": "conflict"}));
     }
-    state.remote.route_to_session(
-        session,
-        &json!({
-            "type": "result",
-            "commandId": command,
-            "status": to,
-            "code": code,
-            "result": result,
-        }),
-    );
+    state
+        .remote
+        .route_to_session(
+            &state.pool,
+            session,
+            &json!({
+                "type": "result",
+                "commandId": command,
+                "status": to,
+                "code": code,
+                "result": result,
+            }),
+        )
+        .await;
     frame("ack", json!({"commandId": command, "status": to}))
 }
 
@@ -720,7 +969,7 @@ async fn controller_command(state: &AppState, authorized: &Authorized, value: &V
         .await;
         return reject(&command, code);
     }
-    if !state.remote.host_online(authorized.host) {
+    if !state.remote.host_online(&state.pool, authorized.host).await {
         insert_receipt(
             &state.pool,
             authorized.host,
@@ -768,7 +1017,11 @@ async fn controller_command(state: &AppState, authorized: &Authorized, value: &V
         "expiresAt": expires_at,
         "requestId": Uuid::new_v4().to_string(),
     });
-    if !state.remote.send_host(authorized.host, &envelope) {
+    if !state
+        .remote
+        .send_host(&state.pool, authorized.host, &envelope)
+        .await
+    {
         // Nothing reached the host, so the receipt can close as rejected without ambiguity.
         let _ = sqlx::query("UPDATE cloud_remote_commands SET status='rejected', code='offline', updated_at=now() WHERE host_id=$1 AND command_id=$2 AND status='accepted'")
             .bind(authorized.host)
@@ -889,13 +1142,28 @@ pub async fn command_status(
     })))
 }
 
-/// Runs [`expire_stale`] periodically so receipts never wait for a new admission.
-pub fn spawn_expiry_sweeper(pool: PgPool, hub: std::sync::Arc<Hub>) {
+/// Background work for this node: heartbeat and lease renewal, delivery of frames
+/// queued by other nodes, expiry of stale receipts, and reaping of coordination rows.
+pub fn spawn_background(pool: PgPool, hub: std::sync::Arc<Hub>) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        let mut drain = tokio::time::interval(cluster::DRAIN_EVERY);
+        let mut renew = tokio::time::interval(cluster::RENEW_EVERY);
+        let mut reap = tokio::time::interval(Duration::from_secs(60));
         loop {
-            ticker.tick().await;
-            expire_stale(&pool, &hub).await;
+            tokio::select! {
+                _ = drain.tick() => {
+                    if let Ok(frames) = cluster::drain(&pool, hub.node(), 256).await {
+                        for (kind, id, frame) in frames {
+                            hub.deliver_local(kind, id, &frame);
+                        }
+                    }
+                }
+                _ = renew.tick() => hub.renew_local(&pool).await,
+                _ = reap.tick() => {
+                    let _ = cluster::reap(&pool).await;
+                    expire_stale(&pool, &hub).await;
+                }
+            }
         }
     });
 }
@@ -912,9 +1180,11 @@ pub async fn expire_stale(pool: &PgPool, hub: &Hub) -> u64 {
         let session: Uuid = row.get("session_id");
         let command: String = row.get("command_id");
         hub.route_to_session(
+            pool,
             session,
             &json!({"type": "result", "commandId": command, "status": "expired"}),
-        );
+        )
+        .await;
     }
     count
 }

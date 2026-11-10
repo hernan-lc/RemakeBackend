@@ -412,7 +412,7 @@ pub async fn decide_request(
                 .map_err(db(&rid))?;
             audit_from(&mut tx, &rid, owner, Some(host), "request.approved", grant).await?;
             tx.commit().await.map_err(db(&rid))?;
-            state.remote.notify_grants_changed(host);
+            state.remote.notify_grants_changed(&state.pool, host).await;
             Ok(Json(json!({
                 "requestId": request,
                 "status": "approved",
@@ -511,9 +511,12 @@ pub async fn update_grant(
     audit_from(&mut tx, &rid, owner, Some(host), "grant.updated", grant).await?;
     tx.commit().await.map_err(db(&rid))?;
     for row in closed {
-        state.remote.close_session(row.get("id"), "grantChanged");
+        state
+            .remote
+            .close_session(&state.pool, row.get("id"), "grantChanged")
+            .await;
     }
-    state.remote.notify_grants_changed(host);
+    state.remote.notify_grants_changed(&state.pool, host).await;
     Ok(Json(
         json!({"id": grant, "role": role, "status": "pendingHost", "revision": revision}),
     ))
@@ -566,9 +569,12 @@ pub async fn revoke_grant(
     audit_from(&mut tx, &rid, owner, Some(host), "grant.revoked", grant).await?;
     tx.commit().await.map_err(db(&rid))?;
     for row in closed {
-        state.remote.close_session(row.get("id"), "grantRevoked");
+        state
+            .remote
+            .close_session(&state.pool, row.get("id"), "grantRevoked")
+            .await;
     }
-    state.remote.notify_grants_changed(host);
+    state.remote.notify_grants_changed(&state.pool, host).await;
     Ok(Json(json!({"id": grant, "status": "revoked"})))
 }
 
@@ -619,6 +625,9 @@ pub async fn revoke_session(
     if updated.rows_affected() == 0 {
         return Err(V3Error::new(&rid, Kind::NotFound));
     }
-    state.remote.close_session(session, "sessionRevoked");
+    state
+        .remote
+        .close_session(&state.pool, session, "sessionRevoked")
+        .await;
     Ok(Json(json!({"id": session, "status": "revoked"})))
 }

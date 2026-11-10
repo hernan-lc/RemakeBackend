@@ -171,7 +171,7 @@ fn service_state(auth: &AuthContext, pool: &PgPool) -> AppState {
         object_storage: None,
         step_up_oauth: None,
         temporary_log_approvals: false,
-        remote: std::sync::Arc::new(crate::remote::relay::Hub::default()),
+        remote: std::sync::Arc::new(crate::remote::relay::Hub::new("schema-test")),
     }
 }
 async fn ready(auth: &AuthContext, pool: &PgPool) -> StatusCode {

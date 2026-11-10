@@ -6,6 +6,7 @@
 //! are the admission record the host confirmed, not a second rules engine.
 
 pub mod access;
+pub mod cluster;
 pub mod hosts;
 pub mod relay;
 pub mod tickets;

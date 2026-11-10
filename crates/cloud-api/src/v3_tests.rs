@@ -26,6 +26,7 @@ struct User {
 struct Fixture {
     router: Router,
     pool: PgPool,
+    context: AuthContext,
     users: Vec<User>,
     ws_url: String,
     server: tokio::task::JoinHandle<()>,
@@ -87,7 +88,7 @@ async fn fixture(users_wanted: usize) -> Fixture {
     let router = app(
         context.clone(),
         pool.clone(),
-        AuthRouter::new(context).unwrap(),
+        AuthRouter::new(context.clone()).unwrap(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws_url = format!(
@@ -106,6 +107,7 @@ async fn fixture(users_wanted: usize) -> Fixture {
     Fixture {
         router,
         pool,
+        context,
         users,
         ws_url,
         server,
@@ -1026,7 +1028,7 @@ async fn expiry_sweep_expires_accepted_receipts_and_keeps_running_ones_in_flight
             .await
             .unwrap();
     }
-    let hub = crate::remote::relay::Hub::default();
+    let hub = crate::remote::relay::Hub::new("expiry-test");
     crate::remote::relay::expire_stale(&f.pool, &hub).await;
     let state_of = |command: &'static str| {
         let pool = f.pool.clone();
@@ -1301,4 +1303,160 @@ async fn assets_overlays_and_packages_are_owned_validated_and_preflighted() {
     assert_eq!(drifted["canApply"], false, "{drifted}");
     assert_eq!(drifted["blocking"][0]["status"], "revisionChanged");
     assert_eq!(drifted["items"][0]["activation"], "disabledUntilExplicit");
+}
+
+/// Starts a second relay node on the same database and auth context. Each app
+/// instance owns its hub and node id, like two replicas behind one origin.
+async fn second_node(f: &Fixture) -> (String, tokio::task::JoinHandle<()>) {
+    let router = app(
+        f.context.clone(),
+        f.pool.clone(),
+        AuthRouter::new(f.context.clone()).unwrap(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "ws://{}/api/v3/remote/socket",
+        listener.local_addr().unwrap()
+    );
+    let handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (url, handle)
+}
+
+async fn connect_at(url: &str, ticket: &str) -> (WsStream, Value) {
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    ws.send(Message::Text(
+        json!({"type": "auth", "ticket": ticket}).to_string().into(),
+    ))
+    .await
+    .unwrap();
+    let ready = next_frame(&mut ws, "ready").await;
+    (ws, ready)
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn commands_cross_relay_nodes_through_the_coordinated_queue() {
+    let f = fixture(2).await;
+    let (host_owner, guest) = (0, 1);
+    let (node_b, node_b_server) = second_node(&f).await;
+    let (_, _, host) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        "/api/v3/remote/hosts",
+        Some(json!({"name": "Desk PC", "protocolVersion": 1})),
+    )
+    .await;
+    let host_id = host["id"].as_str().unwrap().to_owned();
+    let host_key = key();
+    let host_device = enroll(
+        &f,
+        host_owner,
+        "Desk host",
+        "host",
+        Some(&host_id),
+        &host_key,
+    )
+    .await;
+    let host_device_id = host_device["id"].as_str().unwrap().to_owned();
+    let controller_key = key();
+    let controller = enroll(&f, guest, "Phone", "controller", None, &controller_key).await;
+    let controller_id = controller["id"].as_str().unwrap().to_owned();
+    let (_, _, invitation) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host_id}/invitations"),
+        Some(json!({"requestedRole": "observer"})),
+    )
+    .await;
+    let token = invitation["token"].as_str().unwrap().to_owned();
+    call(
+        &f,
+        Some(guest),
+        "POST",
+        "/api/v3/remote/invitations/redeem",
+        Some(json!({"token": token, "deviceId": controller_id})),
+    )
+    .await;
+    let (_, _, requests) = call(
+        &f,
+        Some(host_owner),
+        "GET",
+        &format!("/api/v3/remote/hosts/{host_id}/requests"),
+        None,
+    )
+    .await;
+    let request_id = requests["items"][0]["id"].as_str().unwrap().to_owned();
+    let (_, _, decided) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host_id}/requests/{request_id}/decision"),
+        Some(json!({"decision": "approve"})),
+    )
+    .await;
+    let grant_id = decided["grant"]["id"].as_str().unwrap().to_owned();
+
+    // The host connects to node A (the first server), the controller to node B.
+    let (status, host_ticket) =
+        ticket(&f, host_owner, &host_id, &host_device_id, "host", &host_key).await;
+    assert_eq!(status, StatusCode::CREATED, "{host_ticket}");
+    let (mut host_ws, ready) = connect(&f, host_ticket["ticket"].as_str().unwrap()).await;
+    assert_eq!(ready["role"], "host");
+    send(
+        &mut host_ws,
+        json!({"type": "grant.confirmed", "grantId": grant_id, "revision": 1}),
+    )
+    .await;
+    next_frame(&mut host_ws, "ack").await;
+    let (status, control_ticket) = ticket(
+        &f,
+        guest,
+        &host_id,
+        &controller_id,
+        "controller",
+        &controller_key,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{control_ticket}");
+    let (mut control_ws, ready) =
+        connect_at(&node_b, control_ticket["ticket"].as_str().unwrap()).await;
+    assert_eq!(ready["role"], "controller");
+
+    // A command admitted on node B reaches the host owned by node A, and the result comes back.
+    send(&mut control_ws, json!({"type": "command", "commandId": "xnode-0001", "operation": "live.status", "args": {}, "policyRevision": 1, "expiresAt": millis_from_now(30_000)})).await;
+    assert_eq!(
+        next_frame(&mut control_ws, "command.accepted").await["commandId"],
+        "xnode-0001"
+    );
+    let forwarded = next_frame(&mut host_ws, "command").await;
+    assert_eq!(forwarded["operation"], "live.status");
+    send(&mut host_ws, json!({"type": "result", "commandId": "xnode-0001", "status": "completed", "result": {"live": true}})).await;
+    let done = next_frame(&mut control_ws, "result").await;
+    assert_eq!(done["status"], "completed");
+    assert_eq!(done["result"]["live"], true);
+
+    // Revoking the grant closes the controller that lives on node B.
+    let (status, _, _) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host_id}/grants/{grant_id}/revoke"),
+        Some(json!({"expectedRevision": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        next_frame(&mut control_ws, "closed").await["reason"],
+        "grantRevoked"
+    );
+    node_b_server.abort();
 }

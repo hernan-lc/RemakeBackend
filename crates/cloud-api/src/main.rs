@@ -804,8 +804,8 @@ fn app_inner(
     flags: RouterFlags,
 ) -> Router {
     // One hub per app instance; the sweeper and the relay share it so expiries reach live controllers.
-    let remote_hub = std::sync::Arc::new(remote::relay::Hub::default());
-    remote::relay::spawn_expiry_sweeper(pool.clone(), remote_hub.clone());
+    let remote_hub = std::sync::Arc::new(remote::relay::Hub::new(relay_node_id()));
+    remote::relay::spawn_background(pool.clone(), remote_hub.clone());
     let social_limiter = context
         .secondary_storage
         .clone()
@@ -1271,3 +1271,12 @@ mod schema_v2_recovery_tests;
 mod step_up_tests;
 #[cfg(test)]
 mod v3_tests;
+
+/// Identifies this relay node. Set `RELAY_NODE_ID` to a stable name per process;
+/// a random id is used otherwise, which is correct but changes on restart.
+fn relay_node_id() -> String {
+    std::env::var("RELAY_NODE_ID")
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| format!("relay-{}", uuid::Uuid::new_v4()))
+}

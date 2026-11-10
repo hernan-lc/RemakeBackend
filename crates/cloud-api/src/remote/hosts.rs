@@ -324,9 +324,12 @@ pub async fn revoke_device(
         .map_err(db(&rid))?;
     audit(&mut tx, &rid, owner, host_id, "device.revoked", device).await?;
     tx.commit().await.map_err(db(&rid))?;
-    state.remote.close_device(device, "deviceRevoked");
+    state
+        .remote
+        .close_device(&state.pool, device, host_id, "deviceRevoked")
+        .await;
     for host in affected_hosts {
-        state.remote.notify_grants_changed(host);
+        state.remote.notify_grants_changed(&state.pool, host).await;
     }
     Ok(Json(json!({"id": device, "status": "revoked"})))
 }
@@ -377,20 +380,18 @@ pub async fn list_hosts(
         .fetch_all(&state.pool)
         .await
         .map_err(db(&rid))?;
-    let items: Vec<Value> = rows
-        .iter()
-        .map(|row| {
-            let id: Uuid = row.get("id");
-            json!({
-                "id": id,
-                "name": row.get::<String, _>("name"),
-                "status": row.get::<String, _>("status"),
-                "protocolVersion": row.get::<i32, _>("protocol_version"),
-                "revision": row.get::<i64, _>("revision"),
-                "online": state.remote.host_online(id),
-            })
-        })
-        .collect();
+    let mut items: Vec<Value> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let id: Uuid = row.get("id");
+        items.push(json!({
+            "id": id,
+            "name": row.get::<String, _>("name"),
+            "status": row.get::<String, _>("status"),
+            "protocolVersion": row.get::<i32, _>("protocol_version"),
+            "revision": row.get::<i64, _>("revision"),
+            "online": state.remote.host_online(&state.pool, id).await,
+        }));
+    }
     Ok(Json(json!({"items": items})))
 }
 
@@ -414,7 +415,7 @@ pub async fn get_host(
         "status": row.get::<String, _>("status"),
         "protocolVersion": row.get::<i32, _>("protocol_version"),
         "revision": row.get::<i64, _>("revision"),
-        "online": state.remote.host_online(host),
+        "online": state.remote.host_online(&state.pool, host).await,
     })))
 }
 
@@ -483,7 +484,10 @@ pub async fn update_host(
     .await?;
     tx.commit().await.map_err(db(&rid))?;
     if disabled {
-        state.remote.close_host(host, "hostDisabled");
+        state
+            .remote
+            .close_host(&state.pool, host, "hostDisabled")
+            .await;
     }
     let row =
         sqlx::query("SELECT name,status,protocol_version FROM cloud_remote_hosts WHERE id=$1")
@@ -497,7 +501,7 @@ pub async fn update_host(
         "status": row.get::<String, _>("status"),
         "protocolVersion": row.get::<i32, _>("protocol_version"),
         "revision": revision,
-        "online": state.remote.host_online(host),
+        "online": state.remote.host_online(&state.pool, host).await,
     })))
 }
 
