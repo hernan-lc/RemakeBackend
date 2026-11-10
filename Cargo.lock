@@ -938,6 +938,7 @@ dependencies = [
 name = "cloud-api"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "axum",
  "base64 0.22.1",
  "better-auth",
@@ -951,6 +952,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hex",
+ "hmac 0.12.1",
  "ipnet",
  "jsonwebtoken",
  "percent-encoding",

@@ -1460,3 +1460,153 @@ async fn commands_cross_relay_nodes_through_the_coordinated_queue() {
     );
     node_b_server.abort();
 }
+
+async fn deliver(
+    f: &Fixture,
+    connection: &str,
+    delivery: &str,
+    timestamp: i64,
+    body: &[u8],
+    secret: &str,
+) -> (StatusCode, Value) {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v3/integrations/webhook/{connection}/deliveries"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-tiktools-timestamp", timestamp.to_string())
+        .header("x-tiktools-delivery", delivery)
+        .header("x-tiktools-signature", signature)
+        .body(Body::from(body.to_vec()))
+        .unwrap();
+    let response = f.router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn webhook_integration_verifies_signatures_deduplicates_and_refuses_without_a_key() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    std::env::set_var("INTEGRATION_SECRET_KEY", STANDARD.encode([42u8; 32]));
+    let f = fixture(2).await;
+    let (owner, other) = (0, 1);
+    let (status, _, providers) =
+        call(&f, None, "GET", "/api/v3/integrations/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        providers["providers"][0]["id"], "webhook",
+        "published once the server key is configured"
+    );
+
+    let (status, _, created) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/integrations/webhook/connect",
+        Some(json!({"label": "Stream alerts"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let connection = created["connectionId"].as_str().unwrap().to_owned();
+    let secret = created["secret"].as_str().unwrap().to_owned();
+    assert_eq!(secret.len(), 64, "the secret is shown once, as hex");
+
+    let now = chrono::Utc::now().timestamp();
+    let body = br#"{"event":"gift","amount":3}"#;
+    let (status, _) = deliver(&f, &connection, "delivery-0001", now, body, &secret).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, duplicate) = deliver(&f, &connection, "delivery-0001", now, body, &secret).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(duplicate["duplicate"], true, "a redelivery is idempotent");
+    let (status, _) = deliver(&f, &connection, "delivery-0002", now, body, "wrong-secret").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a wrong signature is refused"
+    );
+    let (status, _) = deliver(&f, &connection, "delivery-0003", now - 3600, body, &secret).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a stale timestamp is refused"
+    );
+
+    let (status, _, events) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/integrations/connections/{connection}/events"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        events["items"].as_array().unwrap().len(),
+        1,
+        "only the verified delivery is stored"
+    );
+    assert_eq!(events["items"][0]["payload"]["amount"], 3);
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "GET",
+        &format!("/api/v3/integrations/connections/{connection}/events"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another account cannot read the events"
+    );
+
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/integrations/connections/{connection}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = deliver(&f, &connection, "delivery-0004", now, body, &secret).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked connection accepts nothing"
+    );
+
+    std::env::remove_var("INTEGRATION_SECRET_KEY");
+    let (status, _, providers) =
+        call(&f, None, "GET", "/api/v3/integrations/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        providers["providers"].as_array().unwrap().len(),
+        0,
+        "unpublished without the key"
+    );
+    let (status, _, body) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/integrations/webhook/connect",
+        Some(json!({"label": "No key"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], "misconfigured");
+}

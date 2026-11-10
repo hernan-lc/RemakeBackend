@@ -216,21 +216,38 @@ receipt before doing anything else.
 
 ## Integrations
 
-`GET /api/v3/integrations/providers` returns an empty list. The connectors audited
-in TikTools-app (OBS, RCON, audio, local files) run on the host PC and are reached
-through remote control. No backend adapter is implemented, so none is published.
-`connect` and operation routes answer `unsupported`; `disconnect` answers
-`notFound`. A provider is listed only when an implemented, configured adapter exists.
+The first provider is a **signed inbound webhook**.
+
+- `POST /api/v3/integrations/webhook/connect` `{label}` creates a connection and returns
+  its secret **once** (64 hex characters). Only the secret sealed with AES-256-GCM is stored,
+  bound to the connection id as associated data.
+- Deliveries: `POST /api/v3/integrations/webhook/{connectionId}/deliveries` with
+  `x-tiktools-timestamp`, `x-tiktools-delivery` and `x-tiktools-signature: sha256=<hex>`,
+  where the hex is HMAC-SHA256 over `timestamp + "." + raw body`. Timestamps must be within
+  five minutes of the server clock. Bodies are JSON objects of at most 64 KiB. A repeated
+  delivery id answers `duplicate: true` and stores nothing new. Each connection keeps its 200
+  newest events.
+- `GET /api/v3/integrations/connections`, `GET …/connections/{id}/events` and
+  `DELETE …/connections/{id}` (owner only). Deleting removes the sealed secret and refuses
+  later deliveries; stored events stay readable.
+- The server key is `INTEGRATION_SECRET_KEY`: 32 random bytes, base64. Without it the provider
+  is not published and connecting answers `misconfigured`.
+- Operations (`…/operations/{id}`) answer `unsupported`; no provider defines any yet.
+
+Other providers (OAuth-based services, host-side connectors such as OBS or RCON) need their
+own credentials and contracts. None is published until it is implemented and configured.
 
 ## Operations
 
 - Apply migrations explicitly, after a backup: `20261110000001_plugin_presentation.sql`
   and `20261110000002_remote_control.sql`. Migrations are not reversible here; restore
   the backup to roll back.
-- **The relay is single-process.** Connection routing lives in memory
-  (`crates/cloud-api/src/remote/relay.rs`, `Hub`). Run one API replica when remote
-  control is enabled. Multiple replicas need connection ownership, leases with
-  fencing and inter-node delivery first.
+- **The relay runs on several replicas.** Each replica is a relay node (`RELAY_NODE_ID`, or a
+  random id per process). A connection is owned by one node through a lease (30 seconds,
+  renewed every 10). The lease carries a fencing token that grows whenever ownership moves; a
+  node that cannot renew its lease closes the connection. Frames for a connection owned by
+  another node are queued in PostgreSQL (`cloud_relay_frames`, 128 KiB each) and drained by the
+  owner every 200 ms. Migration `20261110000004_relay_coordination.sql` adds the tables.
 - Trusted origins are the existing `AuthOptions.trusted_origins`. A WebSocket upgrade
   that presents an `Origin` outside that list is refused with `forbidden`. Requests
   without an `Origin` (native clients) are accepted; the ticket is what authenticates.
@@ -267,12 +284,9 @@ import flows. The backend never applies a package.
 
 ## Not implemented (explicit)
 
-- **Backend integration adapters** (section 11): none exists. The real connectors run on
-  the host PC and need credentials for each provider; no adapter is published until one
-  is implemented and configured.
-- **Multi-replica relay** (section 10.5): connection routing is in memory. Ownership,
-  leases with fencing and inter-node delivery are not implemented.
-- **Host-side client**: the WSS client, grant persistence and confirmation are in
+- **Integration providers beyond the signed webhook**: they require their own credentials and
+  contracts.
+- **Host-side client**: the WSS client, grant persistence and confirmation are implemented in
   TikTools-app, not in this repository.
 - **Overlay and package rendering in the app** and the **apply journal** are client work.
 
