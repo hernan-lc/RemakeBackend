@@ -43,6 +43,7 @@ pub enum Kind {
     Offline,
     Misconfigured,
     RateLimited,
+    QuotaExceeded,
     TemporaryFailure,
 }
 
@@ -59,6 +60,7 @@ impl Kind {
             Kind::Offline => "offline",
             Kind::Misconfigured => "misconfigured",
             Kind::RateLimited => "rateLimited",
+            Kind::QuotaExceeded => "quotaExceeded",
             Kind::TemporaryFailure => "temporaryFailure",
         }
     }
@@ -75,6 +77,7 @@ impl Kind {
             Kind::Offline => StatusCode::SERVICE_UNAVAILABLE,
             Kind::Misconfigured => StatusCode::SERVICE_UNAVAILABLE,
             Kind::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Kind::QuotaExceeded => StatusCode::INSUFFICIENT_STORAGE,
             Kind::TemporaryFailure => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -102,6 +105,7 @@ impl Kind {
             Kind::Offline => "api.offline",
             Kind::Misconfigured => "api.misconfigured",
             Kind::RateLimited => "api.rateLimited",
+            Kind::QuotaExceeded => "api.quotaExceeded",
             Kind::TemporaryFailure => "api.temporaryFailure",
         }
     }

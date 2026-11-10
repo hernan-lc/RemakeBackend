@@ -580,6 +580,8 @@ async fn list_library(
         None | Some("") => None,
         Some("template") => Some("template"),
         Some("profile") => Some("profile"),
+        Some("overlay") => Some("overlay"),
+        Some("package") => Some("package"),
         Some(_) => return Err(V3Error::new(&rid, Kind::InvalidRequest)),
     };
     let after = match params.get("cursor") {

@@ -889,6 +889,17 @@ pub async fn command_status(
     })))
 }
 
+/// Runs [`expire_stale`] periodically so receipts never wait for a new admission.
+pub fn spawn_expiry_sweeper(pool: PgPool, hub: std::sync::Arc<Hub>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            expire_stale(&pool, &hub).await;
+        }
+    });
+}
+
 /// Marks accepted commands whose lifetime ended as `expired`. Running commands are
 /// left alone: the host may still be executing them, so they stay in flight.
 pub async fn expire_stale(pool: &PgPool, hub: &Hub) -> u64 {

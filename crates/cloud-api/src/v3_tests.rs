@@ -966,3 +966,339 @@ async fn socket_refuses_untrusted_origins_and_integrations_publish_no_provider()
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(body["code"], "unsupported");
 }
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn expiry_sweep_expires_accepted_receipts_and_keeps_running_ones_in_flight() {
+    let f = fixture(1).await;
+    let owner = f.users[0].id.clone();
+    let host = uuid::Uuid::new_v4();
+    let host_device = uuid::Uuid::new_v4();
+    let controller = uuid::Uuid::new_v4();
+    let grant = uuid::Uuid::new_v4();
+    let session = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_remote_hosts(id,owner_user_id,name,protocol_version) VALUES($1,$2,'Sweep PC',1)")
+        .bind(host)
+        .bind(&owner)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_remote_devices(id,owner_user_id,label,kind,host_id,public_key) VALUES($1,$2,'host','host',$3,$4)")
+        .bind(host_device)
+        .bind(&owner)
+        .bind(host)
+        .bind(rand::random::<[u8; 32]>().to_vec())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_remote_devices(id,owner_user_id,label,kind,public_key) VALUES($1,$2,'phone','controller',$3)")
+        .bind(controller)
+        .bind(&owner)
+        .bind(rand::random::<[u8; 32]>().to_vec())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_remote_grants(id,host_id,device_id,requester_user_id,role,policy,status,revision,confirmed_revision) VALUES($1,$2,$3,$4,'observer','{}','active',1,1)")
+        .bind(grant)
+        .bind(host)
+        .bind(controller)
+        .bind(&owner)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_remote_sessions(id,host_id,grant_id,device_id,grant_revision) VALUES($1,$2,$3,$4,1)")
+        .bind(session)
+        .bind(host)
+        .bind(grant)
+        .bind(controller)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let digest = "c".repeat(64);
+    for (command, status) in [("sweep-accepted", "accepted"), ("sweep-running", "running")] {
+        sqlx::query("INSERT INTO cloud_remote_commands(host_id,command_id,session_id,operation,args_sha256,status,expires_at) VALUES($1,$2,$3,'live.status',$4,$5,now() - interval '1 second')")
+            .bind(host)
+            .bind(command)
+            .bind(session)
+            .bind(&digest)
+            .bind(status)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+    }
+    let hub = crate::remote::relay::Hub::default();
+    crate::remote::relay::expire_stale(&f.pool, &hub).await;
+    let state_of = |command: &'static str| {
+        let pool = f.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM cloud_remote_commands WHERE host_id=$1 AND command_id=$2",
+            )
+            .bind(host)
+            .bind(command)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(state_of("sweep-accepted").await, "expired");
+    assert_eq!(
+        state_of("sweep-running").await,
+        "running",
+        "the host may still be executing it"
+    );
+}
+
+fn tiny_png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    bytes
+}
+
+async fn call_raw(
+    f: &Fixture,
+    user: usize,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+    content_type: &str,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::COOKIE, &f.users[user].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::from(body))
+        .unwrap();
+    let response = f.router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap()
+        .to_vec();
+    (status, headers, bytes)
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn assets_overlays_and_packages_are_owned_validated_and_preflighted() {
+    let f = fixture(2).await;
+    let (owner, other) = (0, 1);
+
+    // Assets: only verified rasters are stored, duplicates return the same id, reads stay with the owner.
+    let icon = tiny_png(64, 64);
+    let (status, _, body) = call_raw(
+        &f,
+        owner,
+        "POST",
+        "/api/v3/assets",
+        icon.clone(),
+        "image/png",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let uploaded: Value = serde_json::from_slice(&body).unwrap();
+    let asset = uploaded["id"].as_str().unwrap().to_owned();
+    assert_eq!(uploaded["mime"], "image/png");
+    let (status, _, again) = call_raw(&f, owner, "POST", "/api/v3/assets", icon, "image/png").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&again).unwrap()["id"],
+        asset.as_str()
+    );
+    let (status, _, _) = call_raw(
+        &f,
+        owner,
+        "POST",
+        "/api/v3/assets",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
+        "image/svg+xml",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "SVG is never admitted");
+    let (status, headers, bytes) = call_raw(
+        &f,
+        owner,
+        "GET",
+        &format!("/api/v3/assets/{asset}"),
+        Vec::new(),
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("content-type").unwrap(), "image/png");
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(bytes.len(), tiny_png(64, 64).len());
+    let (status, _, _) = call_raw(
+        &f,
+        other,
+        "GET",
+        &format!("/api/v3/assets/{asset}"),
+        Vec::new(),
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another account cannot read the asset"
+    );
+
+    // Overlays: a typed layout referencing an owned asset; stale revisions conflict; foreign assets are not found.
+    let overlay = json!({
+        "overlayVersion": 1,
+        "kind": "gift",
+        "title": "Gift alert",
+        "canvas": {"width": 1920, "height": 1080},
+        "elements": [
+            {"id": "logo", "type": "art", "x": 0, "y": 0, "width": 64, "height": 64, "assetId": asset},
+            {"id": "who", "type": "text", "x": 80, "y": 0, "width": 400, "height": 40, "source": {"kind": "field", "field": "viewer.name"}}
+        ],
+        "capabilities": ["live.read"]
+    });
+    let (status, _, created) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay.clone()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let overlay_id = created["id"].as_str().unwrap().to_owned();
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay.clone()})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the other account cannot reference this asset"
+    );
+    let (status, _, stale) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{overlay_id}/revisions"),
+        Some(json!({"document": overlay.clone(), "expectedRevision": 7})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    let mut revised = overlay.clone();
+    revised["title"] = json!("Gift alert v2");
+    let (status, _, next) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{overlay_id}/revisions"),
+        Some(json!({"document": revised, "expectedRevision": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{next}");
+    assert_eq!(next["revision"], 2);
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "GET",
+        &format!("/api/v3/overlays/{overlay_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Packages pin the current overlay revision; revising the overlay afterwards blocks application in preflight.
+    let (status, _, package) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/packages",
+        Some(json!({
+            "title": "Gift pack",
+            "items": [{"kind": "overlay", "id": overlay_id, "revision": 2, "required": true}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package}");
+    let package_id = package["id"].as_str().unwrap().to_owned();
+    let (status, _, ready) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/packages/{package_id}/preflight"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ready["canApply"], true, "{ready}");
+    assert_eq!(ready["applyMode"], "clientJournal");
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/packages",
+        Some(json!({
+            "title": "Stale pin",
+            "items": [{"kind": "overlay", "id": overlay_id, "revision": 1, "required": true}]
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "pinning an old revision is refused at creation"
+    );
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/packages",
+        Some(json!({
+            "title": "Plugin pin",
+            "items": [{"kind": "plugin", "id": "acme.absent", "version": "1.0.0", "required": true}]
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a plugin absent from the active generation is not pinned"
+    );
+
+    let mut second = revised.clone();
+    second["title"] = json!("Gift alert v3");
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{overlay_id}/revisions"),
+        Some(json!({"document": second, "expectedRevision": 2})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, _, drifted) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/packages/{package_id}/preflight"),
+        None,
+    )
+    .await;
+    assert_eq!(drifted["canApply"], false, "{drifted}");
+    assert_eq!(drifted["blocking"][0]["status"], "revisionChanged");
+    assert_eq!(drifted["items"][0]["activation"], "disabledUntilExplicit");
+}

@@ -234,20 +234,47 @@ through remote control. No backend adapter is implemented, so none is published.
 - Trusted origins are the existing `AuthOptions.trusted_origins`. A WebSocket upgrade
   that presents an `Origin` outside that list is refused with `forbidden`. Requests
   without an `Origin` (native clients) are accepted; the ticket is what authenticates.
-- Accepted commands whose lifetime has ended are marked `expired` when the relay next
-  admits a command. No background sweeper runs yet, so such receipts can remain
-  `accepted` until then.
+- Accepted commands whose lifetime has ended are marked `expired` by a background sweeper
+  every 5 seconds, sharing the relay hub. Running commands stay in flight.
+
+## Media, overlays and packages (section 9.1)
+
+- **Assets** `POST /api/v3/assets` accepts raw PNG, JPEG or WebP bytes up to 512 KiB.
+  The format is read from the signature bytes, dimensions from the header
+  (4096 pixels maximum per side), and pixels are never decoded. SVG is refused.
+  Identical bytes return the existing id. Quotas per account: 200 assets and 32 MiB.
+  `GET /api/v3/assets/{id}` serves the owner only, with the verified content type
+  and `X-Content-Type-Options: nosniff`.
+- **Overlays** `POST /api/v3/overlays`, `GET /api/v3/overlays/{id}`,
+  `POST /api/v3/overlays/{id}/revisions` (`expectedRevision`). Schema version 1:
+  canvas 320–3840 × 180–2160; up to 64 elements of type `text`, `avatar` or `art`;
+  geometry must fit the canvas; text comes from a static string or an allow-listed
+  event field; art references an asset owned by the same account. Unknown keys are
+  refused. Kinds: follow, gift, chat, share, subscribe, likes, ranking. Overlays stay
+  private and are never published through the v2 review.
+- **Packages** `POST /api/v3/packages`, `GET /api/v3/packages/{id}`,
+  `GET /api/v3/packages/{id}/preflight`. A package pins each reference: plugins by
+  version (checked against the active generation), templates and profiles and
+  overlays by revision. Creation refuses missing or drifted pins. Preflight reports
+  each item's current status (`ready`, `missing`, `notInstallable`,
+  `revisionChanged`, `noActiveGeneration`), what blocks application, and
+  `applyMode: clientJournal`. Plugin permissions are shown by the host's consent
+  step because the backend does not store them (`reviewRequired`). Imported
+  automations stay disabled (`disabledUntilExplicit`).
+
+Applying a package is performed by the client, which uses the existing install and
+import flows. The backend never applies a package.
 
 ## Not implemented (explicit)
 
-- **Assets, overlays and packages** (plan section 9.1): no asset upload pipeline,
-  no overlay schema, no bundle preflight. These require renderer and package
-  contracts from TikTools-app first.
-- **Backend integration adapters**: none exist yet (section 11).
-- **Multi-replica relay** (section 10.5).
-- **Host-side client**: the WSS client, grant persistence and confirmation are
-  implemented in TikTools-app, not in this repository.
-- **Automatic sweeper** for expired commands and retention of audit rows.
+- **Backend integration adapters** (section 11): none exists. The real connectors run on
+  the host PC and need credentials for each provider; no adapter is published until one
+  is implemented and configured.
+- **Multi-replica relay** (section 10.5): connection routing is in memory. Ownership,
+  leases with fencing and inter-node delivery are not implemented.
+- **Host-side client**: the WSS client, grant persistence and confirmation are in
+  TikTools-app, not in this repository.
+- **Overlay and package rendering in the app** and the **apply journal** are client work.
 
 ## Verification
 

@@ -2,6 +2,7 @@ mod account;
 mod admin;
 mod admin_static;
 mod api_error;
+mod assets;
 mod catalog_pages;
 mod catalog_v3;
 mod cloud_v2;
@@ -13,7 +14,10 @@ mod library;
 mod library_digest_repair;
 mod local_backup;
 mod local_objects;
+mod media;
 mod moderation;
+mod overlays;
+mod packages;
 mod portable;
 mod publication;
 mod publication_worker;
@@ -786,6 +790,9 @@ fn v3_routes() -> Router<AppState> {
         .merge(catalog_v3::routes())
         .merge(integrations::routes())
         .merge(remote::routes())
+        .merge(assets::routes())
+        .merge(overlays::routes())
+        .merge(packages::routes())
         .layer(axum::middleware::from_fn(api_error::request_id))
 }
 
@@ -796,6 +803,9 @@ fn app_inner(
     object_storage: Option<cloud_storage::QuarantineStore>,
     flags: RouterFlags,
 ) -> Router {
+    // One hub per app instance; the sweeper and the relay share it so expiries reach live controllers.
+    let remote_hub = std::sync::Arc::new(remote::relay::Hub::default());
+    remote::relay::spawn_expiry_sweeper(pool.clone(), remote_hub.clone());
     let social_limiter = context
         .secondary_storage
         .clone()
@@ -1115,7 +1125,7 @@ fn app_inner(
             object_storage,
             step_up_oauth: flags.step_up_oauth,
             temporary_log_approvals: flags.temporary_log_approvals,
-            remote: std::sync::Arc::new(remote::relay::Hub::default()),
+            remote: remote_hub,
         })
         .merge(auth_routes(auth));
     let router = if flags.social_limit_enabled {
