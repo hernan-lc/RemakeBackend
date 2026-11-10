@@ -1,11 +1,14 @@
 mod account;
 mod admin;
 mod admin_static;
+mod api_error;
 mod catalog_pages;
+mod catalog_v3;
 mod cloud_v2;
 mod config;
 mod desktop;
 mod dual_auth;
+mod integrations;
 mod library;
 mod library_digest_repair;
 mod local_backup;
@@ -20,6 +23,7 @@ mod publishers;
 mod readiness;
 mod recovery;
 mod releases;
+mod remote;
 mod scanner;
 mod security_headers;
 mod snapshot_export;
@@ -68,6 +72,8 @@ struct AppState {
     /// configured; password step-up still works, Google step-up answers 503.
     step_up_oauth: Option<step_up::StepUpOAuth>,
     temporary_log_approvals: bool,
+    /// Live relay routing for remote control. Single-process by design.
+    remote: std::sync::Arc<remote::relay::Hub>,
 }
 
 fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
@@ -773,6 +779,16 @@ fn app_with_proxies(
 
 // Normal key enrollment and approval require fresh step-up grants. The
 // separately audited temporary log-code override is opt-in.
+/// Product API v3. Every route carries a backend-generated request id and
+/// answers failures with the shared error envelope.
+fn v3_routes() -> Router<AppState> {
+    Router::new()
+        .merge(catalog_v3::routes())
+        .merge(integrations::routes())
+        .merge(remote::routes())
+        .layer(axum::middleware::from_fn(api_error::request_id))
+}
+
 fn app_inner(
     context: AuthContext,
     pool: PgPool,
@@ -1092,12 +1108,14 @@ fn app_inner(
             axum::routing::get(step_up::oauth_callback),
         )
         .merge(cloud_v2::routes())
+        .merge(v3_routes())
         .with_state(AppState {
             auth: context,
             pool,
             object_storage,
             step_up_oauth: flags.step_up_oauth,
             temporary_log_approvals: flags.temporary_log_approvals,
+            remote: std::sync::Arc::new(remote::relay::Hub::default()),
         })
         .merge(auth_routes(auth));
     let router = if flags.social_limit_enabled {
@@ -1241,3 +1259,5 @@ mod registry_tests;
 mod schema_v2_recovery_tests;
 #[cfg(test)]
 mod step_up_tests;
+#[cfg(test)]
+mod v3_tests;

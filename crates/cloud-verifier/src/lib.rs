@@ -8,6 +8,9 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+pub mod presentation;
+
+use presentation::{Presentation, RawManifest};
 use tempfile::TempDir;
 use thiserror::Error;
 use tiktools_plugin_api::manifest::{is_plugin_target, is_valid_plugin_id, is_valid_publisher};
@@ -90,6 +93,8 @@ pub struct VerifiedArtifact {
     pub version: String,
     pub target: String,
     pub publisher_key_id: String,
+    /// Bounded display metadata from the signed manifest; never an authorization input.
+    pub presentation: Presentation,
 }
 impl VerifiedArtifact {
     pub fn path(&self) -> PathBuf {
@@ -192,6 +197,21 @@ pub fn verify(
         version: expected.version.into(),
         target: expected.target.into(),
         publisher_key_id: verified.key_id.to_string(),
+        presentation: presentation::sanitize(&RawManifest {
+            name: &inspection.manifest.name,
+            description: inspection.manifest.description.as_deref(),
+            categories: &inspection.manifest.metadata.categories,
+            authors: inspection
+                .manifest
+                .metadata
+                .authors
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect(),
+            engine: inspection.manifest.metadata.engine.as_deref(),
+            homepage: inspection.manifest.metadata.homepage.as_deref(),
+            dependencies: &inspection.manifest.metadata.dependencies,
+        }),
     })
 }
 

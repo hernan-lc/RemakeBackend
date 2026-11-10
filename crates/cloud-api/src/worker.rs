@@ -150,7 +150,12 @@ pub(crate) async fn verify_artifact(
         Ok(Err(_)) => Err(Outcome::Invalid),
     }
 }
-async fn finish(pool: &PgPool, job: &Job, outcome: Outcome) -> Result<()> {
+async fn finish(
+    pool: &PgPool,
+    job: &Job,
+    outcome: Outcome,
+    presentation: Option<&cloud_verifier::presentation::Presentation>,
+) -> Result<()> {
     let mut tx = pool.begin().await?;
     // Serialize against publisher suspension and key revocation, using the same lock order as API mutations.
     let status: Option<String> =
@@ -194,6 +199,20 @@ async fn finish(pool: &PgPool, job: &Job, outcome: Outcome) -> Result<()> {
     sqlx::query("UPDATE cloud_verification_jobs SET status=$3,lease_id=NULL,lease_expires_at=NULL,result_class=$4 WHERE upload_id=$1 AND lease_id=$2").bind(job.upload).bind(job.lease).bind(job_status).bind(result_class).execute(&mut *tx).await?;
     if let Some(status) = release_status {
         sqlx::query("UPDATE cloud_plugin_releases SET status=$2 WHERE id=$1 AND status='awaiting_verification'").bind(job.release).bind(status).execute(&mut *tx).await?;
+        if let ("antivirus_passed", Some(p)) = (status, presentation) {
+            // Display metadata is written only with the passing transition, from the verified manifest.
+            sqlx::query("UPDATE cloud_plugin_releases SET display_name=$2, summary=$3, categories=$4, authors=$5, engine=$6, homepage=$7, dependencies=$8 WHERE id=$1")
+                .bind(job.release)
+                .bind(&p.name)
+                .bind(&p.summary)
+                .bind(&p.categories)
+                .bind(&p.authors)
+                .bind(&p.engine)
+                .bind(&p.homepage)
+                .bind(serde_json::to_value(&p.dependencies).unwrap_or_default())
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("INSERT INTO cloud_audit_events (id,actor_user_id,publisher_id,subject_id,action) VALUES ($1,'system:integrity-worker',$2,$3,$4)").bind(Uuid::new_v4()).bind(job.publisher).bind(job.release).bind(if status=="rejected" {"release.verification_rejected"} else {"release.antivirus_passed"}).execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -209,14 +228,18 @@ pub async fn once(
     };
     let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_publishers p JOIN cloud_publisher_keys k ON k.publisher_id=p.id WHERE p.id=$1 AND p.status='approved' AND k.id=$2 AND k.status='approved')")
         .bind(job.publisher).bind(job.key_row).fetch_one(pool).await?;
+    let mut presentation: Option<cloud_verifier::presentation::Presentation> = None;
     let outcome = if allowed {
         match Box::pin(verify_artifact(&job, store, scanner)).await {
-            Ok(_) => Outcome::Passed,
+            Ok(verified) => {
+                presentation = Some(verified.presentation.clone());
+                Outcome::Passed
+            }
             Err(outcome) => outcome,
         }
     } else {
         Outcome::Retry
     };
-    finish(pool, &job, outcome).await?;
+    finish(pool, &job, outcome, presentation.as_ref()).await?;
     Ok(true)
 }

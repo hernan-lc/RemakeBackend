@@ -16,6 +16,7 @@ rather than implying production readiness.
 
 - [CLOUD-REDESIGN.md](CLOUD-REDESIGN.md) — Current single-instance cloud plan and repository boundaries.
 - [CLOUD-API-V2.md](CLOUD-API-V2.md) — Product catalog, reviewed templates/profiles, workspace sync, SDK and operations.
+- [CLOUD-API-V3.md](CLOUD-API-V3.md) — Visual catalog, remote control relay, device proof, grants and integration status.
 
 - [SPECS.md](SPECS.md) — Architecture proposal: accounts, Google login,
   verified publishers, registry publication, opt-in sync.
