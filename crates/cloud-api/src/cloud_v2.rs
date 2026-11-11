@@ -107,7 +107,7 @@ async fn capabilities() -> Json<Value> {
         "authentication":{"providers":"/api/v1/auth/providers","nativeHandoff":"/api/v1/desktop/handoff","nativeRedeem":"/api/v1/native/handoff/redeem"},
         // v3 additions are additive: v2 clients ignore them and keep their semantics.
         "presentationCatalog":{"apiVersion":3,"itemsPath":"/api/v3/catalog/items","resolvePath":"/api/v3/catalog/items/resolve","kinds":["plugin","template","profile"],"available":true},
-        "remoteControl":{"protocolVersion":crate::remote::PROTOCOL_VERSION,"supported":true,"available":true,"singleReplica":true,"hostsPath":"/api/v3/remote/hosts","devicesPath":"/api/v3/remote/devices","challengesPath":"/api/v3/remote/challenges","invitationsRedeemPath":"/api/v3/remote/invitations/redeem","ticketPath":"/api/v3/remote/tickets","socketPath":"/api/v3/remote/socket"},
+        "remoteControl":{"protocolVersion":crate::remote::PROTOCOL_VERSION,"supported":true,"available":true,"multiReplica":true,"hostsPath":"/api/v3/remote/hosts","devicesPath":"/api/v3/remote/devices","challengesPath":"/api/v3/remote/challenges","invitationsRedeemPath":"/api/v3/remote/invitations/redeem","ticketPath":"/api/v3/remote/tickets","socketPath":"/api/v3/remote/socket"},
         "integrations":{"providersPath":"/api/v3/integrations/providers","providers":crate::integrations::published_providers().len()},
         "media":{"assetsPath":"/api/v3/assets","formats":["image/png","image/jpeg","image/webp"],"maxBytes":crate::media::MAX_BYTES,"available":true},
         "overlays":{"apiVersion":3,"schemaVersion":crate::overlays::SCHEMA_VERSION,"kinds":crate::overlays::OVERLAY_KINDS,"path":"/api/v3/overlays","available":true},
