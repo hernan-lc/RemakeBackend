@@ -268,9 +268,10 @@ impl BinaryManager {
     }
 }
 
-/// Features worth building pgrust with. A pgrust that defines `main_main/full` ships CJK
-/// conversions, pgcrypto and the Snappy/Brotli Parquet codecs only through it; an older one
-/// has no such feature and builds as-is.
+/// Features worth building pgrust with. A pgrust that defines `main_main/full` ships the CJK
+/// conversions, pgcrypto, the Snappy/Brotli Parquet codecs, every Snowball stemmer language and
+/// the contrib extensions (hstore, ltree, postgres_fdw, ...) only through it, and `native-code`
+/// is on by default there; an older one has no such feature and builds as-is.
 pub fn detect_features(source: &Path) -> Vec<String> {
     let manifest = source.join("crates/backend/main/main_main/Cargo.toml");
     match fs::read_to_string(manifest) {

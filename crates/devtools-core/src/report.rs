@@ -175,9 +175,12 @@ pub async fn doctor(env: &DevEnvironment) -> DoctorReport {
                 "pid {}, port {}, {}",
                 s.pid.unwrap_or(0),
                 s.port,
-                s.server_version
-                    .clone()
-                    .unwrap_or_else(|| "no SQL answer".into())
+                s.server_version.clone().unwrap_or_else(|| format!(
+                    "no SQL answer as user `{}` with the connection from {}; the managed instance only \
+                     accepts the credentials it was initialised with (set DATABASE_URL or \
+                     REMAKE_DEV_DB_PASSWORD to match them)",
+                    env.conn.user, env.conn_source
+                ))
             ),
         ));
     } else if process::port_in_use(&env.conn.host, env.conn.port) {
@@ -203,7 +206,7 @@ pub async fn doctor(env: &DevEnvironment) -> DoctorReport {
         })
         .unwrap_or(0);
     if running {
-        match applied_migrations(env).await {
+        match applied_migrations(env, db.running_port()).await {
             Ok(Some(applied)) => checks.push(check(
                 "migrations",
                 if applied as usize >= on_disk {
@@ -283,9 +286,11 @@ pub async fn doctor(env: &DevEnvironment) -> DoctorReport {
 }
 
 /// Count of applied sqlx migrations in the development database, `None` if the table is absent.
-async fn applied_migrations(env: &DevEnvironment) -> Result<Option<i64>> {
+async fn applied_migrations(env: &DevEnvironment, port: u16) -> Result<Option<i64>> {
     use sqlx::Connection as _;
-    let mut c = crate::health::connect(&env.conn, &env.conn.database).await?;
+    // The managed server may run on a port other than the configured one (instance.json).
+    let conn = crate::config::Connection { port, ..env.conn.clone() };
+    let mut c = crate::health::connect(&conn, &conn.database).await?;
     let exists: Option<String> = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
         .fetch_one(&mut c)
         .await?;

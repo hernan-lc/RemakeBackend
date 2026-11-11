@@ -114,6 +114,13 @@ ownership, pending migrations and the build-cache factors above.
 fork commit is `git -C vendor/pgrust fetch && git -C vendor/pgrust checkout <commit>`, committing the
 submodule pointer, then `remake-dev db down && remake-dev db upgrade`. The tracked
 `patches/pgrust-mimalloc-glibc-2.44.patch` is applied only to a checkout that lacks that fix.
+The submodule is pinned at a commit that already has that fix, so the patch only matters for an
+older checkout passed with `--source`.
+
+`db install --source` builds with `main_main/full` when the checkout defines it (a plain pgrust
+build leaves out pgcrypto, the CJK conversions, the Snappy/Brotli Parquet codecs, the non-English
+Snowball stemmers and 46 contrib extensions such as hstore, ltree and postgres_fdw). A `--prebuilt`
+directory is used as it is, so build it with `--features main_main/full` if the backend needs those.
 
 pgrust is beta software and is not production-ready; keep PostgreSQL for data that matters.
 Requirements to build it: Git, a C/C++ toolchain, pkg-config and the RE2 development files (see
