@@ -113,15 +113,27 @@ staging-only until its production gates have been verified.
 cargo test --workspace --locked   # no external services needed
 ```
 
-For the OAuth/session integration tests, create a dedicated disposable
-database and run:
+For the database tests, point `CLOUD_TEST_DATABASE_URL` at a disposable
+PostgreSQL (or pgrust) server and run them in parallel:
 
 ```sh
-CLOUD_TEST_DATABASE_URL=postgres://... cargo test --workspace --locked -- --ignored --test-threads=1 --skip google_jwks_live_refresh_smoke --skip staging_official_packages_install_with_pinned_client --skip real_clamav_scans_staging_packages
+CLOUD_TEST_DATABASE_URL=postgres://user@127.0.0.1:5432/cloud_test cargo test --workspace --locked -- --include-ignored --skip google_jwks_live_refresh_smoke --skip staging_official_packages_install_with_pinned_client --skip real_clamav_scans_staging_packages --skip actual_app_sdk_epoch_contract_against_postgres
 ```
 
-This applies Better Auth migrations and inserts fixture records — never
-point it at production. CI provisions a separate pgrust service. The
+or let `cargo run -p devtools -- test --integration` provision everything.
+`--test-threads=1` is no longer needed: every test gets a private database,
+cloned from a template that already holds all migrations (`CREATE DATABASE …
+TEMPLATE …`, dropped when the test ends). The role needs `CREATEDB`. The
+template is rebuilt by itself when the migrations, `Cargo.lock` or the template
+builder (`crates/cloud-api/src/test_support.rs`) change, and clones left behind
+by a killed run are swept on the next one. Set `CLOUD_TEST_ISOLATE=0` to use
+the database in the URL directly instead (shared, so run with
+`--test-threads=1`). Password hashing is compiled with optimizations in the dev
+profile (`[profile.dev.package.scrypt]` and friends); without it a debug build
+spends seconds on every sign-up.
+
+The tests apply Better Auth migrations and insert fixture records — never
+point them at production. CI provisions a separate pgrust service. The
 fixture is not a substitute for a real Google or desktop end-to-end test.
 The skipped network and staging tests require separate services and inputs;
 see [Railway staging](docs/RAILWAY-STAGING.md) for the staging tests.

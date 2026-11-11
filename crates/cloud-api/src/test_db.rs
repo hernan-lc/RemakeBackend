@@ -57,9 +57,12 @@ impl Drop for Lease {
         // A failed drop is harmless: the next run sweeps stale clones.
         let _ = run(async move {
             let mut conn = PgConnection::connect(&admin).await?;
-            sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quote(&name)))
-                .execute(&mut conn)
-                .await?;
+            sqlx::query(&format!(
+                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                quote(&name)
+            ))
+            .execute(&mut conn)
+            .await?;
             Ok::<_, sqlx::Error>(())
         });
     }
@@ -148,34 +151,46 @@ async fn create(admin: String, template: Option<Template>) -> Lease {
         &uuid::Uuid::new_v4().simple().to_string()[..12]
     );
     let statement = match &source {
-        Some(source) => format!("CREATE DATABASE {} TEMPLATE {}", quote(&name), quote(source)),
+        Some(source) => format!(
+            "CREATE DATABASE {} TEMPLATE {}",
+            quote(&name),
+            quote(source)
+        ),
         None => format!("CREATE DATABASE {}", quote(&name)),
     };
-    sqlx::query(&statement).execute(&mut conn).await.unwrap_or_else(|error| {
-        panic!(
-            "cannot create a test database ({error}); grant CREATEDB or set {ISOLATE_ENV}=0 \
+    sqlx::query(&statement)
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "cannot create a test database ({error}); grant CREATEDB or set {ISOLATE_ENV}=0 \
              to share {ADMIN_ENV}"
-        )
-    });
+            )
+        });
     let url = with_database(&admin, &name);
     Lease { admin, name, url }
 }
 
 async fn sweep_stale_clones(conn: &mut PgConnection) {
-    let names: Vec<String> = sqlx::query_scalar("SELECT datname FROM pg_database WHERE datname LIKE $1")
-        .bind(like_prefix(CLONE_PREFIX))
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap_or_default();
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT datname FROM pg_database WHERE datname LIKE $1")
+            .bind(like_prefix(CLONE_PREFIX))
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default();
     for name in names {
         let created = name
             .strip_prefix(CLONE_PREFIX)
             .and_then(|rest| rest.split('_').next())
             .and_then(|secs| secs.parse::<u64>().ok());
-        if created.is_some_and(|created| now_secs().saturating_sub(created) > STALE_AFTER.as_secs()) {
-            let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quote(&name)))
-                .execute(&mut *conn)
-                .await;
+        if created.is_some_and(|created| now_secs().saturating_sub(created) > STALE_AFTER.as_secs())
+        {
+            let _ = sqlx::query(&format!(
+                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                quote(&name)
+            ))
+            .execute(&mut *conn)
+            .await;
         }
     }
 }
@@ -189,25 +204,30 @@ async fn ensure_template(conn: &mut PgConnection, admin: &str, template: Templat
         .execute(&mut *conn)
         .await
         .expect("template lock");
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
-        .bind(&name)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("template lookup");
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(&name)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("template lookup");
     if !exists {
         // Holding the lock, every other template (stale keys, builds left by a
         // killed process) is unreachable and safe to remove.
-        let others: Vec<String> =
-            sqlx::query_scalar("SELECT datname FROM pg_database WHERE datname LIKE $1 AND datname <> $2")
-                .bind(like_prefix(TEMPLATE_PREFIX))
-                .bind(&name)
-                .fetch_all(&mut *conn)
-                .await
-                .unwrap_or_default();
+        let others: Vec<String> = sqlx::query_scalar(
+            "SELECT datname FROM pg_database WHERE datname LIKE $1 AND datname <> $2",
+        )
+        .bind(like_prefix(TEMPLATE_PREFIX))
+        .bind(&name)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap_or_default();
         for other in others {
-            let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quote(&other)))
-                .execute(&mut *conn)
-                .await;
+            let _ = sqlx::query(&format!(
+                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                quote(&other)
+            ))
+            .execute(&mut *conn)
+            .await;
         }
         let building = format!("{TEMPLATE_PREFIX}build_{}", uuid::Uuid::new_v4().simple());
         sqlx::query(&format!("CREATE DATABASE {}", quote(&building)))
@@ -222,10 +242,14 @@ async fn ensure_template(conn: &mut PgConnection, admin: &str, template: Templat
             .execute(&mut *conn)
             .await
             .expect("disconnect template builder");
-        sqlx::query(&format!("ALTER DATABASE {} RENAME TO {}", quote(&building), quote(&name)))
-            .execute(&mut *conn)
-            .await
-            .expect("publish template");
+        sqlx::query(&format!(
+            "ALTER DATABASE {} RENAME TO {}",
+            quote(&building),
+            quote(&name)
+        ))
+        .execute(&mut *conn)
+        .await
+        .expect("publish template");
     }
     sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(LOCK_KEY)

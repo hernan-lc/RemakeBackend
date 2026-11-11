@@ -4,7 +4,9 @@
 //!   never starts pgrust.
 //! * integration: reuses the installed pgrust, recreates the isolated test database (never the
 //!   development one) and runs exactly the tests marked
-//!   `#[ignore = "... CLOUD_TEST_DATABASE_URL"]`, serially, against it.
+//!   `#[ignore = "... CLOUD_TEST_DATABASE_URL"]` against it. Every test gets a private database
+//!   cloned from a migrated template (see `cloud-api`'s `test_db`), so with `tests.parallel` they
+//!   run on several threads.
 //!
 //! Results are structured. A run that executed no test is `skipped`, never `passed`.
 
@@ -310,6 +312,16 @@ fn run_streaming(
     Ok((status.code(), text))
 }
 
+/// Test threads for the database tests: one when `tests.parallel` is off, otherwise twice the
+/// CPU count (the tests wait on the database as much as they compute), between 2 and 8.
+pub fn test_threads(parallel: bool) -> usize {
+    if !parallel {
+        return 1;
+    }
+    let cpus = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (cpus * 2).clamp(2, 8)
+}
+
 pub struct TestRunner {
     env: DevEnvironment,
     /// Send cargo's live output to stderr (for `--json`).
@@ -426,6 +438,7 @@ impl TestRunner {
         let mut packages: Vec<String> = tests.iter().map(|t| t.package.clone()).collect();
         packages.sort();
         packages.dedup();
+        let threads = test_threads(self.env.config.tests.parallel);
         let started = Instant::now();
         let mut combined = String::new();
         let mut code = Some(0);
@@ -436,17 +449,11 @@ impl TestRunner {
                 .filter(|t| t.package == package)
                 .map(|t| t.name.as_str())
                 .collect();
-            let mut args: Vec<String> = [
-                "test",
-                "-p",
-                &package,
-                "--",
-                "--ignored",
-                "--test-threads=1",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+            let mut args: Vec<String> = ["test", "-p", &package, "--", "--ignored"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            args.push(format!("--test-threads={threads}"));
             args.extend(names.iter().map(|n| n.to_string()));
             let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
             let mut cmd = process::cargo_command(&borrowed);
@@ -534,6 +541,13 @@ test b::two ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 ";
+
+    #[test]
+    fn database_tests_run_serially_unless_parallel_is_enabled() {
+        assert_eq!(test_threads(false), 1);
+        let threads = test_threads(true);
+        assert!((2..=8).contains(&threads), "{threads}");
+    }
 
     #[test]
     fn output_is_folded_across_suites() {

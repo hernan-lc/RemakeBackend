@@ -161,10 +161,14 @@ fn rows_keep_values(before: &Value, after: &Value) -> bool {
     };
     before.len() == after.len()
         && before.iter().all(|old| {
-            after.iter().any(|new| match (old.as_object(), new.as_object()) {
-                (Some(old), Some(new)) => old.iter().all(|(key, value)| new.get(key) == Some(value)),
-                _ => old == new,
-            })
+            after
+                .iter()
+                .any(|new| match (old.as_object(), new.as_object()) {
+                    (Some(old), Some(new)) => {
+                        old.iter().all(|(key, value)| new.get(key) == Some(value))
+                    }
+                    _ => old == new,
+                })
         })
 }
 fn retained_migrations(before: &BTreeMap<String, Value>, after: &BTreeMap<String, Value>) {

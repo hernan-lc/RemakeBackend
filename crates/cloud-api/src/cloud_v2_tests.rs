@@ -29,8 +29,7 @@ impl Drop for Fixture {
     }
 }
 async fn fixture() -> Fixture {
-    let database =
-        crate::test_support::migrated_url();
+    let database = crate::test_support::migrated_url();
     let adapter = Arc::new(SqlxDbAdapter::postgres(&database).await.unwrap());
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&database).await.unwrap());
     let context = AuthContext::new(
