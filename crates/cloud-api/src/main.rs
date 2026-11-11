@@ -1270,6 +1270,10 @@ mod schema_v2_recovery_tests;
 #[cfg(test)]
 mod step_up_tests;
 #[cfg(test)]
+mod test_db;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod v3_tests;
 
 /// Identifies this relay node. Set `RELAY_NODE_ID` to a stable name per process;

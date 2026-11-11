@@ -26,6 +26,7 @@ async fn context(database_url: &str) -> (AuthContext, PgPool) {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(database_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -200,7 +201,7 @@ async fn release(
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_release_listing_scopes_by_membership_and_paginates() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let owner = user(&ctx).await;
     let outsider = user(&ctx).await;
@@ -327,7 +328,7 @@ async fn publisher_release_listing_scopes_by_membership_and_paginates() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_release_listing_reports_verification_moderation_and_revocation() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let owner = user(&ctx).await;
     let reviewer = user(&ctx).await;
@@ -399,7 +400,7 @@ async fn publisher_release_listing_reports_verification_moderation_and_revocatio
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn upload_complete_rejects_expired_reservations_and_outsiders() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let owner = user(&ctx).await;
     let outsider = user(&ctx).await;
@@ -492,7 +493,7 @@ async fn upload_complete_rejects_expired_reservations_and_outsiders() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn release_submit_rejects_revoked_keys() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let owner = user(&ctx).await;
     let (publisher, key) = publisher_with_key(&pool, &owner.0).await;

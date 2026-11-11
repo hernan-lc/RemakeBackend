@@ -38,6 +38,7 @@ async fn context(database_url: &str) -> (AuthContext, PgPool) {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(database_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -647,7 +648,7 @@ async fn staging_official_packages_install_with_pinned_client() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn initial_publication_serves_signed_registry_to_tiktools_client() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let _guard = lock(&pool).await;
     let owner = user(&ctx).await;
@@ -965,7 +966,7 @@ struct Fixture {
 
 impl Fixture {
     async fn setup() -> Self {
-        let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+        let database_url = crate::test_support::migrated_url();
         let (ctx, pool) = context(&database_url).await;
         let guard = lock(&pool).await;
         let owner = user(&ctx).await;
@@ -1813,7 +1814,7 @@ async fn client_discovers_update_and_yank_removal() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn local_volume_publication_serves_verified_registry() {
     use std::os::unix::fs::PermissionsExt;
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url).await;
     let _guard = lock(&pool).await;
     let owner = user(&ctx).await;

@@ -29,6 +29,7 @@ fn readiness_reason_truncation_preserves_utf8() {
 fn better_auth_resolves_forwarded_ip_only_when_proxy_trust_is_enabled() {
     let make_context = |enabled| {
         AuthContext::builder(AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             advanced: super::proxy_auth_options(enabled),
@@ -141,6 +142,7 @@ async fn auth_sign_in_limiter_uses_peer_and_account_budgets() {
     use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -356,6 +358,7 @@ async fn context(database_url: &str, cache: bool) -> (AuthContext, PgPool) {
     session.cookie_cache.max_age_seconds = 3600;
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -468,10 +471,11 @@ async fn begin(app: &Router, provider: &str) -> String {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn social_get_rate_limit_applies_to_real_auth_router() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (existing, pool) = context(&url, false).await;
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -607,7 +611,7 @@ async fn social_get_rate_limit_applies_to_real_auth_router() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn oauth_email_collision_requires_both_accounts_verified() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let control = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -681,8 +685,7 @@ async fn oauth_email_collision_requires_both_accounts_verified() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn admin_read_apis_authorize_paginate_and_redact() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -1020,8 +1023,7 @@ async fn admin_read_apis_authorize_paginate_and_redact() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn oauth_session_restart_replay_and_revocation() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL")
-        .expect("set CLOUD_TEST_DATABASE_URL to a dedicated test database");
+    let database_url = crate::test_support::migrated_url();
     let (base, fixture_handle) = fixture().await;
     for cache in [false, true] {
         let (ctx, pool) = context(&database_url, cache).await;
@@ -1114,8 +1116,7 @@ async fn oauth_session_restart_replay_and_revocation() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_requests_are_isolated_and_audited() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -1402,8 +1403,7 @@ async fn publisher_requests_are_isolated_and_audited() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_surface_accepts_native_bearer_tokens() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -1552,8 +1552,7 @@ async fn oidc_callback_rejects_missing_forged_and_expired_claims() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let fixture_handle = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let validator =
         OidcIdTokenValidator::new(ISSUER, "client-id").add_test_hs_key("fixture-key", TEST_KEY);
@@ -1607,7 +1606,7 @@ async fn oidc_callback_rejects_missing_forged_and_expired_claims() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn sync_conflicts_tombstones_and_user_isolation() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -2202,7 +2201,7 @@ async fn desktop_handoff_is_pkce_bound_single_use_and_loopback_only() {
     };
     use sha2::{Digest, Sha256};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let user = EmailPasswordService::new(ctx.clone())
         .unwrap()
@@ -2454,7 +2453,7 @@ async fn desktop_handoff_is_pkce_bound_single_use_and_loopback_only() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn desktop_redeem_rate_limit_keys_trusted_client_ip() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let auth = AuthRouter::new(ctx.clone()).unwrap();
     let app = app_with_proxies(
@@ -2518,7 +2517,7 @@ async fn desktop_redeem_rate_limit_keys_trusted_client_ip() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn readiness_refuses_missing_or_incompatible_schema() {
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     readiness::MIGRATOR.run(&pool).await.unwrap();
     let schema = format!("health_{}", uuid::Uuid::new_v4().simple());
@@ -2687,7 +2686,7 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn role_bootstrap_protects_last_admin_and_audits_changes() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -2746,7 +2745,7 @@ async fn role_bootstrap_protects_last_admin_and_audits_changes() {
 async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use std::borrow::Cow;
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let control = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -2766,6 +2765,7 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -2890,7 +2890,7 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
 async fn migration_upgrade_preserves_data_through_revocation_tables() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use std::borrow::Cow;
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let control = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -2910,6 +2910,7 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -3087,7 +3088,7 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let control = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -3108,6 +3109,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -3305,7 +3307,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
 async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let control = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
@@ -3325,6 +3327,7 @@ async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -3448,8 +3451,7 @@ async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn release_yanks_and_advisories_are_moderated_and_block_publication() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -3869,7 +3871,7 @@ async fn release_yanks_and_advisories_are_moderated_and_block_publication() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_request_limits_serialize_and_rate_limit() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -3976,7 +3978,7 @@ async fn publisher_request_limits_serialize_and_rate_limit() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn unused_publisher_deletion_requires_owner_and_preserves_audit() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -4133,7 +4135,7 @@ async fn unused_publisher_deletion_requires_owner_and_preserves_audit() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn publisher_transfer_requires_owner_offer_and_recipient_acceptance() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -4483,7 +4485,7 @@ async fn publisher_transfer_requires_owner_offer_and_recipient_acceptance() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn user_deletion_cannot_bypass_cloud_memberships_or_roles() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -4649,7 +4651,7 @@ async fn user_deletion_cannot_bypass_cloud_memberships_or_roles() {
 async fn sync_write_rate_limit_is_shared_and_preserves_pending_edits() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use cloud_client::{Edit, PluginSelection, Session, SyncError};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -4857,7 +4859,7 @@ async fn native_sync_client_preserves_offline_edits_and_conflicts() {
         session::SessionService,
     };
     use cloud_client::{Edit, PluginSelection, Session, StateStore, SyncError, SyncState};
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let signed_in = EmailPasswordService::new(ctx.clone())
         .unwrap()
@@ -5024,12 +5026,13 @@ async fn native_login_client_completes_loopback_handoff() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use cloud_client::{LoginAttempt, SyncError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (base_context, pool) = context(&url, false).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(origin.clone())),
             trusted_origins: vec![origin.clone()],
@@ -5162,8 +5165,7 @@ async fn upload_authorization_idempotency_and_quarantine() {
             .await
             .unwrap();
     });
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -5320,8 +5322,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -5846,8 +5847,7 @@ async fn publisher_signing_keys_require_proof_and_independent_approval() {
 async fn release_submission_binds_tenant_key_upload_and_version() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -6051,8 +6051,7 @@ async fn integrity_worker_verifies_exact_version_and_fences_retries() {
     use tiktools_plugin_package::{
         pack, sign_archive, KeyId, PackRequest, Sha256Digest, SigningKey,
     };
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (_ctx, pool) = context(&database_url, false).await;
     // Isolate the queue from other integration tests in the shared disposable database.
     sqlx::query("UPDATE cloud_verification_jobs SET status='failed', lease_id=NULL, lease_expires_at=NULL, result_class='temporary_failure' WHERE status IN ('queued','running') AND release_id IS NOT NULL").execute(&pool).await.unwrap();
@@ -6424,8 +6423,7 @@ async fn integrity_worker_verifies_exact_version_and_fences_retries() {
 async fn moderation_requires_independent_reviewer_and_current_verification() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let mut users = Vec::new();
@@ -7014,8 +7012,7 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
         pack, sign_archive, KeyId, KeyRole, PackRequest, Sha256Digest, SigningKey, TrustedKey,
     };
     use tiktools_plugin_registry::IndexWriter;
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::query("UPDATE cloud_publication_jobs SET status='failed',lease_id=NULL,lease_expires_at=NULL,prepared_key=NULL,prepared_version_id=NULL,result_class='temporary_failure' WHERE status IN ('queued','running','prepared')").execute(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
@@ -7996,8 +7993,7 @@ async fn publication_preparer_rechecks_trust_and_fences_stale_workers() {
 async fn public_revocation_serves_yank_advisory_and_key_state() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let result = service
@@ -8128,8 +8124,7 @@ async fn response_no_store(app: &Router, path: &str) -> StatusCode {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn username_set_sign_in_and_availability() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     async fn sign_up(
@@ -8317,8 +8312,7 @@ async fn username_set_sign_in_and_availability() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn account_deletion_removes_identity_and_sync_state() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     async fn sign_up(
@@ -8526,6 +8520,7 @@ fn memory_context() -> AuthContext {
     use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
     AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -8654,8 +8649,7 @@ fn session_cookie(response: &axum::response::Response) -> String {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn linked_providers_list_and_unlink_guardrails() {
-    let database_url =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("set CLOUD_TEST_DATABASE_URL");
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let (base, fixture_handle) = fixture().await;
@@ -8714,7 +8708,7 @@ async fn local_storage_upload_and_inspection_enforce_capabilities() {
     use better_auth::email_password::{EmailPasswordService, SignUpInput};
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    let database_url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let database_url = crate::test_support::migrated_url();
     let (ctx, pool) = context(&database_url, false).await;
     let service = EmailPasswordService::new(ctx.clone()).unwrap();
     let identity = service

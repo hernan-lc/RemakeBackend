@@ -72,7 +72,9 @@ An existing cluster, for example the one the old launcher kept in
   never starts pgrust.
 * `test --integration`: reuses the installed pgrust, recreates `cloud_test`, exports it as
   `CLOUD_TEST_DATABASE_URL` and runs exactly the tests marked
-  `#[ignore = "... CLOUD_TEST_DATABASE_URL"]`, serially. A test whose reason names another variable (for
+  `#[ignore = "... CLOUD_TEST_DATABASE_URL"]`. Each test gets a private database cloned from a migrated
+  template, so with `tests.parallel = true` (the default) they run on several threads;
+  `parallel = false` runs one at a time. A test whose reason names another variable (for
   example `CLOUD_V2_APP_SDK_TEST_BIN`, a separately built SDK binary) is reported `skipped` with the
   missing variable named, unless you export it. The development database is not touched.
 * `test --all`: unit, integration and a reported-as-`unsupported` e2e slot.

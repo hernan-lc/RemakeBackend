@@ -35,9 +35,12 @@ fn command(database_url: &str) -> Command {
     command
 }
 
+// Each test gets its own empty database, so the binary under test migrates it from scratch.
+#[path = "../src/test_db.rs"]
+mod test_db;
+
 fn database_url() -> String {
-    std::env::var("CLOUD_TEST_DATABASE_URL")
-        .expect("set CLOUD_TEST_DATABASE_URL to a disposable PostgreSQL database")
+    test_db::url(None)
 }
 
 // Combined stdout and stderr with ANSI color codes removed: tracing colors its
