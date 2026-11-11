@@ -10,6 +10,7 @@ use url::{Host, Url};
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 const PRE_V2: i64 = 20261102000024;
 const FIRST_V2: i64 = 20261108000001;
+const DIGEST_REPAIR: i64 = 20261108000002;
 const ORIGIN: &str = "https://schema-recovery.example.test";
 
 fn validate_fixture_url(raw: &str) -> TestResult<Url> {
@@ -149,6 +150,21 @@ async fn table_snapshot(pool: &PgPool) -> TestResult<BTreeMap<String, Value>> {
         snapshot.insert(name, rows);
     }
     Ok(snapshot)
+}
+/// True when every row in `before` still exists in `after` with all of its
+/// fields unchanged. Extra fields on the new rows are allowed, because a
+/// migration may add columns; the row count must stay the same.
+fn rows_keep_values(before: &Value, after: &Value) -> bool {
+    let (Some(before), Some(after)) = (before.as_array(), after.as_array()) else {
+        return before == after;
+    };
+    before.len() == after.len()
+        && before.iter().all(|old| {
+            after.iter().any(|new| match (old.as_object(), new.as_object()) {
+                (Some(old), Some(new)) => old.iter().all(|(key, value)| new.get(key) == Some(value)),
+                _ => old == new,
+            })
+        })
 }
 fn retained_migrations(before: &BTreeMap<String, Value>, after: &BTreeMap<String, Value>) {
     for old in before["_sqlx_migrations"].as_array().unwrap() {
@@ -407,17 +423,36 @@ async fn run_drill(fixture: &mut Fixture) -> TestResult<()> {
     }
     let document = seed_v2(&pool, &users[0], &users[1]).await?;
     let before_repair_migration = table_snapshot(&pool).await?;
-    readiness::MIGRATOR.run(&pool).await?;
-    let after_repair_migration = table_snapshot(&pool).await?;
-    retained_migrations(&before_repair_migration, &after_repair_migration);
+    // The digest repair migration alone must not rewrite a single row.
+    migrations_through(DIGEST_REPAIR).run(&pool).await?;
+    let after_digest_migration = table_snapshot(&pool).await?;
+    retained_migrations(&before_repair_migration, &after_digest_migration);
     for (table, rows) in before_repair_migration
         .iter()
         .filter(|(table, _)| table.as_str() != "_sqlx_migrations")
     {
         assert_eq!(
-            after_repair_migration.get(table),
+            after_digest_migration.get(table),
             Some(rows),
             "digest repair migration must not rewrite {table}"
+        );
+    }
+    assert_eq!(
+        after_digest_migration["cloud_library_digest_repairs"],
+        json!([])
+    );
+    // Later migrations may add columns or tables on purpose, for example the
+    // plugin presentation columns, but must keep every value that already existed.
+    readiness::MIGRATOR.run(&pool).await?;
+    let after_repair_migration = table_snapshot(&pool).await?;
+    retained_migrations(&after_digest_migration, &after_repair_migration);
+    for (table, rows) in after_digest_migration
+        .iter()
+        .filter(|(table, _)| table.as_str() != "_sqlx_migrations")
+    {
+        assert!(
+            rows_keep_values(rows, &after_repair_migration[table]),
+            "a later migration changed existing values in {table}"
         );
     }
     assert_eq!(
