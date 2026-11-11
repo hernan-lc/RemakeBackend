@@ -1,3 +1,21 @@
 [workspace]
 resolver = "2"
 members = ["crates/cloud-api", "crates/cloud-contracts", "crates/cloud-verifier", "crates/cloud-client", "crates/cloud-storage", "crates/cloud-snapshot", "crates/devtools-core", "crates/devtools"]
+
+# Password hashing (better-auth uses scrypt with a 32 MiB work factor) dominates
+# the database test suite when compiled without optimizations: every sign-up
+# and sign-in costs seconds in a debug build. Optimizing only these crates keeps
+# the real scrypt parameters and speeds the suite up by more than 20x. They are
+# small, so debug builds of everything else are unaffected.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.password-hash]
+opt-level = 3
