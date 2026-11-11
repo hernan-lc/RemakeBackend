@@ -7,3 +7,4 @@
 /web/desktop/node_modules
 *.tsbuildinfo
 /node_modules
+/.devtools/

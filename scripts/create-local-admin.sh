@@ -8,7 +8,7 @@ export DATABASE_URL='postgres://cloud:local-only-password@127.0.0.1:5432/cloud'
 export APP_ORIGIN='http://127.0.0.1:5173'
 if [[ -z ${AUTH_SECRET:-} ]]; then
   if [[ ! -s .local-dev/auth-secret ]]; then
-    echo 'Start ./scripts/dev-admin.sh first to initialize the local secret and services.' >&2
+    echo 'Start `cargo run -p devtools -- dev --ui` first to initialize the local secret and services.' >&2
     exit 1
   fi
   export AUTH_SECRET=$(< .local-dev/auth-secret)
@@ -27,7 +27,7 @@ trap 'rm -f -- "$response"' EXIT
 printf '{"name":"Local Test Admin","email":"%s","password":"%s"}' "$email" "$password" |
   curl -fsS -o "$response" -X POST "$APP_ORIGIN/api/auth/sign-up/email" \
     -H "Origin: $APP_ORIGIN" -H 'Content-Type: application/json' --data-binary @- || {
-      echo 'Sign-up failed. Ensure ./scripts/dev-admin.sh is running with its default local database.' >&2
+      echo 'Sign-up failed. Ensure `remake-dev dev --ui` is running with its default local database.' >&2
       exit 1
     }
 
