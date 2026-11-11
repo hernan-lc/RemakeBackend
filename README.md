@@ -128,7 +128,9 @@ template is rebuilt by itself when the migrations, `Cargo.lock` or the template
 builder (`crates/cloud-api/src/test_support.rs`) change, and clones left behind
 by a killed run are swept on the next one. Set `CLOUD_TEST_ISOLATE=0` to use
 the database in the URL directly instead (shared, so run with
-`--test-threads=1`). Password hashing is compiled with optimizations in the dev
+`--test-threads=1`). `CLOUD_TEST_FAST_HASH=1` (set by `remake-dev test`, off by default) switches the
+fixtures to negligible scrypt parameters and cuts the suite by about a third; CI keeps
+the real ones. Password hashing is compiled with optimizations in the dev
 profile (`[profile.dev.package.scrypt]` and friends); without it a debug build
 spends seconds on every sign-up.
 

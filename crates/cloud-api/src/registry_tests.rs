@@ -38,6 +38,7 @@ async fn context(database_url: &str) -> (AuthContext, PgPool) {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(database_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],

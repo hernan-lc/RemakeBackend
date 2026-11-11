@@ -354,6 +354,7 @@ async fn run_drill(fixture: &mut Fixture) -> TestResult<()> {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&source_url).await?);
     let auth = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-recovery-secret-32-bytes".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],

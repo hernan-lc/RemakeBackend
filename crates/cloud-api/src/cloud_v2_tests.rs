@@ -34,6 +34,7 @@ async fn fixture() -> Fixture {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&database).await.unwrap());
     let context = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],

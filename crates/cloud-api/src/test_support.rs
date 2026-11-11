@@ -57,6 +57,7 @@ fn prepare(url: String) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let secondary = Arc::new(SqlxSecondaryStorage::postgres(&url).await.unwrap());
         let context = AuthContext::new(
             AuthOptions {
+                password_hash: crate::test_support::password_hash(),
                 secret: "test-only-secret-32-bytes-long!!".into(),
                 base_url: Some(BaseUrl::Static("https://cloud.example.test".into())),
                 trusted_origins: vec!["https://cloud.example.test".into()],
@@ -92,4 +93,18 @@ pub async fn integration_env() -> tokio::sync::MutexGuard<'static, ()> {
     let guard = INTEGRATION_ENV.lock().await;
     std::env::remove_var("INTEGRATION_SECRET_KEY");
     guard
+}
+
+/// Password-hashing cost for the auth contexts the tests build.
+///
+/// By default these are the production scrypt parameters. `CLOUD_TEST_FAST_HASH=1`
+/// selects the negligible ones from better-auth's `test-utils` feature, which
+/// roughly cuts the suite by a third. Hashes made either way verify under both,
+/// and nothing outside the test build can reach this.
+pub fn password_hash() -> better_auth_core::options::PasswordHashOptions {
+    if std::env::var("CLOUD_TEST_FAST_HASH").is_ok_and(|value| value == "1") {
+        better_auth_core::options::PasswordHashOptions::fast_for_tests()
+    } else {
+        better_auth_core::options::PasswordHashOptions::default()
+    }
 }

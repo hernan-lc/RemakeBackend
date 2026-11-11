@@ -457,7 +457,10 @@ impl TestRunner {
             args.extend(names.iter().map(|n| n.to_string()));
             let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
             let mut cmd = process::cargo_command(&borrowed);
-            cmd.current_dir(&self.env.root).env(DB_TEST_MARKER, &url);
+            cmd.current_dir(&self.env.root)
+                .env(DB_TEST_MARKER, &url)
+                // Cheap scrypt parameters for the fixtures' sign-ups; see `test_support::password_hash`.
+                .env("CLOUD_TEST_FAST_HASH", "1");
             all_cmd = std::iter::once("cargo".to_string())
                 .chain(args.clone())
                 .collect();

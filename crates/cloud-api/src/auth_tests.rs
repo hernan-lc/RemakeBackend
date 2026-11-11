@@ -29,6 +29,7 @@ fn readiness_reason_truncation_preserves_utf8() {
 fn better_auth_resolves_forwarded_ip_only_when_proxy_trust_is_enabled() {
     let make_context = |enabled| {
         AuthContext::builder(AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             advanced: super::proxy_auth_options(enabled),
@@ -141,6 +142,7 @@ async fn auth_sign_in_limiter_uses_peer_and_account_budgets() {
     use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -356,6 +358,7 @@ async fn context(database_url: &str, cache: bool) -> (AuthContext, PgPool) {
     session.cookie_cache.max_age_seconds = 3600;
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -472,6 +475,7 @@ async fn social_get_rate_limit_applies_to_real_auth_router() {
     let (existing, pool) = context(&url, false).await;
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -2761,6 +2765,7 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -2905,6 +2910,7 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -3103,6 +3109,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -3320,6 +3327,7 @@ async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&schema_url).await.unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
@@ -5024,6 +5032,7 @@ async fn native_login_client_completes_loopback_handoff() {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let ctx = AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(origin.clone())),
             trusted_origins: vec![origin.clone()],
@@ -8511,6 +8520,7 @@ fn memory_context() -> AuthContext {
     use better_auth_core::adapter::memory::{MemoryDb, MemorySecondaryStorage};
     AuthContext::new(
         AuthOptions {
+            password_hash: crate::test_support::password_hash(),
             secret: "test-only-secret-32-bytes-long!!".into(),
             base_url: Some(BaseUrl::Static(ORIGIN.into())),
             trusted_origins: vec![ORIGIN.into()],
