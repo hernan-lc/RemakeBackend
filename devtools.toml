@@ -1,0 +1,25 @@
+[database]
+engine = "pgrust"
+host = "127.0.0.1"
+port = 55432
+database = "remake_dev"
+username = "postgres"
+data_dir = ".devtools/database/dev"
+binary_dir = ".devtools/bin/pgrust"
+auto_start = true
+auto_build = false
+test_database = "cloud_test"
+
+[development]
+watch = true
+restart_on_change = true
+debounce_ms = 500
+
+[tests]
+parallel = true
+isolated_database = true
+timeout_seconds = 120
+
+[reports]
+directory = ".devtools/reports"
+format = "json"

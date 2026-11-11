@@ -16,22 +16,21 @@ For a coordinated local start, install the frontend dependencies with
 `cd web/admin && npm ci`, then run from the repository root:
 
 ```sh
-./scripts/dev-admin.sh
+cargo run -p devtools -- db install   # once: builds pgrust and installs it under .devtools/
+cargo run -p devtools -- dev --ui     # starts or reuses pgrust, migrates, runs API and UI
 ```
 
-By default the launcher starts the Docker Compose database and applies
-migrations. If Docker Compose is unavailable, it uses the Docker-free
-[local pgrust launcher](../../docs/LOCAL-PGRUST.md), which has additional
-build prerequisites. Database data persists between runs; it is not temporary.
-A random local auth secret is saved in the
-gitignored `.local-dev` directory so sessions survive restarts. Export
-`DATABASE_URL` to use an existing database instead: in that case the launcher
-does not start a database or run migrations. `AUTH_SECRET` and other backend
-settings can also be exported. Back up existing data before migrations.
+`dev` starts the Docker-free [local pgrust](../../docs/LOCAL-PGRUST.md) (or reuses the one already
+running), applies migrations and runs the API and the UI, restarting only the API when its code
+changes. Database data persists between runs; it is not temporary. A random local auth secret is
+saved in the gitignored `.local-dev` directory so sessions survive restarts. To use an existing
+database instead (for example `docker compose up -d`), export `DATABASE_URL` and add `--no-db`;
+`--no-migrate` also skips the migrations. `AUTH_SECRET` and other backend settings can also be
+exported. Back up existing data before migrations.
 
-Open the printed URL, `http://127.0.0.1:5173/app`. The launcher sets the
-backend origin and proxy target consistently and stops the API and UI when
-either exits; the database remains running. Ports 3000 and 5173 must
+Open the printed URL, `http://127.0.0.1:5173/app`. `remake-dev` sets the
+backend origin and proxy target consistently and stops the API and UI on Ctrl+C;
+the database remains running. Ports 3000 and 5173 must
 be free; Vite fails instead of silently choosing another port.
 Use the exact printed hostname: `localhost` and `127.0.0.1` are different
 origins. Google OAuth also requires the corresponding callback URL to be

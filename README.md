@@ -44,8 +44,9 @@ prepare plugin publications. Signing and generation promotion remain explicit
 operator operations. See [Cloud API v2](docs/CLOUD-API-V2.md) for the complete
 single-instance contract and subsequent Desktop integration boundary.
 
-Without Docker on Linux/macOS: `cargo run -p pgrust-local -- up` after
-initializing the pgrust submodule — see the [local pgrust guide](docs/LOCAL-PGRUST.md).
+Without Docker on Linux/macOS: `cargo run -p devtools -- db install` once, then
+`cargo run -p devtools -- db up` — the `remake-dev` CLI installs pgrust a single time and then only
+runs it. See the [local development guide](docs/LOCAL-PGRUST.md).
 
 Migrations are explicit and never run on server startup. Back up the
 database before migrating; there is no automatic rollback, so restore the
@@ -99,7 +100,7 @@ Health and identity:
 
 ## Optional Docker-free database
 
-For local Linux/macOS development without Docker, use the source-building `pgrust-local` launcher after configuring `.env`. See [Local pgrust guide](docs/LOCAL-PGRUST.md) for prerequisites, security limits and shutdown.
+For local Linux/macOS development without Docker, use the `remake-dev` CLI (`cargo run -p devtools -- db up`) after configuring `.env`. See the [local development guide](docs/LOCAL-PGRUST.md) for installation, the isolated test database, security limits and shutdown.
 
 For Railway staging, the repository includes a multi-stage image and same-origin
 admin hosting. See [Railway staging](docs/RAILWAY-STAGING.md) for configuration,

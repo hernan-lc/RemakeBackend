@@ -1,0 +1,4 @@
+# Only an alias: `cargo remake db up` == `cargo run -q -p devtools -- db up`.
+# Nothing here touches rustflags, linkers, wrappers or target directories.
+[alias]
+remake = "run -q -p devtools --"
