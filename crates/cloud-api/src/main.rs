@@ -1258,6 +1258,10 @@ async fn proxy_boundary(
 }
 
 #[cfg(test)]
+mod test_db;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod auth_tests;
 #[cfg(test)]
 mod cloud_v2_tests;

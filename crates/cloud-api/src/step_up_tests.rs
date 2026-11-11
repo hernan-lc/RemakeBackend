@@ -492,7 +492,7 @@ fn unique_ns(prefix: &str) -> String {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn temporary_log_codes_are_bound_limited_single_use_and_audited() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let email = format!("{}@example.test", uuid::Uuid::new_v4());
     let (user, cookie) =
@@ -768,7 +768,7 @@ async fn temporary_log_codes_are_bound_limited_single_use_and_audited() {
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn password_step_up_mints_grant_and_enables_enrollment() {
     use tiktools_plugin_package::{KeyId, SigningKey};
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -859,7 +859,7 @@ async fn password_step_up_mints_grant_and_enables_enrollment() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn password_step_up_rejects_wrong_password() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -898,7 +898,7 @@ async fn password_step_up_rejects_wrong_password() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn password_step_up_is_unavailable_without_a_password() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let control = Arc::new(Mutex::new(IdTokenControl {
@@ -937,7 +937,7 @@ async fn password_step_up_is_unavailable_without_a_password() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_grants_reject_forged_expired_and_reused() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -1038,7 +1038,7 @@ async fn step_up_grants_reject_forged_expired_and_reused() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_grants_reject_cross_user_session_publisher_and_action() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let password = "test password with enough characters";
@@ -1149,7 +1149,7 @@ async fn step_up_grants_reject_cross_user_session_publisher_and_action() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_rate_limits_password_attempts() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -1184,7 +1184,7 @@ async fn step_up_rate_limits_password_attempts() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_rejects_forged_origin() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -1230,7 +1230,7 @@ struct OauthCase {
 /// Fresh OAuth fixture, Google-only user, and approved publisher per case so
 /// cases cannot leak grants, states, or rate-limit budget into each other.
 async fn oauth_case() -> OauthCase {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let sub = format!("cloud-test-{tag}");
@@ -1455,7 +1455,7 @@ async fn oauth_start_validates_target_return_and_availability() {
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     // A deployment without Google exposes only password step-up.
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let email = format!("{}@example.test", uuid::Uuid::new_v4().simple());
@@ -1745,7 +1745,7 @@ async fn oauth_state_is_single_use_session_bound_and_expirable() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_grants_die_with_expired_revoked_and_deleted_sessions() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let password = "test password with enough characters";
@@ -1844,7 +1844,7 @@ async fn step_up_grants_die_with_expired_revoked_and_deleted_sessions() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_rechecks_authorization_and_supports_concurrent_approval() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let password = "test password with enough characters";
@@ -1900,6 +1900,17 @@ async fn step_up_rechecks_authorization_and_supports_concurrent_approval() {
         password,
     )
     .await;
+    // The last admin cannot be revoked. Another test used to leave a second admin
+    // in the shared database; with a private database this test provides its own.
+    let (keeper, _) = signup_password_user(
+        &ctx,
+        &format!("{}@example.test", uuid::Uuid::new_v4().simple()),
+        password,
+    )
+    .await;
+    admin::change_role(&pool, true, &keeper, "admin", "test")
+        .await
+        .unwrap();
     admin::change_role(&pool, false, &admin, "admin", "test")
         .await
         .unwrap();
@@ -1988,7 +1999,7 @@ async fn step_up_rechecks_authorization_and_supports_concurrent_approval() {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn step_up_lifecycle_is_audited() {
-    let url = std::env::var("CLOUD_TEST_DATABASE_URL").unwrap();
+    let url = crate::test_support::migrated_url();
     let (ctx, pool) = step_up_context(&url).await;
     let app = step_up_app(ctx.clone(), pool.clone(), None, None);
     let password = "test password with enough characters";

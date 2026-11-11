@@ -40,7 +40,7 @@ impl Drop for Fixture {
 
 async fn fixture(users_wanted: usize) -> Fixture {
     let database =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("use a disposable PostgreSQL database");
+        crate::test_support::migrated_url();
     let adapter = Arc::new(SqlxDbAdapter::postgres(&database).await.unwrap());
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&database).await.unwrap());
     let context = AuthContext::new(
@@ -305,6 +305,7 @@ fn millis_from_now(ms: i64) -> i64 {
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn errors_use_the_envelope_and_capabilities_stay_additive() {
+    let _env = crate::test_support::integration_env().await;
     let f = fixture(1).await;
     let (status, headers, capabilities) = call(&f, None, "GET", "/api/v2/capabilities", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -934,6 +935,7 @@ async fn relay_routes_commands_through_confirmed_grants_and_closes_on_revocation
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn socket_refuses_untrusted_origins_and_integrations_publish_no_provider() {
+    let _env = crate::test_support::integration_env().await;
     let f = fixture(1).await;
     let addr = f
         .ws_url
@@ -1500,6 +1502,7 @@ async fn deliver(
 #[tokio::test]
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn webhook_integration_verifies_signatures_deduplicates_and_refuses_without_a_key() {
+    let _env = crate::test_support::integration_env().await;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     std::env::set_var("INTEGRATION_SECRET_KEY", STANDARD.encode([42u8; 32]));
     let f = fixture(2).await;

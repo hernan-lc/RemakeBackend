@@ -30,7 +30,7 @@ impl Drop for Fixture {
 }
 async fn fixture() -> Fixture {
     let database =
-        std::env::var("CLOUD_TEST_DATABASE_URL").expect("use a disposable PostgreSQL database");
+        crate::test_support::migrated_url();
     let adapter = Arc::new(SqlxDbAdapter::postgres(&database).await.unwrap());
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&database).await.unwrap());
     let context = AuthContext::new(
@@ -156,7 +156,7 @@ async fn actual_app_sdk_epoch_contract_against_postgres() {
     assert!(Path::new(&binary).is_file());
     // This fixture applies migrations. Refuse ordinary local or remote
     // databases even if the caller accidentally supplies one in the env.
-    let database = std::env::var("CLOUD_TEST_DATABASE_URL").expect("disposable database URL");
+    let database = crate::test_support::migrated_url();
     let database = url::Url::parse(&database).expect("invalid disposable database URL");
     assert!(matches!(database.scheme(), "postgres" | "postgresql"));
     assert_eq!(database.host_str(), Some("127.0.0.1"));

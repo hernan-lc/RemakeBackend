@@ -53,7 +53,8 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> TestResult<Self> {
-        let raw = std::env::var("CLOUD_TEST_DATABASE_URL")?;
+        // An empty private database: this drill migrates it itself, from the pre-v2 schema.
+        let raw = crate::test_support::empty_url();
         let url = validate_fixture_url(&raw)?;
         let control = PgPoolOptions::new()
             .max_connections(1)
