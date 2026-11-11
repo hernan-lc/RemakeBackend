@@ -16,7 +16,9 @@ sha2 = "0.10"
 tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+ed25519-dalek = "2"
+rand = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c", default-features = false, features = ["axum", "sqlx"] }
 better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "c6940517155ff9a123221789b1efc89ef48cb19c" }
@@ -34,9 +36,12 @@ tower-http = { version = "0.6", features = ["fs"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 hex = "0.4"
+hmac = "0.12"
+aes-gcm = "0.10"
 percent-encoding = "2"
 
 [dev-dependencies]
+tokio-tungstenite = "0.28"
 zip = { version = "9.1.2", default-features = false, features = ["deflate"] }
 cloud-client = { path = "../cloud-client" }
 jsonwebtoken = "9"

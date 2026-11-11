@@ -1,16 +1,23 @@
 mod account;
 mod admin;
 mod admin_static;
+mod api_error;
+mod assets;
 mod catalog_pages;
+mod catalog_v3;
 mod cloud_v2;
 mod config;
 mod desktop;
 mod dual_auth;
+mod integrations;
 mod library;
 mod library_digest_repair;
 mod local_backup;
 mod local_objects;
+mod media;
 mod moderation;
+mod overlays;
+mod packages;
 mod portable;
 mod publication;
 mod publication_worker;
@@ -20,6 +27,7 @@ mod publishers;
 mod readiness;
 mod recovery;
 mod releases;
+mod remote;
 mod scanner;
 mod security_headers;
 mod snapshot_export;
@@ -68,6 +76,8 @@ struct AppState {
     /// configured; password step-up still works, Google step-up answers 503.
     step_up_oauth: Option<step_up::StepUpOAuth>,
     temporary_log_approvals: bool,
+    /// Live relay routing for remote control. Single-process by design.
+    remote: std::sync::Arc<remote::relay::Hub>,
 }
 
 fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
@@ -773,6 +783,19 @@ fn app_with_proxies(
 
 // Normal key enrollment and approval require fresh step-up grants. The
 // separately audited temporary log-code override is opt-in.
+/// Product API v3. Every route carries a backend-generated request id and
+/// answers failures with the shared error envelope.
+fn v3_routes() -> Router<AppState> {
+    Router::new()
+        .merge(catalog_v3::routes())
+        .merge(integrations::routes())
+        .merge(remote::routes())
+        .merge(assets::routes())
+        .merge(overlays::routes())
+        .merge(packages::routes())
+        .layer(axum::middleware::from_fn(api_error::request_id))
+}
+
 fn app_inner(
     context: AuthContext,
     pool: PgPool,
@@ -780,6 +803,9 @@ fn app_inner(
     object_storage: Option<cloud_storage::QuarantineStore>,
     flags: RouterFlags,
 ) -> Router {
+    // One hub per app instance; the sweeper and the relay share it so expiries reach live controllers.
+    let remote_hub = std::sync::Arc::new(remote::relay::Hub::new(relay_node_id()));
+    remote::relay::spawn_background(pool.clone(), remote_hub.clone());
     let social_limiter = context
         .secondary_storage
         .clone()
@@ -1092,12 +1118,14 @@ fn app_inner(
             axum::routing::get(step_up::oauth_callback),
         )
         .merge(cloud_v2::routes())
+        .merge(v3_routes())
         .with_state(AppState {
             auth: context,
             pool,
             object_storage,
             step_up_oauth: flags.step_up_oauth,
             temporary_log_approvals: flags.temporary_log_approvals,
+            remote: remote_hub,
         })
         .merge(auth_routes(auth));
     let router = if flags.social_limit_enabled {
@@ -1241,3 +1269,14 @@ mod registry_tests;
 mod schema_v2_recovery_tests;
 #[cfg(test)]
 mod step_up_tests;
+#[cfg(test)]
+mod v3_tests;
+
+/// Identifies this relay node. Set `RELAY_NODE_ID` to a stable name per process;
+/// a random id is used otherwise, which is correct but changes on restart.
+fn relay_node_id() -> String {
+    std::env::var("RELAY_NODE_ID")
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| format!("relay-{}", uuid::Uuid::new_v4()))
+}

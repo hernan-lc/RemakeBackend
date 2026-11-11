@@ -1874,3 +1874,73 @@ async fn local_volume_publication_serves_verified_registry() {
     server.abort();
     clamserver.abort();
 }
+
+async fn get_json(origin: &str, path: &str) -> (u16, serde_json::Value) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let url = url::Url::parse(origin).unwrap();
+    let mut stream = tokio::net::TcpStream::connect((url.host_str().unwrap(), url.port().unwrap()))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    let body = text.split("\r\n\r\n").nth(1).unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(body).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn v3_catalog_projects_the_active_generation_with_verified_presentation() {
+    let fx = Fixture::setup().await;
+    let plugin = fx.release("presented", "1.2.0").await;
+    fx.release("presented", "1.3.0-beta.1").await;
+    let (_, published) = fx.publish("v3-catalog").await;
+    // The integrity worker writes this on a passing transition, from the verified manifest.
+    sqlx::query("UPDATE cloud_plugin_releases SET display_name=$2, summary=$3, categories=$4, authors=$5, homepage=$6 WHERE plugin_id=$1 AND version='1.2.0'")
+        .bind(&plugin)
+        .bind("Presented plugin")
+        .bind("Shows alerts")
+        .bind(vec!["audio".to_string()])
+        .bind(vec!["Ana".to_string()])
+        .bind("https://example.test/presented")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let (origin, server) = serve_app(fx.ctx.clone(), fx.pool.clone(), fx.store.clone()).await;
+    let (status, body) = get_json(&origin, "/api/v3/catalog/items?q=presented").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["dataState"], "ready");
+    assert_eq!(body["generation"], published.generation);
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["identity"]["id"] == plugin)
+        .expect("the plugin is listed");
+    assert_eq!(item["presentation"]["title"], "Presented plugin");
+    assert_eq!(item["presentation"]["authors"][0], "Ana");
+    assert_eq!(item["presentation"]["categories"][0], "audio");
+    assert_eq!(
+        item["releaseRef"]["version"], "1.2.0",
+        "a stable release beats a pre-release"
+    );
+    assert_eq!(item["releaseRef"]["sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(item["publication"]["status"], "published");
+    server.abort();
+}
