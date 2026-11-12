@@ -4,9 +4,9 @@ env:
   CARGO_BUILD_JOBS: 2
 jobs:
   msrv:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.95.0
       - run: cargo check --workspace --locked
       - uses: dtolnay/rust-toolchain@1.89.0
@@ -28,11 +28,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: Install PostgreSQL 18 archive clients from PGDG
@@ -64,7 +64,7 @@ jobs:
         env:
           CLOUD_TEST_DATABASE_URL: postgres://cloud:test-only@127.0.0.1:5432/cloud_test
   admin-web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
@@ -87,8 +87,8 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:5183
       ADMIN_URL: http://127.0.0.1:5183
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '22.23.4'
           cache: npm
@@ -115,7 +115,7 @@ jobs:
       - name: Test the built admin UI with real cookie authentication and Origin enforcement
         working-directory: web/admin
         run: npm run e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: admin-browser-failure
@@ -123,10 +123,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
   registry-fixture:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           repository: nglmercer/TikTools-app
           ref: 983a375c5b702681a791061ca863cea9c542528d
@@ -144,7 +144,7 @@ jobs:
         run: scripts/verify-registry-fixture.sh tiktools-upstream "$RUNNER_TEMP/registry-fixture" "$RUNNER_TEMP/registry-fixture.root-pin.json"
       - name: Verify fixture with Cloud package verifier
         run: cargo run --locked -p cloud-verifier --example verify_fixture -- "$RUNNER_TEMP/registry-fixture"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: disposable-signed-registry-fixture
           path: |

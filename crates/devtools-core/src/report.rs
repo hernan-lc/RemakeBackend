@@ -289,7 +289,10 @@ pub async fn doctor(env: &DevEnvironment) -> DoctorReport {
 async fn applied_migrations(env: &DevEnvironment, port: u16) -> Result<Option<i64>> {
     use sqlx::Connection as _;
     // The managed server may run on a port other than the configured one (instance.json).
-    let conn = crate::config::Connection { port, ..env.conn.clone() };
+    let conn = crate::config::Connection {
+        port,
+        ..env.conn.clone()
+    };
     let mut c = crate::health::connect(&conn, &conn.database).await?;
     let exists: Option<String> = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
         .fetch_one(&mut c)
