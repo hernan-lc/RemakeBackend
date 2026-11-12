@@ -6,6 +6,7 @@ use crate::{
     AppState,
 };
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
@@ -79,6 +80,13 @@ fn check_identity(row: &sqlx::postgres::PgRow) -> Result<Value, StatusCode> {
 fn view(row: &sqlx::postgres::PgRow, content: bool) -> Result<Value, StatusCode> {
     let document = check_identity(row)?;
     let mut result = json!({"id":row.get::<Uuid,_>("id"),"kind":row.get::<String,_>("kind"),"slug":row.get::<String,_>("slug"),"revision":row.get::<i64,_>("revision"),"title":row.get::<String,_>("title"),"sha256":row.get::<String,_>("sha256"),"status":row.get::<String,_>("status")});
+    // Provenance is row metadata, selected only by the owner's own queries.
+    if let (Ok(Some(source)), Ok(Some(revision))) = (
+        row.try_get::<Option<Uuid>, _>("fork_of_document"),
+        row.try_get::<Option<i64>, _>("fork_of_revision"),
+    ) {
+        result["forkOf"] = json!({"documentId":source,"revision":revision});
+    }
     if content {
         result["document"] = document;
     }
@@ -131,7 +139,7 @@ async fn quota(
     user: &str,
     document: &Value,
 ) -> Result<(), StatusCode> {
-    let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(sum(octet_length(v.document::text)),0)::bigint FROM cloud_library_versions v JOIN cloud_library_documents d ON d.id=v.document_id WHERE d.owner_user_id=$1").bind(user).fetch_one(&mut **tx).await.map_err(db)?;
+    let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(sum(octet_length(v.document::text)),0)::bigint FROM cloud_library_versions v JOIN cloud_library_documents d ON d.id=v.document_id WHERE d.owner_user_id=$1 AND d.kind IN ('template','profile')").bind(user).fetch_one(&mut **tx).await.map_err(db)?;
     let added: i64 = sqlx::query_scalar("SELECT octet_length($1::jsonb::text)::bigint")
         .bind(document)
         .fetch_one(&mut **tx)
@@ -172,7 +180,7 @@ pub async fn create(
     let mut tx = state.pool.begin().await.map_err(db)?;
     owner_lock(&mut tx, &user.user.id).await?;
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1")
+        sqlx::query_scalar("SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1 AND kind IN ('template','profile')")
             .bind(&user.user.id)
             .fetch_one(&mut *tx)
             .await
@@ -202,7 +210,7 @@ pub async fn list(
 ) -> Result<Json<Value>, StatusCode> {
     check_page(&page)?;
     workspace::limit(&state, &user.user.id, "read", 300).await?;
-    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.owner_user_id=$1 AND ($2::uuid IS NULL OR d.id>$2) AND ($3::text IS NULL OR d.kind=$3) AND ($4::text IS NULL OR strpos(lower(v.title),lower($4))>0) ORDER BY d.id LIMIT 51").bind(&user.user.id).bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
+    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document,d.fork_of_document,d.fork_of_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.owner_user_id=$1 AND d.kind IN ('template','profile') AND ($2::uuid IS NULL OR d.id>$2) AND ($3::text IS NULL OR d.kind=$3) AND ($4::text IS NULL OR strpos(lower(v.title),lower($4))>0) ORDER BY d.id LIMIT 51").bind(&user.user.id).bind(page.after).bind(page.kind).bind(page.q).fetch_all(&state.pool).await.map_err(db)?;
     Ok(Json(listing(rows)?))
 }
 fn listing(rows: Vec<sqlx::postgres::PgRow>) -> Result<Value, StatusCode> {
@@ -225,7 +233,7 @@ pub async fn get(
     Path(id): Path<Uuid>,
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     workspace::limit(&state, &user.user.id, "read", 300).await?;
-    let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.id=$1 AND d.owner_user_id=$2").bind(id).bind(&user.user.id).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document,d.fork_of_document,d.fork_of_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.id=$1 AND d.owner_user_id=$2 AND d.kind IN ('template','profile')").bind(id).bind(&user.user.id).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     Ok((
         workspace::etag(row.get("revision")),
         Json(view(&row, true)?),
@@ -242,7 +250,7 @@ pub async fn update(
     workspace::limit(&state, &user.user.id, "library-write", 60).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
     owner_lock(&mut tx, &user.user.id).await?;
-    let row = sqlx::query("SELECT kind,slug,revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 FOR UPDATE").bind(id).bind(&user.user.id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row = sqlx::query("SELECT kind,slug,revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind IN ('template','profile') FOR UPDATE").bind(id).bind(&user.user.id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     let kind: String = row.get("kind");
     let revision: i64 = row.get("revision");
     if revision != expected {
@@ -283,7 +291,7 @@ pub async fn delete(
     let mut tx = state.pool.begin().await.map_err(db)?;
     owner_lock(&mut tx, &user.user.id).await?;
     let revision: i64 = sqlx::query_scalar(
-        "SELECT revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 FOR UPDATE",
+        "SELECT revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind IN ('template','profile') FOR UPDATE",
     )
     .bind(id)
     .bind(&user.user.id)
@@ -319,7 +327,7 @@ pub async fn versions(
     }
     workspace::limit(&state, &user.user.id, "read", 300).await?;
     let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind IN ('template','profile'))",
     )
     .bind(id)
     .bind(&user.user.id)
@@ -329,7 +337,7 @@ pub async fn versions(
     if !owned {
         return Err(StatusCode::NOT_FOUND);
     }
-    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision>$3 ORDER BY v.revision LIMIT 51").bind(id).bind(&user.user.id).bind(page.after.unwrap_or(0)).fetch_all(&state.pool).await.map_err(db)?;
+    let rows = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document,d.fork_of_document,d.fork_of_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision>$3 ORDER BY v.revision LIMIT 51").bind(id).bind(&user.user.id).bind(page.after.unwrap_or(0)).fetch_all(&state.pool).await.map_err(db)?;
     let more = rows.len() > 50;
     let items: Vec<_> = rows
         .iter()
@@ -349,7 +357,7 @@ pub async fn version(
     Path((id, revision)): Path<(Uuid, i64)>,
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     workspace::limit(&state, &user.user.id, "read", 300).await?;
-    let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision=$3").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document,d.fork_of_document,d.fork_of_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND d.kind IN ('template','profile') AND v.revision=$3").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     Ok((workspace::etag(revision), Json(view(&row, true)?)))
 }
 pub async fn submit(
@@ -359,7 +367,7 @@ pub async fn submit(
 ) -> Result<StatusCode, StatusCode> {
     workspace::limit(&state, &user.user.id, "library-write", 60).await?;
     let mut tx = state.pool.begin().await.map_err(db)?;
-    let row = sqlx::query("SELECT d.kind,v.status,v.sha256,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND v.revision=$3 FOR UPDATE OF d,v").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row = sqlx::query("SELECT d.kind,v.status,v.sha256,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.owner_user_id=$2 AND d.kind IN ('template','profile') AND v.revision=$3 FOR UPDATE OF d,v").bind(id).bind(&user.user.id).bind(revision).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     check_identity(&row)?;
     match row.get::<String, _>("status").as_str() {
         "pending" => return Ok(StatusCode::NO_CONTENT),
@@ -402,6 +410,88 @@ pub async fn published_version(
 ) -> Result<(HeaderMap, Json<Value>), StatusCode> {
     let row = sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND v.revision=$2 AND v.status='published'").bind(id).bind(revision).fetch_optional(&state.pool).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     Ok((workspace::etag(revision), Json(view(&row, true)?)))
+}
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ForkRequest {
+    /// A specific publicly visible revision; defaults to the current published one.
+    revision: Option<i64>,
+}
+/// Copies a template or profile revision that is visible in the public catalog
+/// into the caller's own library as a new private draft (revision 1).
+///
+/// Provenance (`forkOf`) lives on the library document row, never inside the
+/// portable value, so the value validators and older clients are unaffected.
+/// The copy keeps the source's portable `id` (its slug in the caller's
+/// library); a caller who already has that kind and id gets 409. The write
+/// limit (60/min) and the 100-document / 8 MiB library quotas apply.
+pub async fn fork(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), StatusCode> {
+    let input: ForkRequest = if body.is_empty() {
+        ForkRequest::default()
+    } else {
+        // `null` and `{}` mean the same as no body.
+        serde_json::from_slice::<Option<ForkRequest>>(&body)
+            .map_err(|_| StatusCode::BAD_REQUEST)?
+            .unwrap_or_default()
+    };
+    if input.revision.is_some_and(|n| n < 1) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    workspace::limit(&state, &user.user.id, "library-write", 60).await?;
+    let mut tx = state.pool.begin().await.map_err(db)?;
+    owner_lock(&mut tx, &user.user.id).await?;
+    // Only a published revision is visible in the public catalog (drafts,
+    // pending, rejected and withdrawn revisions never are).
+    let source = sqlx::query("SELECT d.kind,d.slug,v.revision,v.sha256,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=COALESCE($2::bigint,d.published_revision) WHERE d.id=$1 AND d.kind IN ('template','profile') AND v.status='published'")
+        .bind(id)
+        .bind(input.revision)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let document = check_identity(&source)?;
+    let kind: String = source.get("kind");
+    let slug: String = source.get("slug");
+    let source_revision: i64 = source.get("revision");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1 AND kind IN ('template','profile')")
+        .bind(&user.user.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+    if count >= MAX_DOCUMENTS {
+        return Err(StatusCode::INSUFFICIENT_STORAGE);
+    }
+    quota(&mut tx, &user.user.id, &document).await?;
+    let fork = Uuid::new_v4();
+    let created = sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug,fork_of_document,fork_of_revision) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(owner_user_id,kind,slug) DO NOTHING")
+        .bind(fork)
+        .bind(&user.user.id)
+        .bind(&kind)
+        .bind(&slug)
+        .bind(id)
+        .bind(source_revision)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    if created.rows_affected() == 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+    insert_version(&mut tx, fork, 1, &kind, &document).await?;
+    audit(&mut tx, &user.user.id, fork, "library.forked").await?;
+    tx.commit().await.map_err(db)?;
+    Ok((
+        StatusCode::CREATED,
+        workspace::etag(1),
+        Json(json!({
+            "id":fork,"revision":1,"status":"draft",
+            "forkOf":{"documentId":id,"revision":source_revision}
+        })),
+    ))
 }
 pub async fn queue(
     AuthUser(user): AuthUser,
@@ -537,7 +627,7 @@ async fn withdraw_inner(
     reason: String,
     moderator: bool,
 ) -> Result<(), StatusCode> {
-    let row=sqlx::query("SELECT d.owner_user_id,v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND v.revision=$2 FOR UPDATE OF d,v").bind(id).bind(revision).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
+    let row=sqlx::query("SELECT d.owner_user_id,v.status FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.id=$1 AND d.kind IN ('template','profile') AND v.revision=$2 FOR UPDATE OF d,v").bind(id).bind(revision).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StatusCode::NOT_FOUND)?;
     if !moderator && row.get::<String, _>("owner_user_id") != user {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -554,7 +644,7 @@ pub(crate) async fn export(pool: &sqlx::PgPool, user: &str) -> Result<Value, Sta
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    let rows=sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.owner_user_id=$1 ORDER BY d.id,v.revision LIMIT 10001").bind(user).fetch_all(&mut *tx).await.map_err(db)?;
+    let rows=sqlx::query("SELECT d.id,d.kind,d.slug,v.revision,v.title,v.sha256,v.status,v.document,d.fork_of_document,d.fork_of_revision FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id WHERE d.owner_user_id=$1 AND d.kind IN ('template','profile') ORDER BY d.id,v.revision LIMIT 10001").bind(user).fetch_all(&mut *tx).await.map_err(db)?;
     if rows.len() > 10000 {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }

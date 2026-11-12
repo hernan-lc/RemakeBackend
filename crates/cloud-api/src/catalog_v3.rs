@@ -65,7 +65,7 @@ fn decode_cursor(rid: &RequestId, raw: &str) -> Result<Cursor, V3Error> {
 
 /// Parses the query string with a closed set of keys. Unknown keys are refused
 /// so a typo cannot silently widen a search.
-fn query_map(
+pub(crate) fn query_map(
     rid: &RequestId,
     raw: Option<String>,
     allowed: &[&str],
@@ -109,7 +109,7 @@ fn percent_decode(raw: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn parse_limit(rid: &RequestId, raw: Option<&String>) -> Result<i64, V3Error> {
+pub(crate) fn parse_limit(rid: &RequestId, raw: Option<&String>) -> Result<i64, V3Error> {
     match raw {
         None => Ok(MAX_LIMIT),
         Some(value) => value

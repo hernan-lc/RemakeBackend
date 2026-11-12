@@ -124,7 +124,7 @@ pub async fn list(
     Path(collection): Path<String>,
     Query(page): Query<Page>,
 ) -> Result<Json<Listing>, StatusCode> {
-    if !portable::COLLECTIONS.contains(&collection.as_str())
+    if !portable::is_collection(&collection)
         || page
             .after
             .as_ref()

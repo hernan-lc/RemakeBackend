@@ -2401,3 +2401,799 @@ async fn workspace_selection_accepts_legacy_ids_and_release_version_boundaries()
         StatusCode::BAD_REQUEST
     );
 }
+
+fn variable(name: &str, kind: &str, value: Value) -> Value {
+    json!({"schemaVersion":1,"name":name,"type":kind,"value":value})
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn variables_collection_validates_and_uses_the_regular_sync_write_path() {
+    let f = fixture().await;
+    let base = "/api/v2/sync/collections/variables";
+    let put = |user: usize, name: String, body: Value, condition: (&'static str, &'static str)| {
+        let f = &f;
+        async move {
+            request(
+                f,
+                Some(user),
+                "PUT",
+                &format!("{base}/{name}"),
+                body,
+                Some(condition),
+            )
+            .await
+        }
+    };
+
+    // Announced for gating, while the legacy list a deployed client checks stays as it was.
+    let caps =
+        json_body(request(&f, None, "GET", "/api/v2/capabilities", Value::Null, None).await).await;
+    assert_eq!(caps["sync"]["collections"], json!(portable::COLLECTIONS));
+    assert_eq!(caps["sync"]["optionalCollections"], json!(["variables"]));
+    assert_eq!(caps["variables"]["maxTextBytes"], 4096);
+    let discovered = cloud_client::CloudCatalog::new(&f.origin)
+        .unwrap()
+        .workspace_sync_capabilities()
+        .await
+        .unwrap();
+    assert!(discovered.variables);
+
+    // Every type is accepted, and creation needs If-None-Match: *.
+    for (name, kind, value) in [
+        ("greeting", "text", json!("hola")),
+        ("commandPort", "number", json!(46665)),
+        ("enabled", "boolean", json!(true)),
+        ("vips", "list", json!(["ana", "luis"])),
+    ] {
+        let response = put(
+            0,
+            name.into(),
+            variable(name, kind, value.clone()),
+            ("if-none-match", "*"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED, "{name}");
+        assert_eq!(
+            response.headers()[header::ETAG],
+            "\"".to_owned()
+                + &(1 + ["greeting", "commandPort", "enabled", "vips"]
+                    .iter()
+                    .position(|n| *n == name)
+                    .unwrap())
+                .to_string()
+                + "\""
+        );
+        let record = json_body(response).await;
+        assert_eq!(
+            (
+                record["collection"].as_str(),
+                record["value"]["value"].clone()
+            ),
+            (Some("variables"), value)
+        );
+    }
+    assert_eq!(
+        put(
+            0,
+            "greeting".into(),
+            variable("greeting", "text", json!("x")),
+            ("if-none-match", "*")
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+
+    // The validation matrix. Nothing below is stored.
+    let oversized_text = variable("big", "text", json!("a".repeat(4097)));
+    let too_many = variable("many", "list", json!(vec!["a"; 101]));
+    let long_item = variable("long", "list", json!(["a".repeat(257)]));
+    let mut extra = variable("extra", "text", json!("x"));
+    extra["secret"] = json!(true);
+    let mut wrong_version = variable("version", "text", json!("x"));
+    wrong_version["schemaVersion"] = json!(2);
+    for (name, body) in [
+        ("apiKey", variable("apiKey", "secret", json!("hunter2"))),
+        ("pwd", variable("pwd", "password", json!("hunter2"))),
+        ("typed", variable("typed", "number", json!("1"))),
+        ("flag", variable("flag", "boolean", json!("true"))),
+        ("text", variable("text", "text", json!(7))),
+        ("nulls", variable("nulls", "text", Value::Null)),
+        ("listy", variable("listy", "list", json!("a,b"))),
+        ("mixed", variable("mixed", "list", json!(["a", 1]))),
+        ("mismatch", variable("other", "text", json!("x"))),
+        ("big", oversized_text),
+        ("many", too_many),
+        ("long", long_item),
+        ("extra", extra),
+        ("version", wrong_version),
+        (
+            "missing",
+            json!({"schemaVersion":1,"name":"missing","type":"text"}),
+        ),
+        ("bearer", variable("bearer", "text", json!("Bearer abcdef"))),
+    ] {
+        let response = put(0, name.into(), body, ("if-none-match", "*")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{name}");
+    }
+    for name in [
+        "9lives",
+        "has%20space",
+        "semi;colon",
+        "dot..ok%2Fslash",
+        "%C3%A9",
+    ] {
+        let response = put(
+            0,
+            name.into(),
+            variable("x", "text", json!("x")),
+            ("if-none-match", "*"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "key {name}");
+    }
+    let too_long_name = "k".repeat(65);
+    assert_eq!(
+        put(
+            0,
+            too_long_name.clone(),
+            variable(&too_long_name, "text", json!("x")),
+            ("if-none-match", "*")
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let boundary = "k".repeat(64);
+    assert_eq!(
+        put(
+            0,
+            boundary.clone(),
+            variable(&boundary, "text", json!("x")),
+            ("if-none-match", "*")
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put(
+            0,
+            "ok".into(),
+            variable("ok", "text", json!("a".repeat(4096))),
+            ("if-none-match", "*")
+        )
+        .await
+        .status(),
+        StatusCode::CREATED,
+        "4 KiB of text is allowed"
+    );
+    assert_eq!(
+        request(
+            &f,
+            None,
+            "PUT",
+            &format!("{base}/anon"),
+            variable("anon", "text", json!("x")),
+            Some(("if-none-match", "*"))
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Replace and delete use If-Match; a stale base conflicts; a tombstone is kept.
+    let updated = put(
+        0,
+        "greeting".into(),
+        variable("greeting", "text", json!("adios")),
+        ("if-match", "\"1\""),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(json_body(updated).await["revision"], 7);
+    assert_eq!(
+        put(
+            0,
+            "greeting".into(),
+            variable("greeting", "text", json!("again")),
+            ("if-match", "\"1\"")
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let noop = put(
+        0,
+        "greeting".into(),
+        variable("greeting", "text", json!("adios")),
+        ("if-match", "\"7\""),
+    )
+    .await;
+    assert_eq!(
+        (noop.status(), json_body(noop).await["revision"].clone()),
+        (StatusCode::OK, json!(7)),
+        "an identical write keeps its revision"
+    );
+    let delete = request(
+        &f,
+        Some(0),
+        "DELETE",
+        &format!("{base}/enabled"),
+        Value::Null,
+        Some(("if-match", "\"3\"")),
+    )
+    .await;
+    assert_eq!(delete.status(), StatusCode::OK);
+    assert_eq!(json_body(delete).await["deleted"], true);
+
+    // Reads: collection page, single record, change feed, export; isolated per account.
+    let page = json_body(request(&f, Some(0), "GET", base, Value::Null, None).await).await;
+    let keys: Vec<&str> = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["key"].as_str().unwrap())
+        .collect();
+    assert!(keys.contains(&"commandPort") && keys.contains(&"vips") && keys.contains(&"enabled"));
+    assert!(
+        keys.windows(2).all(|w| w[0] < w[1]),
+        "ordered by byte value of the key"
+    );
+    let single = request(
+        &f,
+        Some(0),
+        "GET",
+        &format!("{base}/commandPort"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(single.status(), StatusCode::OK);
+    let changes = json_body(
+        request(
+            &f,
+            Some(0),
+            "GET",
+            "/api/v2/sync/changes?cursor=0",
+            Value::Null,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(changes["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["collection"] == "variables"));
+    let export =
+        json_body(request(&f, Some(0), "GET", "/api/v2/sync/export", Value::Null, None).await)
+            .await;
+    assert_eq!(
+        export["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["collection"] == "variables")
+            .count(),
+        6
+    );
+    let theirs = json_body(request(&f, Some(1), "GET", base, Value::Null, None).await).await;
+    assert_eq!(theirs["records"], json!([]));
+    assert_eq!(
+        request(
+            &f,
+            Some(1),
+            "GET",
+            &format!("{base}/commandPort"),
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &f,
+            Some(0),
+            "GET",
+            "/api/v2/sync/collections/secrets",
+            Value::Null,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // The client SDK stages a variable end to end through the same routes.
+    let session = cloud_client::Session::connect(&f.origin, f.users[1].token.clone())
+        .await
+        .unwrap();
+    let sent = variable("sdk_value", "number", json!(1.5));
+    let record = session
+        .workspace_put("variables", "sdk_value", sent.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (record.collection.as_str(), record.value),
+        ("variables", Some(sent))
+    );
+    assert!(session
+        .workspace_snapshot()
+        .await
+        .unwrap()
+        .records
+        .iter()
+        .any(|r| r.collection == "variables"));
+
+    // Write-epoch fence: a stale epoch is refused with 412 and writes nothing.
+    let epoch = json_body(
+        request(
+            &f,
+            Some(0),
+            "GET",
+            "/api/v2/sync/write-epoch",
+            Value::Null,
+            None,
+        )
+        .await,
+    )
+    .await;
+    let current = epoch["writeEpoch"].as_str().unwrap().to_owned();
+    request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/sync/write-barrier",
+        Value::Null,
+        None,
+    )
+    .await;
+    let fenced = f
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("{base}/fenced"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &f.users[0].cookie)
+                .header(header::ORIGIN, ORIGIN)
+                .header("if-none-match", "*")
+                .header("x-workspace-write-epoch", current.as_str())
+                .body(Body::from(
+                    variable("fenced", "text", json!("x")).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fenced.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn variables_share_the_record_quota_and_the_write_rate_limit() {
+    let f = fixture().await;
+    sqlx::query("INSERT INTO cloud_workspace_cursors(user_id,cursor) VALUES($1,1)")
+        .bind(&f.users[0].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_workspace_records(user_id,collection,key,revision,value,deleted) SELECT $1,'variables','v'||n,1,jsonb_build_object('schemaVersion',1,'name','v'||n,'type','number','value',n),false FROM generate_series(1,1000) n").bind(&f.users[0].id).execute(&f.pool).await.unwrap();
+    let blocked = request(
+        &f,
+        Some(0),
+        "PUT",
+        "/api/v2/sync/collections/variables/extra",
+        variable("extra", "text", json!("x")),
+        Some(("if-none-match", "*")),
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::INSUFFICIENT_STORAGE,
+        "variables count toward the 1,000 records"
+    );
+    let other_collection = request(
+        &f,
+        Some(0),
+        "PUT",
+        "/api/v2/sync/collections/preferences/desktop",
+        json!({"schemaVersion":1}),
+        Some(("if-none-match", "*")),
+    )
+    .await;
+    assert_eq!(other_collection.status(), StatusCode::INSUFFICIENT_STORAGE);
+    // The write limit (120 a minute) covers variables like every other collection.
+    let path = "/api/v2/sync/collections/variables/limited";
+    let mut last = StatusCode::OK;
+    for _ in 0..121 {
+        last = request(
+            &f,
+            Some(1),
+            "PUT",
+            path,
+            variable("limited", "text", json!("x")),
+            Some(("if-none-match", "*")),
+        )
+        .await
+        .status();
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}
+
+fn profile_of(template: Value) -> Value {
+    json!({"profileVersion":1,"id":"gift-pack","name":"Gift pack","templates":[{"template":template}]})
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn forking_a_public_document_copies_it_privately_with_metadata_provenance() {
+    let f = fixture().await;
+    let (author, moderator, forker) = (0, 1, 2);
+    sqlx::query("INSERT INTO cloud_account_roles(user_id,role) VALUES($1,'moderator')")
+        .bind(&f.users[moderator].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let author_session = cloud_client::Session::connect(&f.origin, f.users[author].token.clone())
+        .await
+        .unwrap();
+    let forker_session = cloud_client::Session::connect(&f.origin, f.users[forker].token.clone())
+        .await
+        .unwrap();
+    let fork = |user: Option<usize>, id: String, body: Value| {
+        let f = &f;
+        async move {
+            request(
+                f,
+                user,
+                "POST",
+                &format!("/api/v2/catalog/documents/{id}/fork"),
+                body,
+                None,
+            )
+            .await
+        }
+    };
+    let publish = |id: uuid::Uuid, revision: i64| {
+        let f = &f;
+        async move {
+            let response = request(
+                f,
+                Some(moderator),
+                "POST",
+                &format!("/api/v2/moderation/documents/{id}/versions/{revision}/decision"),
+                json!({"decision":"approve","reason":"Reviewed portable actions"}),
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+    };
+
+    // Not publicly visible: draft, pending, unknown, and unauthenticated callers.
+    let created = author_session
+        .library_create("template", template())
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        fork(Some(forker), id.to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "draft"
+    );
+    author_session.library_submit(id, 1).await.unwrap();
+    assert_eq!(
+        fork(Some(forker), id.to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "pending"
+    );
+    assert_eq!(
+        fork(Some(forker), uuid::Uuid::new_v4().to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fork(None, id.to_string(), Value::Null).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fork(Some(forker), "not-a-uuid".into(), Value::Null)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    publish(id, 1).await;
+
+    // Body validation: the only accepted field is a positive revision.
+    for body in [
+        json!({"revision":0}),
+        json!({"revision":-1}),
+        json!({"parent":"x"}),
+        json!({"revision":"1"}),
+    ] {
+        assert_eq!(
+            fork(Some(forker), id.to_string(), body.clone())
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{body}"
+        );
+    }
+    assert_eq!(
+        fork(Some(forker), id.to_string(), json!({"revision":2}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "revision 2 is not published"
+    );
+
+    // The fork: a new private draft in the caller's library, same ack shape plus forkOf.
+    let response = fork(Some(forker), id.to_string(), json!({})).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.headers()[header::ETAG], "\"1\"");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let ack = json_body(response).await;
+    assert_eq!(
+        (ack["revision"].clone(), ack["status"].clone()),
+        (json!(1), json!("draft"))
+    );
+    assert_eq!(ack["forkOf"], json!({"documentId": id, "revision": 1}));
+    let copy = uuid::Uuid::parse_str(ack["id"].as_str().unwrap()).unwrap();
+    assert_ne!(copy, id);
+    let mut keys: Vec<_> = ack.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["forkOf", "id", "revision", "status"]);
+
+    // Own reads and lists expose forkOf; the portable value is byte-identical to the source.
+    let own = forker_session.library_document(copy).await.unwrap();
+    assert_eq!(own["forkOf"], json!({"documentId": id, "revision": 1}));
+    assert_eq!(
+        own["document"],
+        template(),
+        "provenance is not inside the portable value"
+    );
+    assert!(portable::document("template", &own["document"]));
+    assert_eq!(
+        (own["status"].as_str(), own["slug"].as_str()),
+        (Some("draft"), Some("gift-rule"))
+    );
+    let listed = forker_session.library_documents(None).await.unwrap();
+    assert_eq!(listed["items"][0]["forkOf"]["documentId"], id.to_string());
+    let versions = forker_session.library_versions(copy, None).await.unwrap();
+    assert_eq!(versions["items"][0]["forkOf"]["revision"], 1);
+    assert_eq!(
+        forker_session.library_version(copy, 1).await.unwrap()["forkOf"]["documentId"],
+        id.to_string()
+    );
+    let export = forker_session.export_account_v2().await.unwrap();
+    assert_eq!(
+        export["library"]["items"][0]["forkOf"]["documentId"],
+        id.to_string()
+    );
+    // Documents without provenance are unchanged; the public catalog never shows it.
+    assert!(author_session
+        .library_document(id)
+        .await
+        .unwrap()
+        .get("forkOf")
+        .is_none());
+    let public = cloud_client::CloudCatalog::new(&f.origin)
+        .unwrap()
+        .document(id, None)
+        .await
+        .unwrap();
+    assert!(public.get("forkOf").is_none());
+    // The author's other private documents stay out of reach; the forker cannot read the source privately.
+    assert!(matches!(
+        forker_session.library_document(id).await,
+        Err(cloud_client::SyncError::Http(404))
+    ));
+    // The copy is an ordinary draft: editable, and independent of the source.
+    let mut edited = template();
+    edited["title"] = json!("My gift rule");
+    forker_session
+        .library_update(copy, "template", edited, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        forker_session.library_document(copy).await.unwrap()["forkOf"]["revision"],
+        1
+    );
+    assert_eq!(
+        cloud_client::CloudCatalog::new(&f.origin)
+            .unwrap()
+            .document(id, None)
+            .await
+            .unwrap()["document"],
+        template()
+    );
+
+    // Forking twice (or onto an existing id) conflicts instead of overwriting.
+    assert_eq!(
+        fork(Some(forker), id.to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        fork(Some(author), id.to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::CONFLICT,
+        "the author already owns that id"
+    );
+
+    // A newer public revision: the default follows it, an older published one can be named.
+    let mut second = template();
+    second["title"] = json!("Gift rule v2");
+    author_session
+        .library_update(id, "template", second.clone(), 1)
+        .await
+        .unwrap();
+    author_session.library_submit(id, 2).await.unwrap();
+    publish(id, 2).await;
+    sqlx::query("DELETE FROM cloud_library_documents WHERE id=$1")
+        .bind(copy)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let latest = json_body(fork(Some(forker), id.to_string(), Value::Null).await).await;
+    assert_eq!(latest["forkOf"]["revision"], 2);
+    let latest_id = uuid::Uuid::parse_str(latest["id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        forker_session.library_document(latest_id).await.unwrap()["document"],
+        second
+    );
+    sqlx::query("DELETE FROM cloud_library_documents WHERE id=$1")
+        .bind(latest_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let pinned = json_body(fork(Some(forker), id.to_string(), json!({"revision":1})).await).await;
+    assert_eq!(pinned["forkOf"]["revision"], 1);
+    let pinned_id = uuid::Uuid::parse_str(pinned["id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        forker_session.library_document(pinned_id).await.unwrap()["document"],
+        template()
+    );
+
+    // Withdrawn revisions are no longer public and cannot be forked.
+    author_session
+        .library_withdraw(id, 2, "Replace outdated guidance")
+        .await
+        .unwrap();
+    assert_eq!(
+        fork(Some(forker), id.to_string(), json!({"revision":2}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    // Deleting the source clears provenance on the fork instead of dangling or blocking.
+    author_session
+        .library_withdraw(id, 1, "Retired")
+        .await
+        .unwrap();
+    assert_eq!(
+        fork(Some(forker), id.to_string(), Value::Null)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    author_session.library_delete(id, 2).await.unwrap();
+    let orphan = forker_session.library_document(pinned_id).await.unwrap();
+    assert!(orphan.get("forkOf").is_none(), "{orphan}");
+    assert_eq!(orphan["document"], template());
+
+    // Profiles fork the same way.
+    let profile = profile_of(template());
+    let created = author_session
+        .library_create("profile", profile.clone())
+        .await
+        .unwrap();
+    let profile_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    author_session.library_submit(profile_id, 1).await.unwrap();
+    publish(profile_id, 1).await;
+    let forked = json_body(fork(Some(forker), profile_id.to_string(), Value::Null).await).await;
+    let forked_id = uuid::Uuid::parse_str(forked["id"].as_str().unwrap()).unwrap();
+    let forked_profile = forker_session.library_document(forked_id).await.unwrap();
+    assert_eq!(
+        (
+            forked_profile["kind"].as_str(),
+            forked_profile["document"].clone()
+        ),
+        (Some("profile"), profile)
+    );
+    assert_eq!(
+        forked_profile["forkOf"]["documentId"],
+        profile_id.to_string()
+    );
+    // Profiles stay portable-only: no branch or parent field exists to set.
+    assert!(!portable::document("profile", &{
+        let mut p = profile_of(template());
+        p["parentId"] = json!(profile_id);
+        p
+    }));
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn fork_respects_library_quotas_and_the_write_rate_limit() {
+    let f = fixture().await;
+    let (author, forker, limited) = (0, 1, 2);
+    let id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) VALUES($1,$2,'template','gift-rule')").bind(id).bind(&f.users[author].id).execute(&f.pool).await.unwrap();
+    // The stored digest must be the one the API computes for the stored value.
+    let stored: Value = sqlx::query_scalar("SELECT $1::jsonb")
+        .bind(template())
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) VALUES($1,1,'Gift rule',$2,$3,'published')").bind(id).bind(&stored).bind(crate::library::digest(&stored)).execute(&f.pool).await.unwrap();
+    sqlx::query("UPDATE cloud_library_documents SET published_revision=1 WHERE id=$1")
+        .bind(id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let path = format!("/api/v2/catalog/documents/{id}/fork");
+
+    // 100 documents per account: the 101st (fork) is refused with 507.
+    sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) SELECT gen_random_uuid(),$1,'template','fill-'||n FROM generate_series(1,100) n").bind(&f.users[forker].id).execute(&f.pool).await.unwrap();
+    assert_eq!(
+        request(&f, Some(forker), "POST", &path, Value::Null, None)
+            .await
+            .status(),
+        StatusCode::INSUFFICIENT_STORAGE
+    );
+    sqlx::query("DELETE FROM cloud_library_documents WHERE owner_user_id=$1 AND slug='fill-1'")
+        .bind(&f.users[forker].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&f, Some(forker), "POST", &path, Value::Null, None)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    // Overlays and packages never count toward the template/profile quota.
+    sqlx::query(
+        "DELETE FROM cloud_library_documents WHERE owner_user_id=$1 AND slug LIKE 'fill-%'",
+    )
+    .bind(&f.users[forker].id)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+
+    // 8 MiB of stored template/profile bytes per account.
+    sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) VALUES($1,$2,'template','heavy')").bind(uuid::Uuid::from_u128(9)).bind(&f.users[author].id).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) VALUES($1,1,'Heavy',jsonb_build_object('pad',repeat('x',8388500)),$2,'draft')").bind(uuid::Uuid::from_u128(9)).bind("0".repeat(64)).execute(&f.pool).await.unwrap();
+    assert_eq!(
+        request(&f, Some(author), "POST", &path, Value::Null, None)
+            .await
+            .status(),
+        StatusCode::INSUFFICIENT_STORAGE,
+        "bytes quota, checked before the slug conflict"
+    );
+
+    // The 60 a minute write limit (shared with the other library writes).
+    let missing = format!("/api/v2/catalog/documents/{}/fork", uuid::Uuid::new_v4());
+    let mut last = StatusCode::OK;
+    for _ in 0..61 {
+        last = request(&f, Some(limited), "POST", &missing, Value::Null, None)
+            .await
+            .status();
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}

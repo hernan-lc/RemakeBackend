@@ -1613,3 +1613,937 @@ async fn webhook_integration_verifies_signatures_deduplicates_and_refuses_withou
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["code"], "misconfigured");
 }
+
+/// A valid PNG header of the given size; different sizes are different bytes.
+async fn upload_png(f: &Fixture, user: usize, size: u32, query: &str) -> (StatusCode, Value) {
+    let (status, _, body) = call_raw(
+        f,
+        user,
+        "POST",
+        &format!("/api/v3/assets{query}"),
+        tiny_png(size, size),
+        "image/png",
+    )
+    .await;
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+fn ids(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn asset_labels_listing_rename_and_guarded_delete() {
+    let f = fixture(3).await;
+    let (owner, other, spare) = (0, 1, 2);
+
+    // Upload with and without a label; the old fields stay and new ones are added.
+    let (status, first) = upload_png(&f, owner, 10, "?label=Logo%20%C3%B1").await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert_eq!(first["label"], "Logo ñ");
+    assert_eq!(first["mime"], "image/png");
+    assert_eq!(
+        (first["width"].as_i64(), first["size"].as_i64()),
+        (Some(10), Some(tiny_png(10, 10).len() as i64))
+    );
+    assert!(chrono::DateTime::parse_from_rfc3339(first["createdAt"].as_str().unwrap()).is_ok());
+    let (_, second) = upload_png(&f, owner, 11, "").await;
+    assert!(second.get("label").is_none(), "an absent label is omitted");
+    let (_, third) = upload_png(&f, owner, 12, "?label=%20Third%20").await;
+    assert_eq!(third["label"], "Third", "labels are trimmed");
+
+    // The same bytes return the existing id and never overwrite its label.
+    let (status, again) = upload_png(&f, owner, 10, "?label=Renamed").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(again["label"], "Logo ñ");
+    let (status, again) = upload_png(&f, owner, 11, "?label=Late").await;
+    assert_eq!((status, again.get("label")), (StatusCode::OK, None));
+
+    // Label and query refusals.
+    for query in [
+        "?label=",
+        "?label=%20%20",
+        "?label=a%0Ab",
+        "?label=a%00b",
+        "?label=a%E2%80%A8b",
+        &format!("?label={}", "a".repeat(121)),
+        "?label=a&label=b",
+        "?name=a",
+        "?label=%FF",
+    ] {
+        let (status, body) = upload_png(&f, owner, 13, query).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body}");
+        assert_eq!(body["code"], "invalidRequest");
+    }
+    let (status, _) = upload_png(&f, owner, 13, &format!("?label={}", "a".repeat(120))).await;
+    assert_eq!(status, StatusCode::CREATED, "120 characters is allowed");
+
+    // Listing: newest first, exact page boundaries, stable and disjoint pages.
+    let (status, _, all) = call(&f, Some(owner), "GET", "/api/v3/assets", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["nextCursor"], Value::Null);
+    let newest_first = ids(&all);
+    assert_eq!(newest_first.len(), 4);
+    assert_eq!(newest_first[3], first["id"].as_str().unwrap());
+    assert_eq!(newest_first[1], third["id"].as_str().unwrap());
+    let (_, _, exact) = call(&f, Some(owner), "GET", "/api/v3/assets?limit=4", None).await;
+    assert_eq!(
+        exact["nextCursor"],
+        Value::Null,
+        "exactly limit rows: no cursor"
+    );
+    let (_, _, page1) = call(&f, Some(owner), "GET", "/api/v3/assets?limit=3", None).await;
+    assert_eq!(ids(&page1), newest_first[..3]);
+    let cursor = page1["nextCursor"].as_str().unwrap().to_owned();
+    let (_, _, page2) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/assets?limit=3&cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(ids(&page2), newest_first[3..]);
+    assert_eq!(page2["nextCursor"], Value::Null);
+    // An empty account has an empty first page.
+    let (status, _, empty) = call(&f, Some(spare), "GET", "/api/v3/assets", None).await;
+    assert_eq!(
+        (status, empty),
+        (StatusCode::OK, json!({"items": [], "nextCursor": null}))
+    );
+    // Bad limits, keys, repeated keys, garbage and foreign cursors are refused.
+    for query in [
+        "limit=0",
+        "limit=51",
+        "limit=abc",
+        "limit=1&limit=2",
+        "q=x",
+        "cursor=%21%21",
+        "cursor=",
+    ] {
+        let (status, _, body) = call(
+            &f,
+            Some(owner),
+            "GET",
+            &format!("/api/v3/assets?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["code"], "invalidRequest");
+    }
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "GET",
+        &format!("/api/v3/assets?cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "another account's cursor");
+    let (_, _, ov) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay_document("Cursor probe", &[])})),
+    )
+    .await;
+    assert!(ov["id"].is_string());
+    for n in 0..2 {
+        call(
+            &f,
+            Some(owner),
+            "POST",
+            "/api/v3/overlays",
+            Some(json!({"document": overlay_document(&format!("Probe {n}"), &[])})),
+        )
+        .await;
+    }
+    let (_, _, overlays) = call(&f, Some(owner), "GET", "/api/v3/overlays?limit=1", None).await;
+    let foreign = overlays["nextCursor"].as_str().unwrap();
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/assets?cursor={foreign}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a cursor from the overlay list"
+    );
+    // Unauthenticated and caching.
+    let (status, _, _) = call(&f, None, "GET", "/api/v3/assets", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, headers, _) = call(&f, Some(owner), "GET", "/api/v3/assets", None).await;
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+
+    // Rename: set, clear, idempotent; refusals; foreign accounts see 404.
+    let asset = first["id"].as_str().unwrap();
+    let path = format!("/api/v3/assets/{asset}");
+    let (status, _, renamed) = call(
+        &f,
+        Some(owner),
+        "PATCH",
+        &path,
+        Some(json!({"label": "  New name "})),
+    )
+    .await;
+    assert_eq!(
+        (status, renamed["label"].as_str()),
+        (StatusCode::OK, Some("New name"))
+    );
+    let (_, _, same) = call(
+        &f,
+        Some(owner),
+        "PATCH",
+        &path,
+        Some(json!({"label": "New name"})),
+    )
+    .await;
+    assert_eq!(same, renamed);
+    let (status, _, cleared) = call(
+        &f,
+        Some(owner),
+        "PATCH",
+        &path,
+        Some(json!({"label": null})),
+    )
+    .await;
+    assert_eq!((status, cleared.get("label")), (StatusCode::OK, None));
+    for body in [
+        json!({}),
+        json!({"label": 5}),
+        json!({"label": ""}),
+        json!({"label": "a\nb"}),
+        json!({"label": "x", "size": 1}),
+        json!({"label": "a".repeat(121)}),
+    ] {
+        let (status, _, error) = call(&f, Some(owner), "PATCH", &path, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {error}");
+    }
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "PATCH",
+        &path,
+        Some(json!({"label": "mine"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, body) = call(&f, Some(other), "DELETE", &path, None).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("notFound"))
+    );
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "PATCH",
+        "/api/v3/assets/not-a-uuid",
+        Some(json!({"label": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(&f, None, "DELETE", &path, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Delete is refused while any overlay revision references the asset,
+    // whatever spelling of the id the stored document used.
+    let uppercase = asset.to_uppercase();
+    let (status, _, overlay) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay_document("Uses logo", &[&uppercase])})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{overlay}");
+    let overlay_id = overlay["id"].as_str().unwrap().to_owned();
+    let (status, _, body) = call(&f, Some(owner), "DELETE", &path, None).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict"))
+    );
+    // Revision 2 drops the reference, but revision 1 (retained history) still names it.
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{overlay_id}/revisions"),
+        Some(json!({"document": overlay_document("Uses nothing", &[]), "expectedRevision": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, _) = call(&f, Some(owner), "DELETE", &path, None).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "history still references the asset"
+    );
+    // Deleting the overlay releases it.
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{overlay_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, deleted) = call(&f, Some(owner), "DELETE", &path, None).await;
+    assert_eq!(
+        (status, deleted),
+        (StatusCode::OK, json!({"id": asset, "deleted": true}))
+    );
+    let (status, _, again) = call(&f, Some(owner), "DELETE", &path, None).await;
+    assert_eq!(
+        (status, again["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("notFound")),
+        "a second delete is notFound"
+    );
+    let (status, _, _) = call_raw(
+        &f,
+        owner,
+        "GET",
+        &path,
+        Vec::new(),
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, remaining) = call(&f, Some(owner), "GET", "/api/v3/assets", None).await;
+    assert_eq!(ids(&remaining).len(), 3);
+    // The same bytes can be uploaded again and get a new id.
+    let (status, reborn) = upload_png(&f, owner, 10, "").await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_ne!(reborn["id"], first["id"]);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn asset_quota_is_freed_by_delete_and_writes_are_rate_limited() {
+    let f = fixture(2).await;
+    let (owner, limited) = (0, 1);
+    // Fill the 200-asset quota directly, then upload through the API.
+    sqlx::query("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content) SELECT gen_random_uuid(),$1,md5(n::text)||md5(n::text||'x'),'image/png',1,1,1,'\\x00'::bytea FROM generate_series(1,200) n")
+        .bind(&f.users[owner].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (status, body) = upload_png(&f, owner, 20, "").await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::INSUFFICIENT_STORAGE, Some("quotaExceeded"))
+    );
+    let (_, _, page) = call(&f, Some(owner), "GET", "/api/v3/assets?limit=1", None).await;
+    let victim = ids(&page).remove(0);
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/assets/{victim}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = upload_png(&f, owner, 20, "").await;
+    assert_eq!(status, StatusCode::CREATED, "deleting freed the quota");
+    // Walk the whole set in pages of 50 and see every row exactly once.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let path = match &cursor {
+            None => "/api/v3/assets".to_owned(),
+            Some(cursor) => format!("/api/v3/assets?cursor={cursor}"),
+        };
+        let (_, _, page) = call(&f, Some(owner), "GET", &path, None).await;
+        for id in ids(&page) {
+            assert!(seen.insert(id), "pages never repeat a row");
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 200);
+
+    // Writes share one per-account limit of 60 a minute.
+    let path = format!("/api/v3/assets/{}", uuid::Uuid::new_v4());
+    for _ in 0..60 {
+        let (status, _, _) = call(&f, Some(limited), "DELETE", &path, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    let (status, _, body) = call(
+        &f,
+        Some(limited),
+        "PATCH",
+        &path,
+        Some(json!({"label": null})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str(), body["retryable"].as_bool()),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Some("rateLimited"),
+            Some(true)
+        )
+    );
+}
+
+fn overlay_document(title: &str, assets: &[&str]) -> Value {
+    let mut elements = vec![
+        json!({"id": "who", "type": "text", "x": 0, "y": 0, "width": 200, "height": 40, "source": {"kind": "field", "field": "viewer.name"}}),
+    ];
+    for (index, asset) in assets.iter().enumerate() {
+        elements.push(json!({"id": format!("art{index}"), "type": "art", "x": 0, "y": 50 + index as i64 * 70, "width": 64, "height": 64, "assetId": asset}));
+    }
+    json!({
+        "overlayVersion": 1, "kind": "chat", "title": title,
+        "canvas": {"width": 1920, "height": 1080},
+        "elements": elements, "capabilities": ["live.read"]
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn overlays_list_history_delete_pins_quotas_and_stay_out_of_the_v2_library() {
+    let f = fixture(2).await;
+    let (owner, other) = (0, 1);
+    let (status, _, empty) = call(&f, Some(owner), "GET", "/api/v3/overlays", None).await;
+    assert_eq!(
+        (status, empty),
+        (StatusCode::OK, json!({"items": [], "nextCursor": null}))
+    );
+
+    let mut created = Vec::new();
+    for title in ["First", "Second", "Third"] {
+        let (status, _, body) = call(
+            &f,
+            Some(owner),
+            "POST",
+            "/api/v3/overlays",
+            Some(json!({"document": overlay_document(title, &[])})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        created.push(body["id"].as_str().unwrap().to_owned());
+    }
+    // A second revision of the oldest overlay.
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{}/revisions", created[0]),
+        Some(json!({"document": overlay_document("First v2", &[]), "expectedRevision": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // List: summaries, newest created first, exact page boundaries.
+    let (status, headers, list) = call(&f, Some(owner), "GET", "/api/v3/overlays", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_eq!(
+        ids(&list),
+        [created[2].clone(), created[1].clone(), created[0].clone()]
+    );
+    let oldest = &list["items"][2];
+    assert_eq!(oldest["name"], "First v2");
+    assert_eq!(
+        (
+            oldest["kind"].as_str(),
+            oldest["revision"].as_i64(),
+            oldest["elementCount"].as_i64()
+        ),
+        (Some("chat"), Some(2), Some(1))
+    );
+    assert_eq!(oldest["status"], "draft");
+    assert!(
+        oldest.get("document").is_none(),
+        "summaries carry no document body"
+    );
+    let (created_at, updated_at) = (
+        chrono::DateTime::parse_from_rfc3339(oldest["createdAt"].as_str().unwrap()).unwrap(),
+        chrono::DateTime::parse_from_rfc3339(oldest["updatedAt"].as_str().unwrap()).unwrap(),
+    );
+    assert!(updated_at >= created_at);
+    let (_, _, exact) = call(&f, Some(owner), "GET", "/api/v3/overlays?limit=3", None).await;
+    assert_eq!(exact["nextCursor"], Value::Null);
+    let (_, _, p1) = call(&f, Some(owner), "GET", "/api/v3/overlays?limit=2", None).await;
+    let cursor = p1["nextCursor"].as_str().unwrap();
+    let (_, _, p2) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/overlays?limit=2&cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (ids(&p1).len(), ids(&p2), p2["nextCursor"].clone()),
+        (2, vec![created[0].clone()], Value::Null)
+    );
+    for query in [
+        "limit=0",
+        "limit=51",
+        "x=1",
+        "limit=1&limit=1",
+        "cursor=zzz",
+    ] {
+        let (status, _, body) = call(
+            &f,
+            Some(owner),
+            "GET",
+            &format!("/api/v3/overlays?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalidRequest")),
+            "{query}"
+        );
+    }
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "GET",
+        &format!("/api/v3/overlays?cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "another account's cursor");
+    let (_, _, theirs) = call(&f, Some(other), "GET", "/api/v3/overlays", None).await;
+    assert_eq!(
+        theirs["items"],
+        json!([]),
+        "listing is private to the owner"
+    );
+    let (status, _, _) = call(&f, None, "GET", "/api/v3/overlays", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // History: metadata newest first, then a specific revision with its document.
+    let base = format!("/api/v3/overlays/{}/revisions", created[0]);
+    let (status, headers, history) = call(&f, Some(owner), "GET", &base, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_eq!(history["currentRevision"], 2);
+    let revisions: Vec<i64> = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["revision"].as_i64().unwrap())
+        .collect();
+    assert_eq!(revisions, [2, 1]);
+    assert_eq!(
+        (
+            history["items"][0]["current"].as_bool(),
+            history["items"][1]["name"].as_str()
+        ),
+        (Some(true), Some("First"))
+    );
+    assert!(history["items"][0].get("document").is_none());
+    let (_, _, hp) = call(&f, Some(owner), "GET", &format!("{base}?limit=1"), None).await;
+    let more = hp["nextCursor"].as_str().unwrap();
+    let (_, _, hp2) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("{base}?limit=1&cursor={more}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (
+            hp2["items"][0]["revision"].as_i64(),
+            hp2["nextCursor"].clone()
+        ),
+        (Some(1), Value::Null)
+    );
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/overlays/{}/revisions?cursor={more}", created[1]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a revision cursor is bound to its overlay"
+    );
+    let (status, _, old) = call(&f, Some(owner), "GET", &format!("{base}/1"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (
+            old["revision"].as_i64(),
+            old["current"].as_bool(),
+            old["document"]["title"].as_str()
+        ),
+        (Some(1), Some(false), Some("First"))
+    );
+    let (_, _, now) = call(&f, Some(owner), "GET", &format!("{base}/2"), None).await;
+    assert_eq!(
+        (now["current"].as_bool(), now["document"]["title"].as_str()),
+        (Some(true), Some("First v2"))
+    );
+    for (path, expected) in [
+        (format!("{base}/3"), StatusCode::NOT_FOUND),
+        (format!("{base}/0"), StatusCode::BAD_REQUEST),
+        (format!("{base}/x"), StatusCode::BAD_REQUEST),
+    ] {
+        let (status, _, _) = call(&f, Some(owner), "GET", &path, None).await;
+        assert_eq!(status, expected, "{path}");
+    }
+    for path in [base.clone(), format!("{base}/1")] {
+        let (status, _, body) = call(&f, Some(other), "GET", &path, None).await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (StatusCode::NOT_FOUND, Some("notFound"))
+        );
+    }
+    // The existing read shape is unchanged.
+    let (_, _, current) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/overlays/{}", created[0]),
+        None,
+    )
+    .await;
+    let mut keys: Vec<_> = current.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["document", "id", "revision", "schemaVersion", "status"]
+    );
+
+    // Overlays never show up in, and cannot be changed through, the v2 library.
+    let (status, _, library) =
+        call(&f, Some(owner), "GET", "/api/v2/library/documents", None).await;
+    assert_eq!(
+        (status, library["items"].clone()),
+        (StatusCode::OK, json!([]))
+    );
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v2/library/documents/{}", created[0]),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v2/library/documents/{}/versions/1/submit", created[0]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an overlay cannot enter the v2 review"
+    );
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v2/library/documents/{}", created[0]))
+        .header(header::COOKIE, &f.users[owner].cookie)
+        .header(header::ORIGIN, ORIGIN)
+        .header("if-match", "\"2\"")
+        .body(Body::empty())
+        .unwrap();
+    let response = f.router.clone().oneshot(delete).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "v2 delete cannot bypass the pin check"
+    );
+    let (status, _, export) = call(&f, Some(owner), "GET", "/api/v2/me/export", None).await;
+    assert_eq!(
+        (status, export["library"]["items"].clone()),
+        (StatusCode::OK, json!([]))
+    );
+
+    // Delete: foreign accounts get 404; a pin refuses it; unpinned succeeds once.
+    let (status, _, _) = call(
+        &f,
+        Some(other),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[1]),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, package) = call(&f, Some(owner), "POST", "/api/v3/packages", Some(json!({"title": "Pins first", "items": [{"kind": "overlay", "id": created[0].to_uppercase(), "revision": 2, "required": true}]}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{package}");
+    let (status, _, body) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[0]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict")),
+        "pinned by revision, spelled in upper case"
+    );
+    let (status, _, kept) = call(
+        &f,
+        Some(owner),
+        "GET",
+        &format!("/api/v3/overlays/{}", created[0]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, kept["revision"].as_i64()),
+        (StatusCode::OK, Some(2))
+    );
+    // Deleting the package releases the pin. Only its owner can delete it, once.
+    let package_path = format!("/api/v3/packages/{}", package["id"].as_str().unwrap());
+    let (status, _, _) = call(&f, Some(other), "DELETE", &package_path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = call(&f, None, "DELETE", &package_path, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, headers, deleted) = call(&f, Some(owner), "DELETE", &package_path, None).await;
+    assert_eq!(
+        (status, deleted["deleted"].as_bool()),
+        (StatusCode::OK, Some(true))
+    );
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    let (status, _, _) = call(&f, Some(owner), "DELETE", &package_path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = call(&f, Some(owner), "GET", &package_path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[0]),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unpinned overlays can be deleted");
+    let (status, _, gone) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[1]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, gone),
+        (StatusCode::OK, json!({"id": created[1], "deleted": true}))
+    );
+    let (status, _, again) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[1]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, again["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("notFound"))
+    );
+    let left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_library_versions WHERE document_id=$1::uuid",
+    )
+    .bind(&created[1])
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0, "every revision is deleted with the overlay");
+    // A package cannot pin an overlay that was deleted.
+    let (status, _, _) = call(&f, Some(owner), "POST", "/api/v3/packages", Some(json!({"title": "Stale", "items": [{"kind": "overlay", "id": created[1], "revision": 1, "required": true}]}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Quotas: the per-overlay revision cap, the overlay count cap and the byte cap.
+    sqlx::query("UPDATE cloud_library_documents SET revision=100 WHERE id=$1::uuid")
+        .bind(&created[2])
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) SELECT $1::uuid,100,'Third',document,sha256,'draft' FROM cloud_library_versions WHERE document_id=$1::uuid AND revision=1").bind(&created[2]).execute(&f.pool).await.unwrap();
+    let (status, _, body) = call(
+        &f,
+        Some(owner),
+        "POST",
+        &format!("/api/v3/overlays/{}/revisions", created[2]),
+        Some(json!({"document": overlay_document("Over", &[]), "expectedRevision": 100})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::INSUFFICIENT_STORAGE, Some("quotaExceeded")),
+        "revision 101 is refused"
+    );
+    sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) SELECT gen_random_uuid(),$1,'overlay','fill-'||n FROM generate_series(1,49) n").bind(&f.users[owner].id).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) SELECT id,1,'Fill',$2::jsonb,md5(id::text)||md5(slug),'draft' FROM cloud_library_documents WHERE owner_user_id=$1 AND slug LIKE 'fill-%'").bind(&f.users[owner].id).bind(overlay_document("Fill", &[])).execute(&f.pool).await.unwrap();
+    let (status, _, body) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay_document("Fifty-first", &[])})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::INSUFFICIENT_STORAGE, Some("quotaExceeded")),
+        "50 overlays per account"
+    );
+    let (_, _, big) = call(
+        &f,
+        Some(other),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay_document("Other account", &[])})),
+    )
+    .await;
+    assert!(big["id"].is_string(), "quotas are per account");
+    sqlx::query("UPDATE cloud_library_versions SET document=jsonb_set(document,'{title}',to_jsonb(repeat('x',100))) WHERE document_id=$1::uuid AND revision=100").bind(&created[2]).execute(&f.pool).await.unwrap();
+    let (status, _, _) = call(
+        &f,
+        Some(owner),
+        "DELETE",
+        &format!("/api/v3/overlays/{}", created[2]),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "deleting frees the count");
+    let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(sum(octet_length(v.document::text)),0)::bigint FROM cloud_library_versions v JOIN cloud_library_documents d ON d.id=v.document_id WHERE d.owner_user_id=$1 AND d.kind='overlay'").bind(&f.users[owner].id).fetch_one(&f.pool).await.unwrap();
+    assert!(bytes < crate::overlays::MAX_BYTES_PER_OWNER);
+    let padding = "p".repeat(crate::overlays::MAX_BYTES_PER_OWNER as usize);
+    sqlx::query("UPDATE cloud_library_versions SET document=jsonb_set(document,'{padding}',to_jsonb($2::text)) WHERE document_id=(SELECT id FROM cloud_library_documents WHERE owner_user_id=$1 AND slug='fill-1')").bind(&f.users[owner].id).bind(padding).execute(&f.pool).await.unwrap();
+    let (status, _, body) = call(
+        &f,
+        Some(owner),
+        "POST",
+        "/api/v3/overlays",
+        Some(json!({"document": overlay_document("Too heavy", &[])})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (StatusCode::INSUFFICIENT_STORAGE, Some("quotaExceeded")),
+        "total stored bytes are bounded"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn capabilities_announce_assets_overlays_variables_and_fork_additively() {
+    let f = fixture(1).await;
+    let (status, headers, caps) = call(&f, None, "GET", "/api/v2/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    // v2 keys keep their meaning.
+    assert_eq!(
+        caps["sync"]["collections"],
+        json!([
+            "plugin-selections",
+            "rule-templates",
+            "profiles",
+            "plugin-settings",
+            "preferences"
+        ])
+    );
+    assert_eq!(caps["media"]["assetsPath"], "/api/v3/assets");
+    assert_eq!(caps["overlays"]["path"], "/api/v3/overlays");
+    // New keys.
+    assert_eq!(caps["sync"]["optionalCollections"], json!(["variables"]));
+    assert_eq!(caps["variables"]["collection"], "variables");
+    assert_eq!(
+        caps["variables"]["types"],
+        json!(["text", "number", "boolean", "list"])
+    );
+    assert_eq!(
+        (
+            caps["variables"]["secretsSync"].as_bool(),
+            caps["variables"]["available"].as_bool()
+        ),
+        (Some(false), Some(true))
+    );
+    assert_eq!(
+        caps["library"]["fork"]["path"],
+        "/api/v2/catalog/documents/{id}/fork"
+    );
+    assert_eq!(
+        caps["media"]["operations"],
+        json!(["upload", "list", "read", "rename", "delete"])
+    );
+    assert_eq!(caps["media"]["pageLimit"], 50);
+    assert_eq!(
+        caps["packages"]["operations"],
+        json!(["create", "read", "preflight", "delete"])
+    );
+    assert_eq!(
+        caps["overlays"]["operations"],
+        json!([
+            "create",
+            "list",
+            "read",
+            "revise",
+            "revisions",
+            "revision",
+            "delete"
+        ])
+    );
+    assert_eq!(
+        (
+            caps["overlays"]["maxOverlays"].as_i64(),
+            caps["overlays"]["maxRevisions"].as_i64()
+        ),
+        (Some(50), Some(100))
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn concurrent_uploads_cannot_pass_the_asset_quota_together() {
+    let f = fixture(1).await;
+    sqlx::query("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content) SELECT gen_random_uuid(),$1,md5(n::text)||md5(n::text||'x'),'image/png',1,1,1,'\\x00'::bytea FROM generate_series(1,198) n")
+        .bind(&f.users[0].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let results =
+        futures_util::future::join_all((30..36).map(|size| upload_png(&f, 0, size, ""))).await;
+    let created = results
+        .iter()
+        .filter(|(s, _)| *s == StatusCode::CREATED)
+        .count();
+    let refused = results
+        .iter()
+        .filter(|(s, _)| *s == StatusCode::INSUFFICIENT_STORAGE)
+        .count();
+    assert_eq!((created, refused), (2, 4), "{results:?}");
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_assets WHERE owner_user_id=$1")
+        .bind(&f.users[0].id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 200);
+}

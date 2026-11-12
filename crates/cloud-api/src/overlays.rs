@@ -7,18 +7,21 @@
 
 use crate::{
     api_error::{Authenticated, Kind, RequestId, V3Error},
+    assets::{lock_owner, sql_uuid_key},
+    paging::{self, Position},
     remote::{binding_digest, db, parse_body, parse_uuid, throttle},
     AppState,
 };
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::get,
     Extension, Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use sqlx::{Postgres, Row, Transaction};
 use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
@@ -45,6 +48,12 @@ const FIELDS: &[&str] = &[
 ];
 const MAX_ELEMENTS: usize = 64;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// Per-account limits. Every revision is retained as its own row, so both the
+/// revision count per overlay and the total stored bytes are bounded.
+pub const MAX_OVERLAYS_PER_OWNER: i64 = 50;
+pub const MAX_REVISIONS_PER_OVERLAY: i64 = 100;
+pub const MAX_BYTES_PER_OWNER: i64 = 16 * 1024 * 1024;
+const SCOPE: &str = "overlays";
 const TOP_KEYS: &[&str] = &[
     "overlayVersion",
     "kind",
@@ -58,10 +67,21 @@ const ELEMENT_KEYS: &[&str] = &[
 ];
 
 pub fn routes() -> Router<AppState> {
+    let no_store = || axum::middleware::map_response(crate::sync::no_store);
     Router::new()
-        .route("/api/v3/overlays", post(create))
-        .route("/api/v3/overlays/{id}", get(read))
-        .route("/api/v3/overlays/{id}/revisions", post(revise))
+        .route("/api/v3/overlays", get(list).layer(no_store()).post(create))
+        .route(
+            "/api/v3/overlays/{id}",
+            get(read).merge(axum::routing::delete(remove).layer(no_store())),
+        )
+        .route(
+            "/api/v3/overlays/{id}/revisions",
+            get(revisions).layer(no_store()).post(revise),
+        )
+        .route(
+            "/api/v3/overlays/{id}/revisions/{revision}",
+            get(revision).layer(no_store()),
+        )
 }
 
 /// Result of a successful structural check: the asset ids the overlay needs
@@ -234,9 +254,11 @@ pub fn check(document: &Value) -> Result<Checked, &'static str> {
     })
 }
 
-/// Confirms every referenced asset is owned by the same account.
+/// Confirms every referenced asset is owned by the same account. It runs under
+/// the owner lock, so a concurrent asset delete cannot slip between the check
+/// and the insert.
 async fn assets_owned(
-    pool: &PgPool,
+    tx: &mut Transaction<'_, Postgres>,
     owner: &str,
     assets: &BTreeSet<Uuid>,
 ) -> Result<bool, sqlx::Error> {
@@ -249,9 +271,27 @@ async fn assets_owned(
     )
     .bind(owner)
     .bind(&ids)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await?;
     Ok(found as usize == ids.len())
+}
+
+/// Bytes of every stored overlay revision of the owner, as the database counts them.
+async fn stored_bytes(tx: &mut Transaction<'_, Postgres>, owner: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COALESCE(sum(octet_length(v.document::text)),0)::bigint FROM cloud_library_versions v JOIN cloud_library_documents d ON d.id=v.document_id WHERE d.owner_user_id=$1 AND d.kind='overlay'")
+        .bind(owner)
+        .fetch_one(&mut **tx)
+        .await
+}
+
+async fn document_bytes(
+    tx: &mut Transaction<'_, Postgres>,
+    document: &Value,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT octet_length($1::jsonb::text)::bigint")
+        .bind(document)
+        .fetch_one(&mut **tx)
+        .await
 }
 
 #[derive(serde::Deserialize)]
@@ -283,12 +323,6 @@ pub async fn create(
     throttle(&state, &rid, owner, "overlay-write", 60).await?;
     let request: CreateOverlay = parse_body(&rid, &body, MAX_DOCUMENT_BYTES + 1024)?;
     let checked = check(&request.document).map_err(|r| refusal(&rid, r))?;
-    if !assets_owned(&state.pool, owner, &checked.assets)
-        .await
-        .map_err(db(&rid))?
-    {
-        return Err(V3Error::new(&rid, Kind::NotFound));
-    }
     let id = Uuid::new_v4();
     let slug = format!("ov-{}", id.simple());
     let title = request.document["title"]
@@ -298,6 +332,29 @@ pub async fn create(
         .to_owned();
     let digest = binding_digest(&request.document);
     let mut tx = state.pool.begin().await.map_err(db(&rid))?;
+    lock_owner(&mut tx, &rid, owner).await?;
+    if !assets_owned(&mut tx, owner, &checked.assets)
+        .await
+        .map_err(db(&rid))?
+    {
+        return Err(V3Error::new(&rid, Kind::NotFound));
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1 AND kind='overlay'",
+    )
+    .bind(owner)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db(&rid))?;
+    if count >= MAX_OVERLAYS_PER_OWNER
+        || stored_bytes(&mut tx, owner).await.map_err(db(&rid))?
+            + document_bytes(&mut tx, &request.document)
+                .await
+                .map_err(db(&rid))?
+            > MAX_BYTES_PER_OWNER
+    {
+        return Err(V3Error::new(&rid, Kind::QuotaExceeded));
+    }
     sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) VALUES($1,$2,'overlay',$3)")
         .bind(id)
         .bind(owner)
@@ -334,7 +391,6 @@ pub async fn read(
         .await
         .map_err(db(&rid))?
         .ok_or(V3Error::new(&rid, Kind::NotFound))?;
-    use sqlx::Row;
     Ok(Json(json!({
         "id": overlay,
         "revision": row.get::<i64, _>("revision"),
@@ -357,13 +413,14 @@ pub async fn revise(
     let overlay = parse_uuid(&rid, &id)?;
     let request: ReviseOverlay = parse_body(&rid, &body, MAX_DOCUMENT_BYTES + 1024)?;
     let checked = check(&request.document).map_err(|r| refusal(&rid, r))?;
-    if !assets_owned(&state.pool, owner, &checked.assets)
+    let mut tx = state.pool.begin().await.map_err(db(&rid))?;
+    lock_owner(&mut tx, &rid, owner).await?;
+    if !assets_owned(&mut tx, owner, &checked.assets)
         .await
         .map_err(db(&rid))?
     {
         return Err(V3Error::new(&rid, Kind::NotFound));
     }
-    let mut tx = state.pool.begin().await.map_err(db(&rid))?;
     let current: i64 = sqlx::query_scalar("SELECT revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind='overlay' FOR UPDATE")
         .bind(overlay)
         .bind(owner)
@@ -373,6 +430,15 @@ pub async fn revise(
         .ok_or(V3Error::new(&rid, Kind::NotFound))?;
     if current != request.expected_revision {
         return Err(V3Error::new(&rid, Kind::Conflict));
+    }
+    if current >= MAX_REVISIONS_PER_OVERLAY
+        || stored_bytes(&mut tx, owner).await.map_err(db(&rid))?
+            + document_bytes(&mut tx, &request.document)
+                .await
+                .map_err(db(&rid))?
+            > MAX_BYTES_PER_OWNER
+    {
+        return Err(V3Error::new(&rid, Kind::QuotaExceeded));
     }
     let next = current + 1;
     let title = request.document["title"]
@@ -400,6 +466,212 @@ pub async fn revise(
         StatusCode::CREATED,
         Json(json!({"id": overlay, "revision": next, "status": "draft"})),
     ))
+}
+
+fn element_count(document: &Value) -> usize {
+    document["elements"].as_array().map_or(0, Vec::len)
+}
+
+/// `GET /api/v3/overlays`: the caller's overlays, newest created first, as
+/// bounded summaries (no document body). `name` is the document title.
+pub async fn list(
+    Authenticated(user): Authenticated,
+    Extension(rid): Extension<RequestId>,
+    State(state): State<AppState>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, V3Error> {
+    let owner = &user.user.id;
+    let (limit, cursor) = paging::request(&rid, raw)?;
+    let (after_at, after_id) = match cursor {
+        None => (None, None),
+        Some(raw) => match paging::decode(&rid, &raw, SCOPE, owner, false)? {
+            Position::Time(at, id) => (Some(at), Some(id)),
+            Position::Number(_) => return Err(V3Error::new(&rid, Kind::InvalidRequest)),
+        },
+    };
+    let rows = sqlx::query("SELECT d.id,d.created_at,d.revision,v.status,v.title,v.created_at AS updated_at,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=d.revision WHERE d.owner_user_id=$1 AND d.kind='overlay' AND ($2::timestamptz IS NULL OR d.created_at < $2::timestamptz OR (d.created_at = $2::timestamptz AND d.id < $3::uuid)) ORDER BY d.created_at DESC, d.id DESC LIMIT $4")
+        .bind(owner)
+        .bind(after_at)
+        .bind(after_id)
+        .bind(limit + 1)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db(&rid))?;
+    let more = rows.len() as i64 > limit;
+    let page = &rows[..rows.len().min(limit as usize)];
+    let next = match (more, page.last()) {
+        (true, Some(last)) => Some(paging::encode(
+            SCOPE,
+            owner,
+            &Position::Time(last.get("created_at"), last.get("id")),
+        )),
+        _ => None,
+    };
+    let items: Vec<Value> = page
+        .iter()
+        .map(|row| {
+            let document: Value = row.get("document");
+            json!({
+                "id": row.get::<Uuid, _>("id"),
+                "kind": document["kind"],
+                "name": row.get::<String, _>("title"),
+                "revision": row.get::<i64, _>("revision"),
+                "status": row.get::<String, _>("status"),
+                "createdAt": row.get::<DateTime<Utc>, _>("created_at").to_rfc3339(),
+                "updatedAt": row.get::<DateTime<Utc>, _>("updated_at").to_rfc3339(),
+                "elementCount": element_count(&document),
+            })
+        })
+        .collect();
+    Ok(Json(json!({"items": items, "nextCursor": next})))
+}
+
+/// `GET /api/v3/overlays/{id}/revisions`: metadata of the retained revisions,
+/// newest first, without document bodies. At most 100 revisions exist.
+pub async fn revisions(
+    Authenticated(user): Authenticated,
+    Extension(rid): Extension<RequestId>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, V3Error> {
+    let owner = &user.user.id;
+    let overlay = parse_uuid(&rid, &id)?;
+    let (limit, cursor) = paging::request(&rid, raw)?;
+    let scope = format!("{SCOPE}:{overlay}");
+    let before = match cursor {
+        None => None,
+        Some(raw) => match paging::decode(&rid, &raw, &scope, owner, true)? {
+            Position::Number(n) => Some(n),
+            Position::Time(..) => return Err(V3Error::new(&rid, Kind::InvalidRequest)),
+        },
+    };
+    let current: i64 = sqlx::query_scalar("SELECT revision FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind='overlay'")
+        .bind(overlay)
+        .bind(owner)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db(&rid))?
+        .ok_or(V3Error::new(&rid, Kind::NotFound))?;
+    let rows = sqlx::query("SELECT revision,status,title,sha256,created_at FROM cloud_library_versions WHERE document_id=$1 AND ($2::bigint IS NULL OR revision < $2::bigint) ORDER BY revision DESC LIMIT $3")
+        .bind(overlay)
+        .bind(before)
+        .bind(limit + 1)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db(&rid))?;
+    let more = rows.len() as i64 > limit;
+    let page = &rows[..rows.len().min(limit as usize)];
+    let next = match (more, page.last()) {
+        (true, Some(last)) => Some(paging::encode(
+            &scope,
+            owner,
+            &Position::Number(last.get("revision")),
+        )),
+        _ => None,
+    };
+    let items: Vec<Value> = page
+        .iter()
+        .map(|row| {
+            json!({
+                "revision": row.get::<i64, _>("revision"),
+                "status": row.get::<String, _>("status"),
+                "name": row.get::<String, _>("title"),
+                "sha256": row.get::<String, _>("sha256"),
+                "createdAt": row.get::<DateTime<Utc>, _>("created_at").to_rfc3339(),
+                "current": row.get::<i64, _>("revision") == current,
+            })
+        })
+        .collect();
+    Ok(Json(
+        json!({"id": overlay, "currentRevision": current, "items": items, "nextCursor": next}),
+    ))
+}
+
+/// `GET /api/v3/overlays/{id}/revisions/{revision}`: one retained revision with
+/// its document.
+pub async fn revision(
+    Authenticated(user): Authenticated,
+    Extension(rid): Extension<RequestId>,
+    State(state): State<AppState>,
+    Path((id, revision)): Path<(String, String)>,
+) -> Result<Json<Value>, V3Error> {
+    let overlay = parse_uuid(&rid, &id)?;
+    let number = revision
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .ok_or(V3Error::new(&rid, Kind::InvalidRequest))?;
+    let row = sqlx::query("SELECT d.revision AS current,v.status,v.sha256,v.created_at,v.document FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id AND v.revision=$3 WHERE d.id=$1 AND d.owner_user_id=$2 AND d.kind='overlay'")
+        .bind(overlay)
+        .bind(&user.user.id)
+        .bind(number)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db(&rid))?
+        .ok_or(V3Error::new(&rid, Kind::NotFound))?;
+    Ok(Json(json!({
+        "id": overlay,
+        "revision": number,
+        "status": row.get::<String, _>("status"),
+        "schemaVersion": SCHEMA_VERSION,
+        "sha256": row.get::<String, _>("sha256"),
+        "createdAt": row.get::<DateTime<Utc>, _>("created_at").to_rfc3339(),
+        "current": row.get::<i64, _>("current") == number,
+        "document": row.get::<Value, _>("document"),
+    })))
+}
+
+/// Whether a package of the owner pins any revision of the overlay.
+pub(crate) async fn pinned_by_package(
+    tx: &mut Transaction<'_, Postgres>,
+    rid: &RequestId,
+    owner: &str,
+    overlay: Uuid,
+) -> Result<bool, V3Error> {
+    let key = sql_uuid_key("i->>'id'");
+    sqlx::query_scalar(&format!(
+        "SELECT EXISTS (SELECT 1 FROM cloud_library_documents p JOIN cloud_library_versions pv ON pv.document_id=p.id CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(pv.document->'items')='array' THEN pv.document->'items' ELSE '[]'::jsonb END) i WHERE p.owner_user_id=$1 AND p.kind='package' AND i->>'kind'='overlay' AND {key}=$2)"
+    ))
+    .bind(owner)
+    .bind(overlay.simple().to_string())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db(rid))
+}
+
+/// `DELETE /api/v3/overlays/{id}`: owner only. Refused with `conflict` while a
+/// package pins the overlay at any revision; otherwise every revision is
+/// deleted. A repeated delete is `notFound`.
+pub async fn remove(
+    Authenticated(user): Authenticated,
+    Extension(rid): Extension<RequestId>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, V3Error> {
+    let owner = &user.user.id;
+    throttle(&state, &rid, owner, "overlay-write", 60).await?;
+    let overlay = parse_uuid(&rid, &id)?;
+    let mut tx = state.pool.begin().await.map_err(db(&rid))?;
+    lock_owner(&mut tx, &rid, owner).await?;
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind='overlay' FOR UPDATE")
+        .bind(overlay)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db(&rid))?
+        .ok_or(V3Error::new(&rid, Kind::NotFound))?;
+    if pinned_by_package(&mut tx, &rid, owner, overlay).await? {
+        return Err(V3Error::new(&rid, Kind::Conflict));
+    }
+    // The versions go with the document (ON DELETE CASCADE).
+    sqlx::query("DELETE FROM cloud_library_documents WHERE id=$1")
+        .bind(overlay)
+        .execute(&mut *tx)
+        .await
+        .map_err(db(&rid))?;
+    tx.commit().await.map_err(db(&rid))?;
+    Ok(Json(json!({"id": overlay, "deleted": true})))
 }
 
 #[cfg(test)]

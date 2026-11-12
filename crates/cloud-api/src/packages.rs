@@ -31,7 +31,13 @@ const MAX_DOCUMENT_BYTES: usize = 32 * 1024;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v3/packages", post(create))
-        .route("/api/v3/packages/{id}", get(read))
+        .route(
+            "/api/v3/packages/{id}",
+            get(read).merge(
+                axum::routing::delete(remove)
+                    .layer(axum::middleware::map_response(crate::sync::no_store)),
+            ),
+        )
         .route("/api/v3/packages/{id}/preflight", get(preflight))
 }
 
@@ -121,6 +127,27 @@ pub async fn create(
     });
     let digest = binding_digest(&document);
     let mut tx = state.pool.begin().await.map_err(db(&rid))?;
+    // Same per-owner lock as overlay/asset deletion: a pinned overlay cannot be
+    // deleted between the check above and this insert.
+    crate::assets::lock_owner(&mut tx, &rid, owner).await?;
+    let pinned: HashSet<Uuid> = request
+        .items
+        .iter()
+        .filter(|item| item.kind == "overlay")
+        .filter_map(|item| Uuid::parse_str(&item.id).ok())
+        .collect();
+    if !pinned.is_empty() {
+        let ids: Vec<Uuid> = pinned.iter().copied().collect();
+        let found: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_library_documents WHERE owner_user_id=$1 AND kind='overlay' AND id = ANY($2)")
+            .bind(owner)
+            .bind(&ids)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db(&rid))?;
+        if found as usize != ids.len() {
+            return Err(V3Error::new(&rid, Kind::NotFound));
+        }
+    }
     sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug) VALUES($1,$2,'package',$3)")
         .bind(id)
         .bind(owner)
@@ -164,6 +191,35 @@ pub async fn read(
         "revision": row.get::<i64, _>("revision"),
         "document": row.get::<Value, _>("document"),
     })))
+}
+
+/// `DELETE /api/v3/packages/{id}`: owner only; `notFound` for others and for a
+/// repeated delete. A package is only a list of pins, so deleting it releases the
+/// overlays it pinned. Shares the `package-write` limit.
+pub async fn remove(
+    Authenticated(user): Authenticated,
+    Extension(rid): Extension<RequestId>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, V3Error> {
+    let owner = &user.user.id;
+    throttle(&state, &rid, owner, "package-write", 30).await?;
+    let package = parse_uuid(&rid, &id)?;
+    let mut tx = state.pool.begin().await.map_err(db(&rid))?;
+    crate::assets::lock_owner(&mut tx, &rid, owner).await?;
+    let deleted = sqlx::query(
+        "DELETE FROM cloud_library_documents WHERE id=$1 AND owner_user_id=$2 AND kind='package'",
+    )
+    .bind(package)
+    .bind(owner)
+    .execute(&mut *tx)
+    .await
+    .map_err(db(&rid))?;
+    if deleted.rows_affected() == 0 {
+        return Err(V3Error::new(&rid, Kind::NotFound));
+    }
+    tx.commit().await.map_err(db(&rid))?;
+    Ok(Json(json!({"id": package, "deleted": true})))
 }
 
 /// Evaluates one pinned reference against current state.

@@ -33,6 +33,7 @@ pub fn routes() -> Router<AppState> {
             "/api/v2/catalog/documents/{id}/versions/{revision}",
             get(library::published_version),
         )
+        .route("/api/v2/catalog/documents/{id}/fork", post(library::fork))
         .route(
             "/api/v2/library/documents",
             get(library::list).post(library::create),
@@ -97,8 +98,10 @@ async fn capabilities() -> Json<Value> {
     Json(json!({
         "apiVersion":2,"instanceMode":"single","userConfigurableRegistries":false,
         "catalog":{"plugins":"/api/v2/catalog/plugins","documents":"/api/v2/catalog/documents"},
-        "library":{"documents":"/api/v2/library/documents","kinds":["template","profile"],"independentReview":true},
-        "sync":{"basePath":"/api/v2/sync","schemaVersion":2,"collections":portable::COLLECTIONS,
+        "library":{"documents":"/api/v2/library/documents","kinds":["template","profile"],"independentReview":true,
+            // Additive: copy a published template/profile into the caller's private library.
+            "fork":{"path":"/api/v2/catalog/documents/{id}/fork","method":"POST","provenance":"metadata","available":true}},
+        "sync":{"basePath":"/api/v2/sync","schemaVersion":2,"collections":portable::COLLECTIONS,"optionalCollections":portable::OPTIONAL_COLLECTIONS,
             "maxRecords":workspace::MAX_RECORDS,"maxBytes":workspace::MAX_BYTES,"maxDocumentBytes":portable::MAX_DOCUMENT_BYTES,
             "conflictStatus":409,"expiredCursorStatus":410,"preconditionsRequired":true,
             "writeEpochBarrier":{"epochPath":"/api/v2/sync/write-epoch","barrierPath":"/api/v2/sync/write-barrier","header":"X-Workspace-Write-Epoch","staleStatus":412,
@@ -109,9 +112,20 @@ async fn capabilities() -> Json<Value> {
         "presentationCatalog":{"apiVersion":3,"itemsPath":"/api/v3/catalog/items","resolvePath":"/api/v3/catalog/items/resolve","kinds":["plugin","template","profile"],"available":true},
         "remoteControl":{"protocolVersion":crate::remote::PROTOCOL_VERSION,"supported":true,"available":true,"multiReplica":true,"hostsPath":"/api/v3/remote/hosts","devicesPath":"/api/v3/remote/devices","challengesPath":"/api/v3/remote/challenges","invitationsRedeemPath":"/api/v3/remote/invitations/redeem","ticketPath":"/api/v3/remote/tickets","socketPath":"/api/v3/remote/socket"},
         "integrations":{"providersPath":"/api/v3/integrations/providers","providers":crate::integrations::published_providers().len()},
-        "media":{"assetsPath":"/api/v3/assets","formats":["image/png","image/jpeg","image/webp"],"maxBytes":crate::media::MAX_BYTES,"available":true},
-        "overlays":{"apiVersion":3,"schemaVersion":crate::overlays::SCHEMA_VERSION,"kinds":crate::overlays::OVERLAY_KINDS,"path":"/api/v3/overlays","available":true},
-        "packages":{"apiVersion":3,"packageVersion":crate::packages::PACKAGE_VERSION,"path":"/api/v3/packages","preflightSuffix":"/preflight","available":true}
+        "media":{"assetsPath":"/api/v3/assets","formats":["image/png","image/jpeg","image/webp"],"maxBytes":crate::media::MAX_BYTES,"available":true,
+            // Additive: keyset listing, labels, rename and guarded delete.
+            "operations":["upload","list","read","rename","delete"],"pageLimit":50,"labelMaxChars":crate::assets::MAX_LABEL_CHARS,
+            "maxAssets":crate::assets::MAX_ASSETS_PER_OWNER,"maxTotalBytes":crate::assets::MAX_BYTES_PER_OWNER},
+        "overlays":{"apiVersion":3,"schemaVersion":crate::overlays::SCHEMA_VERSION,"kinds":crate::overlays::OVERLAY_KINDS,"path":"/api/v3/overlays","available":true,
+            "operations":["create","list","read","revise","revisions","revision","delete"],"pageLimit":50,
+            "maxOverlays":crate::overlays::MAX_OVERLAYS_PER_OWNER,"maxRevisions":crate::overlays::MAX_REVISIONS_PER_OVERLAY,"maxTotalBytes":crate::overlays::MAX_BYTES_PER_OWNER},
+        "packages":{"apiVersion":3,"packageVersion":crate::packages::PACKAGE_VERSION,"path":"/api/v3/packages","preflightSuffix":"/preflight","available":true,
+            "operations":["create","read","preflight","delete"]},
+        // Credential-free runtime variables, stored in the v2 sync write path.
+        "variables":{"collection":"variables","path":"/api/v2/sync/collections/variables","schemaVersion":1,
+            "types":portable::VARIABLE_TYPES,"secretsSync":false,"maxNameBytes":portable::MAX_VARIABLE_NAME_BYTES,
+            "maxTextBytes":portable::MAX_VARIABLE_TEXT_BYTES,"maxListItems":portable::MAX_VARIABLE_LIST_ITEMS,
+            "maxListItemChars":portable::MAX_VARIABLE_LIST_ITEM_CHARS,"available":true}
     }))
 }
 

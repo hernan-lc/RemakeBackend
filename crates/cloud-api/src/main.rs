@@ -18,6 +18,7 @@ mod media;
 mod moderation;
 mod overlays;
 mod packages;
+mod paging;
 mod portable;
 mod publication;
 mod publication_worker;
