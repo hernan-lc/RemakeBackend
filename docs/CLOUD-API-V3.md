@@ -6,9 +6,11 @@ and what does not. It does not claim production readiness: see the
 [feature matrix](FEATURE-MATRIX.md) and [implementation status](IMPLEMENTATION-STATUS.md).
 
 v2 remains the compatibility contract. v3 is additive: v2 routes, collections,
-cursors and semantics are unchanged. `GET /api/v2/capabilities` gains three
-objects (`presentationCatalog`, `remoteControl`, `integrations`); v2 clients ignore
-them.
+cursors and semantics are unchanged. `GET /api/v2/capabilities` gains the objects
+`presentationCatalog`, `remoteControl`, `integrations`, `media`, `overlays`, `packages`
+and `variables`, plus `library.fork` and `sync.optionalCollections`; v2 clients ignore
+them. A desktop gates each surface on the matching capability (see
+[Capabilities](#capabilities-announced-for-gating)).
 
 ## Envelope and correlation
 
@@ -256,33 +258,150 @@ own credentials and contracts. None is published until it is implemented and con
 
 ## Media, overlays and packages (section 9.1)
 
-- **Assets** `POST /api/v3/assets` accepts raw PNG, JPEG or WebP bytes up to 512 KiB.
+All routes below require a session (cookie or native bearer) and use the v3 error
+envelope. List, history, rename and delete responses carry `Cache-Control: no-store`.
+The asset bytes route keeps `private, max-age=300`.
+
+### Assets
+
+- `POST /api/v3/assets[?label=…]` accepts raw PNG, JPEG or WebP bytes up to 512 KiB.
   The format is read from the signature bytes, dimensions from the header
   (4096 pixels maximum per side), and pixels are never decoded. SVG is refused.
-  Identical bytes return the existing id. Quotas per account: 200 assets and 32 MiB.
-  `GET /api/v3/assets/{id}` serves the owner only, with the verified content type
+  The optional **`label`** is a query parameter (the body is the raw image), UTF-8
+  percent-encoded, trimmed, 1–120 characters, no control characters and no line or
+  paragraph separators. Only `label` is accepted; unknown or repeated keys are
+  `invalidRequest`, as is an invalid label (checked even when the bytes already
+  exist). `201` for a new asset, `200` for identical bytes. **Identical bytes return
+  the existing asset unchanged: the label of an existing asset is never overwritten
+  by an upload.** Use `PATCH` to rename. Quotas per account: 200 assets and 32 MiB
+  (`quotaExceeded`, checked under a per-account advisory lock). Writes: 30 uploads a
+  minute.
+- Asset shape: `id`, `sha256`, `mime`, `width`, `height`, `size`, `createdAt`
+  (RFC 3339) and, only when set, `label`. The first six fields are unchanged.
+- `GET /api/v3/assets?limit&cursor` returns `{items, nextCursor}`, newest first
+  (`created_at` descending, then `id` descending). `limit` is 1–50 (default 50);
+  `cursor` is opaque, comes only from `nextCursor`, and is bound to this list and to
+  the account that received it. Unknown keys, repeated keys, a bad `limit`, a
+  malformed cursor, a cursor from another list or another account are all
+  `invalidRequest`. `nextCursor` is `null` on the last page, including when the last
+  page holds exactly `limit` rows. This replaces the earlier id-ordered list that
+  returned at most 50 rows with no way to continue; `items` keeps its shape.
+- `GET /api/v3/assets/{id}` serves the owner only, with the verified content type
   and `X-Content-Type-Options: nosniff`.
-- **Overlays** `POST /api/v3/overlays`, `GET /api/v3/overlays/{id}`,
-  `POST /api/v3/overlays/{id}/revisions` (`expectedRevision`). Schema version 1:
-  canvas 320–3840 × 180–2160; up to 64 elements of type `text`, `avatar` or `art`;
-  geometry must fit the canvas; text comes from a static string or an allow-listed
-  event field; art references an asset owned by the same account. Unknown keys are
-  refused. Kinds: follow, gift, chat, share, subscribe, likes, ranking. Overlays stay
-  private and are never published through the v2 review.
-- **Packages** `POST /api/v3/packages`, `GET /api/v3/packages/{id}`,
-  `GET /api/v3/packages/{id}/preflight`. A package pins each reference: plugins by
-  version (checked against the active generation), templates and profiles and
-  overlays by revision. Creation refuses missing or drifted pins. Preflight reports
-  each item's current status (`ready`, `missing`, `notInstallable`,
-  `revisionChanged`, `noActiveGeneration`), what blocks application, and
-  `applyMode: clientJournal`. Plugin permissions are shown by the host's consent
-  step because the backend does not store them (`reviewRequired`). Imported
-  automations stay disabled (`disabledUntilExplicit`).
+- `PATCH /api/v3/assets/{id}` `{"label": string | null}` (the key is required;
+  `null` clears the label) returns the asset. Idempotent. Other accounts get
+  `notFound`.
+- `DELETE /api/v3/assets/{id}` returns `{"id","deleted":true}`. Owner only
+  (`notFound` for anyone else). **`conflict` while any overlay revision of the same
+  owner still names the asset**, in any retained revision and whatever spelling of
+  the UUID the stored document used (hyphenated, simple, braced, `urn:uuid:`,
+  any case). Packages cannot reference assets, so overlays are the only reference.
+  Otherwise the row is deleted and the quota is free immediately (quota is always
+  computed from the stored rows). A second delete is `notFound`; re-uploading the
+  same bytes later creates a new id. Writes (`PATCH`, `DELETE`): 60 a minute per
+  account (`asset-write`).
+
+`cloud_assets.created_at` already existed from the first media migration, so it needed
+no backfill. Migration `20261111000001_assets_overlays_lifecycle.sql` adds only the
+nullable `label` (existing rows stay `NULL`) and the index for the listing order.
+
+### Overlays
+
+- `POST /api/v3/overlays`, `GET /api/v3/overlays/{id}`,
+  `POST /api/v3/overlays/{id}/revisions` (`expectedRevision`): unchanged requests and
+  responses. Schema version 1: canvas 320–3840 × 180–2160; up to 64 elements of type
+  `text`, `avatar` or `art`; geometry must fit the canvas; text comes from a static
+  string or an allow-listed event field; art references an asset owned by the same
+  account. Unknown keys are refused. Kinds: follow, gift, chat, share, subscribe,
+  likes, ranking. Overlays stay private and are never published through the v2 review.
+- `GET /api/v3/overlays?limit&cursor` returns `{items, nextCursor}` with the same
+  paging rules as assets, ordered by creation (newest first). A summary item is
+  `id`, `kind` (the overlay kind), `name` (the document `title`; the schema has no
+  separate name), `revision` (current), `status`, `createdAt`, `updatedAt` (when the
+  current revision was written) and `elementCount`. It never contains the document.
+- `GET /api/v3/overlays/{id}/revisions?limit&cursor` returns
+  `{id, currentRevision, items, nextCursor}`; each item is `revision`, `status`,
+  `name`, `sha256`, `createdAt`, `current`. Newest first, `limit` 1–50. A revision
+  cursor is bound to its overlay.
+- `GET /api/v3/overlays/{id}/revisions/{revision}` returns
+  `{id, revision, status, schemaVersion, sha256, createdAt, current, document}`.
+  `revision` must be a positive integer (`invalidRequest` otherwise); a revision that
+  does not exist is `notFound`.
+- `DELETE /api/v3/overlays/{id}` returns `{"id","deleted":true}`. Owner only
+  (`notFound` for others and for a repeated delete). **`conflict` while any package of
+  the owner pins the overlay at any revision**; otherwise the overlay and all its
+  revisions are deleted. Writes share the 60 a minute `overlay-write` limit.
+
+History: every revision was already stored as its own immutable row
+(`cloud_library_versions`) and revisions never overwrote one another, so no migration
+was needed to retain it. What was missing was a bound. Limits per account now: **50
+overlays, 100 revisions per overlay and 16 MiB of stored overlay revisions in total**
+(counted from the stored JSONB text, history included). The 16 MiB figure is sized so
+50 overlays of normal size with a deep history fit, while the worst case (64 KiB
+documents) cannot grow without bound. Exceeding any limit answers `quotaExceeded`
+(HTTP 507), checked inside the transaction under the per-account lock. Accounts that
+already exceed a limit are not altered; they just cannot add more until they delete.
+There is no revision pruning: delete the overlay, or create a new one, after 100
+revisions.
+
+Creating or revising an overlay, deleting an asset or overlay, and creating a package
+all take the same per-account advisory lock, and creation re-checks the referenced
+assets and overlays inside it, so a reference cannot be created while its target is
+being deleted.
+
+`/api/v2/library/documents` (list, read, edit, delete, submit, versions, export) and
+the v2 quotas now ignore overlays and packages (`kind IN ('template','profile')`).
+Previously an account that held an overlay or package received `503` from the v2
+library list and export, because those documents are not portable templates, and v2
+`DELETE` could remove an overlay without the pin check. No template or profile
+behaviour changed.
+
+### Packages
+
+`POST /api/v3/packages`, `GET /api/v3/packages/{id}`,
+`GET /api/v3/packages/{id}/preflight`. A package pins each reference: plugins by
+version (checked against the active generation), templates and profiles and
+overlays by revision. Creation refuses missing or drifted pins. Preflight reports
+each item's current status (`ready`, `missing`, `notInstallable`,
+`revisionChanged`, `noActiveGeneration`), what blocks application, and
+`applyMode: clientJournal`. Plugin permissions are shown by the host's consent
+step because the backend does not store them (`reviewRequired`). Imported
+automations stay disabled (`disabledUntilExplicit`).
+
+`DELETE /api/v3/packages/{id}` (owner only, `notFound` for others and for a repeated
+delete, 30 a minute with package creation) returns `{"id","deleted":true}`. A package is
+only a list of pins, so deleting it releases the overlays it pinned; this is how a client
+clears an overlay `conflict`. (Before this release a package could only be removed through
+the v2 library `DELETE`, which no longer reaches packages.)
 
 Applying a package is performed by the client, which uses the existing install and
 import flows. The backend never applies a package.
 
+### Capabilities announced for gating
+
+`GET /api/v2/capabilities` (anonymous, `no-store`) announces, additively:
+
+| Key | Contents |
+| --- | --- |
+| `media.operations` | `["upload","list","read","rename","delete"]`, plus `pageLimit`, `labelMaxChars`, `maxAssets`, `maxTotalBytes` |
+| `packages.operations` | `["create","read","preflight","delete"]` |
+| `overlays.operations` | `["create","list","read","revise","revisions","revision","delete"]`, plus `pageLimit`, `maxOverlays`, `maxRevisions`, `maxTotalBytes` |
+| `variables` | the credential-free variables collection; see [CLOUD-API-V2.md](CLOUD-API-V2.md#variables-collection) |
+| `library.fork` | `{path:"/api/v2/catalog/documents/{id}/fork", method:"POST", provenance:"metadata", available:true}` |
+| `sync.optionalCollections` | `["variables"]` |
+
+An older backend lacks these keys; a client must treat a missing key as "not
+available".
+
 ## Not implemented (explicit)
+
+- **Official registry root-key ceremony, signed generation publication and promotion,
+  and the CDN** remain external operator work ([REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md),
+  [ROADMAP.md](ROADMAP.md) M2). Nothing in this release changes them.
+- **Overlay revision pruning** does not exist.
+- **Orphaned assets after account deletion**: `cloud_assets.owner_user_id` has no
+  foreign key to the user table (since the first media migration), so deleting an
+  account does not remove its assets. Found while reviewing; not changed here.
 
 - **Integration providers beyond the signed webhook**: they require their own credentials and
   contracts.
@@ -300,3 +419,15 @@ import flows. The backend never applies a package.
   confirmation, admission, idempotency, revision change, revocation, unknown on
   disconnect) and origin refusal. `registry_tests::v3_catalog_projects_*` covers a
   real generation with verified presentation.
+- Assets, overlays, variables and fork (this section's additions), all ignored
+  PostgreSQL tests: `v3_tests::asset_labels_listing_rename_and_guarded_delete`,
+  `asset_quota_is_freed_by_delete_and_writes_are_rate_limited`,
+  `concurrent_uploads_cannot_pass_the_asset_quota_together`,
+  `overlays_list_history_delete_pins_quotas_and_stay_out_of_the_v2_library`,
+  `capabilities_announce_assets_overlays_variables_and_fork_additively`;
+  `cloud_v2_tests::variables_*`, `forking_a_public_document_*`, `fork_respects_*`.
+  Unit tests: `paging`, `assets::tests`, `cloud_contracts::portable::tests::variables_*`,
+  `cloud_client` variables and `forkOf` tests.
+  They ran on PostgreSQL 18.6; **pgrust, the repository's usual test database, was not
+  available and these queries have not been run on it** (they use `jsonb_array_elements`
+  with `LATERAL`, `jsonb_set`, `gen_random_uuid` and row-value-free keyset predicates).

@@ -1,5 +1,52 @@
 # Implementation status
 
+## Assets, overlays, variables and fork 2026 11 11
+
+Backend-only additions, all additive (v1/v2 routes, collections and cursors unchanged):
+asset labels, keyset listing, rename and guarded delete; overlay listing, revision
+history reads and guarded delete with per-account quotas; the `variables` v2 sync
+collection; and `POST /api/v2/catalog/documents/{id}/fork` with metadata provenance.
+Routes, limits and error cases are in [CLOUD-API-V3.md](CLOUD-API-V3.md) and
+[CLOUD-API-V2.md](CLOUD-API-V2.md); migrations `20261111000001` to `20261111000003`.
+
+Evidence, from one local run on 2026-11-11:
+
+- The disposable database was a throwaway **PostgreSQL 18.6** cluster started with
+  `initdb`/`pg_ctl` from the system packages. **pgrust was not installed or run**, so
+  nothing here is evidence for pgrust. New SQL relies on `jsonb_array_elements ... LATERAL`,
+  `replace/lower`, `FOR UPDATE`, advisory locks and a composite `ON DELETE SET NULL` foreign
+  key; these are untested on pgrust.
+- `cargo test --workspace --locked -- --include-ignored` with the skips used by CI plus
+  the separately built app SDK test: all 185 runnable `cloud-api` tests passed (84 unit and
+  101 PostgreSQL tests, of which 9 are new: assets x3 including a 6-way concurrent upload at
+  the quota boundary, overlays, capabilities, variables x2, fork x2), the 3 startup tests
+  passed, and the `cloud-client` (35) and `cloud-contracts` (8) tests passed. The only
+  failure is the `devtools-core` doctest (`await` outside `async`), which is in an
+  untouched file (not re-run on a clean checkout).
+- A migration upgrade check: the 33 earlier migrations were applied to a scratch
+  database, rows of the old shapes (assets, overlays, a package, a published template and
+  workspace records) were inserted, the three new migrations were applied, and the rows
+  were intact with `label`/`fork_of_*` NULL; the new CHECKs, the widened collection
+  constraint and `ON DELETE SET NULL` behaved as specified. A fresh database is the test
+  template, which applies all migrations.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` is
+  clean and `cargo +1.89.0 check -p cloud-client --all-features --locked` passes.
+  `cargo fmt --all -- --check` reports one pre-existing difference in
+  `crates/devtools-core/src/report.rs` (present on a clean checkout); files touched here are
+  formatted.
+
+Not verified or not done: any desktop integration; pgrust; production data or migration
+timing; concurrent races other than the concurrent asset-upload quota test (the delete-versus-
+reference and overlay quota races rely on the same advisory lock but have no dedicated
+concurrency test); the official registry root-key ceremony, signed
+generation publication/promotion and the CDN remain external operator work
+([REGISTRY-OPERATIONS.md](REGISTRY-OPERATIONS.md), ROADMAP M2).
+
+Known limits found on the way: assets are not deleted with their account (no foreign key);
+clients built before `variables` or `forkOf` reject those records (validators are strict);
+the v2 library filters now exclude overlays and packages, which previously made the v2 list
+and export return 503 for accounts holding them.
+
 ## Validate stored sync records on reads and writes
 
 V1 listing and change-feed reads, and v2 listing, point-read and change-feed

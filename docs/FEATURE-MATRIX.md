@@ -69,13 +69,28 @@ per-resource caps and row locks instead.
 | `/api/v2/catalog/plugins` and plugin detail | Experimental | Published inventory, generation pinning, semantic versions, current yanks/revocations. Signed metadata remains authoritative. Search covers IDs. |
 | `/api/v2/library/documents` and revision routes | Experimental | Private immutable revisions, quotas, account isolation, conditional edits and deletion. No Desktop v2 UI integration. |
 | `/api/v2/catalog/documents` and moderation routes | Experimental | Independent approval and withdrawal; moderators use cookie sessions. Generic content still needs review for secrets and action behavior. |
-| `/api/v2/sync/*` | Experimental | Separate v2 storage, five portable collections, ETags/conflicts, tombstones, bounded feed/snapshots/quotas. No automatic local application or v1 migration. |
+| `POST /api/v2/catalog/documents/{id}/fork` | Experimental | Copies a publicly visible template/profile revision into the caller's library as a private draft; provenance (`forkOf`) is row metadata, never in the portable value. 409 if the caller already has that document id; library quotas and 60/min write limit apply. No branches or parent ids in profiles, by design. Clients built before it fail on `forkOf`. |
+| `/api/v2/sync/*` | Experimental | Separate v2 storage, five portable collections plus the credential-free `variables` collection (announced in `sync.optionalCollections`), ETags/conflicts, tombstones, bounded feed/snapshots/quotas. No automatic local application or v1 migration. `variables` records are rejected by clients built before it existed, so enable writing only after every synced device has the new contracts. |
 | `/api/v2/me/export` | Experimental | Includes legacy account, v2 workspace and all own library revisions. Existing password-confirmed browser deletion cascades both new stores; social-only/native deletion limits remain. |
 | `cloud-contracts` and v2 `cloud-client` adapters | Experimental | Shared validation and same-origin SDK transport; offline Desktop application remains separate. |
 | Signed registry generations and rollback | Experimental | Existing backend implementation; operator trust provisioning and production infrastructure remain deployment gates. |
 | `run-workers` | Experimental | Continuous verification/preparation with fenced leases; explicit operator signing and promotion remain required. |
 
-Full routes, quotas and compatibility rules: [CLOUD-API-V2.md](CLOUD-API-V2.md).
+## Product API v3: media, overlays, packages
+
+| Surface | Status | Limits |
+| --- | --- | --- |
+| `/api/v3/assets` (upload, keyset list, read, `PATCH` label, `DELETE`) | Experimental | PNG/JPEG/WebP up to 512 KiB, 200 assets and 32 MiB per account, labels up to 120 characters. Delete is refused (`conflict`) while any overlay revision references the asset. Rasters are validated by header only, not decoded. Assets of deleted accounts are not removed (no foreign key to the user table). |
+| `/api/v3/overlays` (create, keyset list, read, revise, revision list and read, `DELETE`) | Experimental | 50 overlays, 100 revisions each and 16 MiB per account; delete refused while a package pins the overlay; private, never in the v2 review. No rendering in the backend and no revision pruning. |
+| `/api/v3/packages` (create, read, preflight, `DELETE`) | Experimental | Pins by version/revision; applied only by the client. Deleting a package releases its pinned overlays. |
+
+All v3 additions are covered by PostgreSQL integration tests that ran on PostgreSQL 18.6
+(not pgrust; see [implementation status](IMPLEMENTATION-STATUS.md)). Official registry
+root-key ceremony, signed generation publication/promotion and the CDN are still external
+operator work and are not part of this delivery.
+
+Full routes, quotas and compatibility rules: [CLOUD-API-V2.md](CLOUD-API-V2.md) and
+[CLOUD-API-V3.md](CLOUD-API-V3.md).
 
 ## Outstanding scope
 

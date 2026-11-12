@@ -50,7 +50,7 @@ rotation as a planned change that requires creating new connections.
 
 ## Migrations
 
-v3 adds five migrations, applied in order by the normal migrator
+v3 adds eight migrations, applied in order by the normal migrator
 (`readiness::MIGRATOR`) at startup:
 
 1. `20261110000001_plugin_presentation.sql`: display fields on plugin releases.
@@ -62,6 +62,20 @@ v3 adds five migrations, applied in order by the normal migrator
 4. `20261110000004_relay_coordination.sql`: leases and the cross-node frame queue
    used when several replicas serve the relay.
 5. `20261110000005_integrations.sql`: integration connections and events.
+6. `20261111000001_assets_overlays_lifecycle.sql`: nullable `cloud_assets.label` and
+   the keyset-order indexes for assets and for the owner's library documents. No row
+   is rewritten.
+7. `20261111000002_variables_collection.sql`: widens the `collection` CHECK on
+   `cloud_workspace_records` to include `variables`. The table is scanned once to
+   validate the new constraint; existing rows already satisfy it.
+8. `20261111000003_library_fork_provenance.sql`: nullable `fork_of_document` /
+   `fork_of_revision` on `cloud_library_documents`, a both-or-neither CHECK and a
+   composite foreign key to `cloud_library_versions` with `ON DELETE SET NULL`.
+
+**Rolling versions:** a binary older than migration 6-8 reports unready on a migrated
+database (readiness compares migration versions), and migration 7 means an older
+binary would reject `variables` rows it reads. Migrate, then roll the new binary; do
+not run old and new binaries against one database for long.
 
 Migrations are additive. They create tables and columns; they do not rewrite v2
 data. Take a database backup before the first start of a release that contains

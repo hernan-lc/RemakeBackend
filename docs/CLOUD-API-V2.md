@@ -190,6 +190,7 @@ changing a digest cannot make unsupported content acceptable.
 | GET | `/api/v2/catalog/documents` | Current independently published revisions |
 | GET | `/api/v2/catalog/documents/{id}` | Current public revision and interchange object |
 | GET | `/api/v2/catalog/documents/{id}/versions/{revision}` | A specific published revision |
+| POST | `/api/v2/catalog/documents/{id}/fork` | Copy a published template/profile into the caller's private library (additive) |
 | GET | `/api/v2/moderation/documents` | Pending documents from other authors, including content |
 | POST | `/api/v2/moderation/documents/{id}/versions/{revision}/decision` | Independent approval or rejection |
 | POST | `/api/v2/moderation/documents/{id}/versions/{revision}/withdraw` | Moderator withdrawal |
@@ -213,6 +214,49 @@ The review queue emits the oldest pending revision of each document, with
 UUID pagination. Refresh from the first page after decisions to discover the
 next pending revision of documents already processed. Its read budget is
 300/minute; decisions and moderator withdrawals share 60/minute per reviewer.
+
+### Forking a public document
+
+`POST /api/v2/catalog/documents/{id}/fork` (session cookie or native bearer, like the
+library) copies a template or profile that is **visible in the public catalog** into the
+caller's own library as a new private draft. `{id}` is the public document id. The body is
+empty, `null` or `{"revision": N}`; without `revision` the current published revision is
+copied, with it any revision that is still `published` (the ones addressable through
+`/catalog/documents/{id}/versions/{revision}`). Anything else in the body, and a
+non-positive revision, is 400.
+
+- `201` with `ETag: "1"` and the create acknowledgement plus provenance:
+  `{"id":<new id>,"revision":1,"status":"draft","forkOf":{"documentId":<source>,"revision":N}}`.
+- `404` when the document or revision is not published (draft, pending, rejected,
+  withdrawn, unknown) or the id is not a template/profile; `401` without a session; `400`
+  for a malformed id or body.
+- `409` when the caller already owns a document of that kind with the same portable `id`
+  (this includes forking the same document twice and forking your own published document).
+  The copy keeps the source's `id`, as the validators require the slug to equal it; the
+  portable value is copied byte for byte, so rename it with `PUT` afterwards if needed.
+- `507` when the account already has 100 templates/profiles or 8 MiB of stored template
+  and profile revisions (the same quotas as create, enforced under the same account lock);
+  `429` over the 60/minute library-write limit. Responses are `no-store`.
+
+**Provenance is row metadata, not part of the portable value.** It is stored in
+`fork_of_document` / `fork_of_revision` on the library document row (migration
+`20261111000003`) and returned as `forkOf` on the caller's own `GET`/`list`,
+`versions`, `versions/{revision}` and `/api/v2/me/export` entries, only when present.
+It never appears on public catalog responses and is not inside `document`, so the
+template and profile validators and the `sha256` digest are unchanged and older clients
+that read only `document` keep working. If the source revision or its document is later
+deleted, `forkOf` is cleared (`ON DELETE SET NULL`) and the copy remains a normal draft.
+Not done on purpose: profiles have no `parentId`, branch or lineage fields, and the
+portable profile shape was not extended.
+
+Compatibility: the `cloud-client` in this repository accepts `forkOf` on private
+document metadata and refuses it on public documents. A client built before this change
+validates library metadata with `deny_unknown_fields` and will report a protocol error
+when it reads a forked document; roll such clients forward before enabling fork.
+
+The v2 library routes and quotas now consider only templates and profiles. Overlays and
+packages created through `/api/v3` live in the same table and previously made the v2 list
+and export fail with 503; they are filtered out (see [CLOUD-API-V3.md](CLOUD-API-V3.md)).
 
 The admin web panel links from release moderation to **Cloud document
 moderation**. Reviewers can inspect the complete pending document and its
@@ -250,10 +294,49 @@ deployment or broader operational acceptance.
 | `profiles` | document ID | Original profile v1 object with inline templates |
 | `plugin-settings` | plugin ID | `{schemaVersion:1,pluginId,settings:{...}}` |
 | `preferences` | `desktop` | `{schemaVersion:1,theme?,locale?,reducedMotion?,updateChannel?}` |
+| `variables` | variable name | `{schemaVersion:1,name,type,value}` with `type` one of `text`, `number`, `boolean`, `list` (see below) |
 
 Preferences allow `system/light/dark`, a bounded locale identifier, a boolean
 and `stable/beta`, respectively. Unknown preferences and collections fail
 closed. Plugin/document IDs are validated by `cloud-contracts`.
+
+### Variables collection
+
+`variables` is a sixth, credential-free collection for the runtime variables ("globals") of
+the desktop. It uses exactly the same routes, ETag / `If-Match` / `If-None-Match`
+preconditions, tombstones, change feed, snapshot, write-epoch fence, 120/minute write limit
+and 1,000-record / 8 MiB account quotas as the other collections; its records count toward
+those totals. There is no parallel implementation: `cloud-contracts` validates it and the
+existing `PUT`/`DELETE` path stores it. Migration `20261111000002` only widens the table's
+`collection` CHECK.
+
+| Part | Rule |
+| --- | --- |
+| Key | the variable name: `^[A-Za-z_][A-Za-z0-9_.-]{0,63}$` (the desktop's runtime-global key rule, `validate_key` in `tiktools-core`); case-sensitive |
+| `name` | must equal the key |
+| `schemaVersion` | `1` |
+| `type` | `text`, `number`, `boolean` or `list`. **`secret` (and anything else) is rejected: secrets never sync** |
+| `value` | `text`: string of at most 4,096 bytes (may be empty). `number`: a finite JSON number. `boolean`. `list`: at most 100 strings of at most 256 characters each |
+
+Fields are closed: any other field, a missing field or a wrong value type is 400, and the
+portable credential guards still apply to values (for example a `Bearer ...` string, a PEM
+header or a URL with embedded credentials is refused). This cannot detect a secret typed
+into an ordinary text variable; the type is the contract, and the desktop must keep secret
+variables local.
+
+**Discovery.** `sync.collections` in `GET /api/v2/capabilities` still lists only the five
+original collections, because deployed clients require that list to match their own exactly.
+`variables` is announced in `sync.optionalCollections` and in a top-level `variables` object
+(`collection`, `path`, `schemaVersion`, `types`, `secretsSync:false`, size limits,
+`available`). `cloud-client` exposes it as `WorkspaceSyncCapabilities::variables`
+and accepts the collection in `workspace_collection/record/put/delete`; it ignores unknown
+optional collections.
+
+**Older clients.** A client built before this change validates every record it reads and
+rejects `variables` in `GET /sync/export`, the collection and record routes and the change
+feed with a protocol error, because it does not know the collection. The server cannot tell
+clients apart and does not hide records (the change feed must stay contiguous). Do not
+write variables from an account until every device that syncs it has the new contracts.
 
 Create uses `If-None-Match: *`. Replace/delete use exactly one strong
 `If-Match: "N"`. Missing preconditions return 428, malformed/weak/repeated
