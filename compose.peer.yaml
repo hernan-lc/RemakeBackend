@@ -1,0 +1,27 @@
+# Standalone relay. Run API migrations first; it never starts or migrates a DB.
+# docker compose -f compose.peer.yaml up -d --build
+services:
+  peer-relay:
+    build:
+      context: .
+      dockerfile: deploy/peer-relay.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${PEER_RELAY_DATABASE_URL:?Set a read-only relay database connection}
+      PEER_RELAY_HTTP_BIND: 127.0.0.1:8091
+      PEER_RELAY_HTTPS_BIND: 0.0.0.0:8443
+      PEER_RELAY_QUIC_BIND: 0.0.0.0:7842
+      PEER_RELAY_TLS_CERT: /run/peer-tls/fullchain.pem
+      PEER_RELAY_TLS_KEY: /run/peer-tls/privkey.pem
+      RUST_LOG: cloud_peer_relay=info,iroh_relay=warn
+    volumes:
+      - ${PEER_RELAY_TLS_DIRECTORY:?Set the relay certificate directory}:/run/peer-tls:ro
+    ports:
+      - "${PEER_RELAY_PUBLIC_PORT:-443}:8443/tcp"
+      - "7842:7842/udp"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 15s

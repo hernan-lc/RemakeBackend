@@ -14,6 +14,7 @@ const RAILWAY_MARKERS: [&str; 3] = [
 // Deliberately no Debug: this type contains credentials.
 pub struct Config {
     pub bind: SocketAddr,
+    pub peer: crate::remote::peers::PeerConfig,
     /// True when running on Railway (see `RAILWAY_MARKERS`).
     pub railway: bool,
     pub trusted_proxy_cidrs: Vec<IpNet>,
@@ -238,6 +239,9 @@ impl Config {
             min_retry_interval: Duration::from_secs(retry),
         };
         Ok(Self {
+            peer: crate::remote::peers::PeerConfig::parse(get("PEER_RELAY_URLS"))?
+                .with_stun_urls(get("RTC_STUN_URLS"))?
+                .with_relay_only(get("RTC_RELAY_ONLY"))?,
             bind,
             railway,
             trusted_proxy_cidrs,

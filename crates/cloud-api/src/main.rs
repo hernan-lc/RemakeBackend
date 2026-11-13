@@ -70,6 +70,7 @@ use std::{error::Error, sync::Arc};
 
 #[derive(Clone)]
 struct AppState {
+    peer: remote::peers::PeerConfig,
     auth: AuthContext,
     pool: PgPool,
     object_storage: Option<cloud_storage::QuarantineStore>,
@@ -671,15 +672,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(config::StorageConfig::build)
         .transpose()?;
     let hsts = config.origin.starts_with("https://");
-    let mut app = app_with_proxies(
+    let mut app = app_inner(
         context,
         pool,
         auth,
         object_storage,
-        config.trusted_proxy_cidrs,
-        step_up_oauth,
-        hsts,
-        config.temporary_log_approvals,
+        RouterFlags {
+            peer: config.peer,
+            trusted_proxy_cidrs: config.trusted_proxy_cidrs,
+            step_up_oauth,
+            hsts,
+            temporary_log_approvals: config.temporary_log_approvals,
+            social_limit_enabled: true,
+        },
     );
     if let Some(dist) = config.admin_dist_dir {
         app = admin_static::mount(app, &dist, hsts)?;
@@ -725,6 +730,29 @@ fn app(context: AuthContext, pool: PgPool, auth: AuthRouter) -> Router {
 }
 
 #[cfg(test)]
+fn app_with_peer(
+    context: AuthContext,
+    pool: PgPool,
+    auth: AuthRouter,
+    peer: remote::peers::PeerConfig,
+) -> Router {
+    app_inner(
+        context,
+        pool,
+        auth,
+        None,
+        RouterFlags {
+            peer,
+            trusted_proxy_cidrs: Vec::new(),
+            step_up_oauth: None,
+            social_limit_enabled: false,
+            hsts: false,
+            temporary_log_approvals: false,
+        },
+    )
+}
+
+#[cfg(test)]
 fn app_with_storage(
     context: AuthContext,
     pool: PgPool,
@@ -737,6 +765,7 @@ fn app_with_storage(
         auth,
         object_storage,
         RouterFlags {
+            peer: remote::peers::PeerConfig::default(),
             trusted_proxy_cidrs: Vec::new(),
             step_up_oauth: None,
             social_limit_enabled: false,
@@ -747,6 +776,7 @@ fn app_with_storage(
 }
 
 struct RouterFlags {
+    peer: remote::peers::PeerConfig,
     trusted_proxy_cidrs: Vec<ipnet::IpNet>,
     step_up_oauth: Option<step_up::StepUpOAuth>,
     social_limit_enabled: bool,
@@ -757,6 +787,7 @@ struct RouterFlags {
 // Keep the established deployment/auth-test constructor while RouterFlags
 // remains the internal configuration boundary.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn app_with_proxies(
     context: AuthContext,
     pool: PgPool,
@@ -773,6 +804,7 @@ fn app_with_proxies(
         auth,
         object_storage,
         RouterFlags {
+            peer: remote::peers::PeerConfig::default(),
             trusted_proxy_cidrs,
             step_up_oauth,
             social_limit_enabled: true,
@@ -1121,6 +1153,7 @@ fn app_inner(
         .merge(cloud_v2::routes())
         .merge(v3_routes())
         .with_state(AppState {
+            peer: flags.peer,
             auth: context,
             pool,
             object_storage,

@@ -1,0 +1,18 @@
+[package]
+name = "cloud-peer-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+
+[dependencies]
+iroh-base = "=1.4.1"
+futures-util = "0.3"
+iroh-relay = { version = "=1.4.1", default-features = false, features = ["server", "tls-ring", "metrics"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-pemfile = "2"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = "1"

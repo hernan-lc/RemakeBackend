@@ -12,6 +12,7 @@
 !web/admin/**
 !deploy/
 !deploy/Dockerfile
+!deploy/peer-relay.Dockerfile
 !deploy/start-cloud
 !deploy/clamd.conf.example
 web/admin/node_modules/

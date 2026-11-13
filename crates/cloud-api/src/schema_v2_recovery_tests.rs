@@ -187,6 +187,7 @@ fn retained_migrations(before: &BTreeMap<String, Value>, after: &BTreeMap<String
 }
 fn service_state(auth: &AuthContext, pool: &PgPool) -> AppState {
     AppState {
+        peer: remote::peers::PeerConfig::default(),
         auth: auth.clone(),
         pool: pool.clone(),
         object_storage: None,

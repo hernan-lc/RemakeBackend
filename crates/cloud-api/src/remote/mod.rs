@@ -8,6 +8,11 @@
 pub mod access;
 pub mod cluster;
 pub mod hosts;
+mod ice;
+pub mod peer_authorizations;
+pub mod peer_grants;
+pub mod peer_memberships;
+pub mod peers;
 pub mod relay;
 pub mod tickets;
 
@@ -36,6 +41,23 @@ pub const MAX_LIST: i64 = 50;
 
 pub fn routes() -> Router<crate::AppState> {
     Router::new()
+        .route("/api/v3/remote/peer-config", get(peers::configuration))
+        .route("/api/v3/remote/rtc-config", get(ice::configuration))
+        .route("/api/v3/remote/peers", post(peers::publish))
+        .route("/api/v3/remote/peers/{device_id}", get(peers::own_endpoint))
+        .route(
+            "/api/v3/remote/devices/{device_id}/peer-hosts",
+            get(peer_memberships::list),
+        )
+        .route(
+            "/api/v3/remote/peer-grants/confirm",
+            post(peer_grants::confirm),
+        )
+        .route("/api/v3/remote/hosts/{host_id}/peers", get(peers::discover))
+        .route(
+            "/api/v3/remote/hosts/{host_id}/peer-authorizations",
+            get(peer_authorizations::snapshot),
+        )
         .route("/api/v3/remote/challenges", post(hosts::create_challenge))
         .route(
             "/api/v3/remote/devices",

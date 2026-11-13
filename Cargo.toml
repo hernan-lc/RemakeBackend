@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cloud-api", "crates/cloud-contracts", "crates/cloud-verifier", "crates/cloud-client", "crates/cloud-storage", "crates/cloud-snapshot", "crates/devtools-core", "crates/devtools"]
+members = ["crates/cloud-api", "crates/cloud-contracts", "crates/cloud-verifier", "crates/cloud-client", "crates/cloud-storage", "crates/cloud-snapshot", "crates/devtools-core", "crates/devtools", "crates/cloud-peer-relay"]
 
 # Password hashing (better-auth uses scrypt with a 32 MiB work factor) dominates
 # the database test suite when compiled without optimizations: every sign-up

@@ -49,13 +49,14 @@ pub async fn acquire(
     node: &str,
     kind: Kind,
     id: Uuid,
+    device: Uuid,
 ) -> Result<Option<i64>, sqlx::Error> {
     let ttl = LEASE_TTL.as_secs_f64();
     let row = sqlx::query(
-        "INSERT INTO cloud_relay_leases(resource_kind,resource_id,node_id,fencing_token,expires_at) \
-         VALUES($1,$2,$3,1,now() + make_interval(secs => $4)) \
+        "INSERT INTO cloud_relay_leases(resource_kind,resource_id,node_id,fencing_token,expires_at,device_id) \
+         VALUES($1,$2,$3,nextval('cloud_relay_fencing_seq'),now() + make_interval(secs => $4),$5) \
          ON CONFLICT (resource_kind,resource_id) DO UPDATE \
-         SET node_id=EXCLUDED.node_id, fencing_token=cloud_relay_leases.fencing_token+1, expires_at=EXCLUDED.expires_at \
+         SET node_id=EXCLUDED.node_id, device_id=EXCLUDED.device_id, fencing_token=EXCLUDED.fencing_token, expires_at=EXCLUDED.expires_at \
          WHERE cloud_relay_leases.expires_at < now() OR (cloud_relay_leases.node_id=EXCLUDED.node_id AND $1='host') \
          RETURNING fencing_token",
     )
@@ -63,6 +64,7 @@ pub async fn acquire(
     .bind(id)
     .bind(node)
     .bind(ttl)
+    .bind(device)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| r.get::<i64, _>("fencing_token")))
@@ -145,8 +147,9 @@ pub async fn drain(
     limit: i64,
 ) -> Result<Vec<(Kind, Uuid, Value)>, sqlx::Error> {
     let rows = sqlx::query(
-        "DELETE FROM cloud_relay_frames WHERE id IN (SELECT id FROM cloud_relay_frames WHERE target_node=$1 ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED) \
-         RETURNING resource_kind,resource_id,payload",
+        "WITH removed AS (DELETE FROM cloud_relay_frames WHERE id IN (SELECT id FROM cloud_relay_frames WHERE target_node=$1 ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED) \
+         RETURNING id,resource_kind,resource_id,payload) \
+         SELECT resource_kind,resource_id,payload FROM removed ORDER BY id",
     )
     .bind(node)
     .bind(limit)

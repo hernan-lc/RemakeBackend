@@ -18,6 +18,12 @@ use tower::ServiceExt;
 const ORIGIN: &str = "https://cloud.example.test";
 const PASSWORD: &str = "test password with enough characters";
 
+#[cfg(feature = "native-peer-acceptance")]
+#[path = "remote/native_peer_acceptance.rs"]
+mod native_peer_acceptance;
+#[path = "remote/peer_tests.rs"]
+mod peer_tests;
+
 struct User {
     id: String,
     cookie: String,
@@ -39,6 +45,9 @@ impl Drop for Fixture {
 }
 
 async fn fixture(users_wanted: usize) -> Fixture {
+    fixture_with_peer(users_wanted, crate::remote::peers::PeerConfig::default()).await
+}
+async fn fixture_with_peer(users_wanted: usize, peer: crate::remote::peers::PeerConfig) -> Fixture {
     let database = crate::test_support::migrated_url();
     let adapter = Arc::new(SqlxDbAdapter::postgres(&database).await.unwrap());
     let secondary = Arc::new(SqlxSecondaryStorage::postgres(&database).await.unwrap());
@@ -85,10 +94,11 @@ async fn fixture(users_wanted: usize) -> Fixture {
             cookie: format!("{}={}", user.cookie.name, user.cookie.value),
         });
     }
-    let router = app(
+    let router = crate::app_with_peer(
         context.clone(),
         pool.clone(),
         AuthRouter::new(context.clone()).unwrap(),
+        peer,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws_url = format!(
@@ -315,6 +325,22 @@ async fn errors_use_the_envelope_and_capabilities_stay_additive() {
     );
     assert_eq!(capabilities["presentationCatalog"]["apiVersion"], 3);
     assert_eq!(capabilities["remoteControl"]["supported"], true);
+    assert_eq!(
+        capabilities["remoteControl"]["rtcSignaling"]["supported"],
+        true
+    );
+    assert_eq!(
+        capabilities["remoteControl"]["rtcSignaling"]["negotiationSeconds"],
+        60
+    );
+    assert_eq!(
+        capabilities["remoteControl"]["rtcSignaling"]["applicationRelay"]["supported"],
+        true
+    );
+    assert_eq!(
+        capabilities["remoteControl"]["rtcSignaling"]["applicationRelay"]["encryption"],
+        "mutual-tls-1.3"
+    );
     assert_eq!(capabilities["integrations"]["providers"], 0);
     assert!(
         headers.get("x-request-id").is_none(),
@@ -2546,4 +2572,28 @@ async fn concurrent_uploads_cannot_pass_the_asset_quota_together() {
         .await
         .unwrap();
     assert_eq!(total, 200);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn ice_discovery_uses_only_operator_configuration_and_requires_authentication() {
+    let peer = crate::remote::peers::PeerConfig::default()
+        .with_stun_urls(Some("stun:discovery.example.test:3478".into()))
+        .unwrap();
+    let f = fixture_with_peer(1, peer).await;
+    assert_eq!(
+        call(&f, None, "GET", "/api/v3/remote/rtc-config", None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, _, config) = call(&f, Some(0), "GET", "/api/v3/remote/rtc-config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        config,
+        json!({"protocolVersion":1,"stunUrls":["stun:discovery.example.test:3478"]})
+    );
+    // Existing clients keep the exact earlier peer-config shape.
+    let (_, _, legacy) = call(&f, Some(0), "GET", "/api/v3/remote/peer-config", None).await;
+    assert!(legacy.get("stunUrls").is_none());
 }

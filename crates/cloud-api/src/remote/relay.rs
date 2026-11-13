@@ -1,8 +1,8 @@
 //! WSS relay between authenticated hosts and controllers.
 //!
-//! The relay is single-process by design: connection routing lives in
-//! [`Hub`], so every replica would need its own ownership and fencing before
-//! running more than one instance. A command is never queued for an offline
+//! Each connection lives in one node's [`Hub`], with leased ownership and
+//! fencing. Other nodes use the temporary coordination outbox. A command is
+//! never queued for an offline
 //! host; a command that was in flight when its host disconnected becomes
 //! `unknown` and is never resent automatically.
 
@@ -36,6 +36,13 @@ use std::{
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
+pub(crate) mod signaling;
+mod tunnel;
+
+#[cfg(test)]
+pub(crate) async fn assert_native_relay_queue_bound(pool: &PgPool) {
+    tunnel::assert_queue_bound(pool).await;
+}
 
 pub const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -347,6 +354,10 @@ impl Hub {
 
     /// Applies a frame that another node queued for a connection on this node.
     fn deliver_local(&self, kind: cluster::Kind, id: Uuid, frame: &Value) {
+        if frame.get("__targetFencing").is_some() {
+            tunnel::deliver_local(self, kind, id, frame);
+            return;
+        }
         if frame["type"] == CLOSE_FRAME {
             let reason = match frame["reason"].as_str() {
                 Some("deviceRevoked") => "deviceRevoked",
@@ -618,7 +629,15 @@ async fn run(state: AppState, socket: WebSocket) {
             }
         }
     }
-    let fencing = match cluster::acquire(&state.pool, hub.node(), link_kind, link_id).await {
+    let fencing = match cluster::acquire(
+        &state.pool,
+        hub.node(),
+        link_kind,
+        link_id,
+        authorized.device,
+    )
+    .await
+    {
         Ok(Some(fencing)) => fencing,
         _ => {
             let _ = sink
@@ -675,7 +694,7 @@ async fn run(state: AppState, socket: WebSocket) {
             },
             incoming = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => match incoming {
                 Ok(Some(Ok(Message::Text(text)))) => {
-                    let reply = handle_frame(&state, &authorized, text.as_str()).await;
+                    let reply = handle_frame(&state, &authorized, text.as_str(), fencing).await;
                     if let Some(reply) = reply {
                         if sink.send(Message::Text(reply.into())).await.is_err() {
                             break;
@@ -748,7 +767,12 @@ async fn cleanup(state: &AppState, authorized: &Authorized, connection: u64) {
     }
 }
 
-async fn handle_frame(state: &AppState, authorized: &Authorized, text: &str) -> Option<String> {
+async fn handle_frame(
+    state: &AppState,
+    authorized: &Authorized,
+    text: &str,
+    fencing: i64,
+) -> Option<String> {
     if text.len() > MAX_FRAME_BYTES {
         return Some(frame("error", json!({"code": "frameTooLarge"})));
     }
@@ -758,6 +782,12 @@ async fn handle_frame(state: &AppState, authorized: &Authorized, text: &str) -> 
     let kind = value["type"].as_str().unwrap_or_default();
     if kind == "ping" {
         return Some(frame("pong", json!({})));
+    }
+    if kind == "rtc.signal" {
+        return Some(signaling::handle(state, authorized, value, fencing).await);
+    }
+    if matches!(kind, "relay.open" | "relay.data" | "relay.close") {
+        return Some(tunnel::handle(state, authorized, value, fencing).await);
     }
     match (authorized.role, kind) {
         (Role::Host, "grant.confirmed") => {
@@ -1171,6 +1201,12 @@ pub fn spawn_background(pool: PgPool, hub: std::sync::Arc<Hub>) {
 /// Marks accepted commands whose lifetime ended as `expired`. Running commands are
 /// left alone: the host may still be executing them, so they stay in flight.
 pub async fn expire_stale(pool: &PgPool, hub: &Hub) -> u64 {
+    let _ = sqlx::query("DELETE FROM cloud_remote_relay_tunnels WHERE expires_at<=now() OR closed")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM cloud_remote_rtc_negotiations WHERE expires_at<=now()")
+        .execute(pool)
+        .await;
     let rows = sqlx::query("UPDATE cloud_remote_commands SET status='expired', updated_at=now() WHERE status='accepted' AND expires_at < now() RETURNING command_id,session_id")
         .fetch_all(pool)
         .await

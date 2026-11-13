@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-const SMALL_BODY: usize = 4 * 1024;
+const SMALL_BODY: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +121,10 @@ pub async fn create_challenge(
     let owner = &user.user.id;
     throttle(&state, &rid, owner, "remote-challenge", 60).await?;
     match request.purpose.as_str() {
+        "peer" => super::peers::check_binding(&state, &rid, owner, &request.binding).await?,
+        "peer-grant" => {
+            super::peer_grants::check_binding(&state, &rid, owner, &request.binding).await?
+        }
         "enroll" => check_enroll_binding(&state.pool, &rid, owner, &request.binding).await?,
         "ticket" => {
             super::tickets::check_ticket_binding(&state.pool, &rid, owner, &request.binding).await?

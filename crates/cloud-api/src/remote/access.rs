@@ -78,8 +78,23 @@ fn valid_policy(rid: &RequestId, role: &str, policy: &Value) -> Result<(), V3Err
     {
         return Err(V3Error::new(rid, Kind::InvalidRequest));
     }
+    if object
+        .get("nativeGrant")
+        .is_some_and(|grant| role != "custom" || !grant.is_object())
+        || object
+            .get("nativeClientKind")
+            .is_some_and(|kind| !matches!(kind.as_str(), Some("desktop" | "agent")))
+    {
+        return Err(V3Error::new(rid, Kind::InvalidRequest));
+    }
     match role {
         "custom" => {
+            // A native-only policy is validated semantically by the host before
+            // confirmation. Missing legacy operations still denies every WSS
+            // command in role_admits; do not require an unrelated permission set.
+            if !object.contains_key("allowedOperations") && object.contains_key("nativeGrant") {
+                return Ok(());
+            }
             let ops = object
                 .get("allowedOperations")
                 .and_then(Value::as_array)
@@ -630,4 +645,34 @@ pub async fn revoke_session(
         .close_session(&state.pool, session, "sessionRevoked")
         .await;
     Ok(Json(json!({"id": session, "status": "revoked"})))
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn native_only_custom_policy_never_grants_legacy_relay_operations() {
+        let rid = RequestId::fresh();
+        let policy =
+            json!({"nativeGrant":{"capabilities":["live.read"]},"nativeClientKind":"desktop"});
+        assert!(valid_policy(&rid, "custom", &policy).is_ok());
+        for (operation, _) in OPERATIONS {
+            assert!(!super::super::role_admits("custom", &policy, operation));
+        }
+        assert!(valid_policy(&rid, "custom", &json!({})).is_err());
+        assert!(valid_policy(&rid, "moderator", &policy).is_err());
+        assert!(valid_policy(
+            &rid,
+            "custom",
+            &json!({"nativeGrant":{},"nativeClientKind":"browser"})
+        )
+        .is_err());
+        assert!(valid_policy(
+            &rid,
+            "custom",
+            &json!({"nativeGrant":{},"allowedOperations":["unknown"]})
+        )
+        .is_err());
+    }
 }
