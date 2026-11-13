@@ -34,6 +34,8 @@ pub struct CreateInvitation {
     requested_role: String,
     #[serde(rename = "ttlSeconds")]
     ttl_seconds: Option<i64>,
+    #[serde(rename = "recipientId")]
+    recipient_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,15 +145,29 @@ pub async fn create_invitation(
         return Err(V3Error::new(&rid, Kind::Conflict));
     }
     let token = new_secret();
+    if let Some(recipient) = &request.recipient_id {
+        if recipient == &user.user.id || recipient.len() > 256 {
+            return Err(V3Error::new(&rid, Kind::InvalidRequest));
+        }
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM \"user\" WHERE id=$1)")
+            .bind(recipient)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(db(&rid))?;
+        if !exists {
+            return Err(V3Error::new(&rid, Kind::NotFound));
+        }
+    }
     let id = Uuid::new_v4();
     let expires = chrono::Utc::now() + chrono::Duration::seconds(ttl);
-    sqlx::query("INSERT INTO cloud_remote_invitations(id,host_id,created_by,token_sha256,requested_role,expires_at) VALUES($1,$2,$3,$4,$5,$6)")
+    sqlx::query("INSERT INTO cloud_remote_invitations(id,host_id,created_by,token_sha256,requested_role,expires_at,recipient_user_id) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(id)
         .bind(host)
         .bind(&user.user.id)
         .bind(secret_hash(&token))
         .bind(&request.requested_role)
         .bind(expires)
+        .bind(&request.recipient_id)
         .execute(&state.pool)
         .await
         .map_err(db(&rid))?;
@@ -244,13 +260,19 @@ pub async fn redeem_invitation(
     {
         return Err(V3Error::new(&rid, Kind::Forbidden));
     }
-    let invitation = sqlx::query("SELECT id,host_id,requested_role,status,expires_at FROM cloud_remote_invitations WHERE token_sha256=$1 FOR UPDATE")
+    let invitation = sqlx::query("SELECT id,host_id,requested_role,status,expires_at,recipient_user_id FROM cloud_remote_invitations WHERE token_sha256=$1 FOR UPDATE")
         .bind(secret_hash(&request.token))
         .fetch_optional(&mut *tx)
         .await
         .map_err(db(&rid))?
         .ok_or(V3Error::new(&rid, Kind::NotFound))?;
     let invitation_id: Uuid = invitation.get("id");
+    if invitation
+        .get::<Option<String>, _>("recipient_user_id")
+        .is_some_and(|id| id != *owner)
+    {
+        return Err(V3Error::new(&rid, Kind::NotFound));
+    }
     let host: Uuid = invitation.get("host_id");
     match invitation.get::<String, _>("status").as_str() {
         "open" => {}

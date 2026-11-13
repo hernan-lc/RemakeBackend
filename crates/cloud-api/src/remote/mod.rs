@@ -13,6 +13,7 @@ pub mod peer_authorizations;
 pub mod peer_grants;
 pub mod peer_memberships;
 pub mod peers;
+mod people;
 pub mod relay;
 pub mod tickets;
 
@@ -41,6 +42,7 @@ pub const MAX_LIST: i64 = 50;
 
 pub fn routes() -> Router<crate::AppState> {
     Router::new()
+        .route("/api/v3/remote/people", get(people::search))
         .route("/api/v3/remote/peer-config", get(peers::configuration))
         .route("/api/v3/remote/rtc-config", get(ice::configuration))
         .route("/api/v3/remote/peers", post(peers::publish))

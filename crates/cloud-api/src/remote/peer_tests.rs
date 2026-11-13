@@ -132,6 +132,11 @@ async fn peer_directory_requires_both_keys_cas_and_a_fresh_single_use_challenge(
 #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
 async fn peer_discovery_tracks_confirmed_grants_revocation_and_expiry() {
     let f = fixture(3).await;
+    sqlx::query(r#"UPDATE "user" SET email='owner.nickname@example.test' WHERE id=$1"#)
+        .bind(&f.users[0].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
     let (host, device, signing) = host(&f).await;
     let admission = cloud_peer_relay::admission::Admission::new(f.pool.clone());
     let host_peer = key();
@@ -147,7 +152,8 @@ async fn peer_discovery_tracks_confirmed_grants_revocation_and_expiry() {
     let controller_peer = key();
     let controller = enroll(&f, 1, "Controller", "controller", None, &controller_key).await;
     let controller_id = controller["id"].as_str().unwrap();
-    let member_path = format!("/api/v3/remote/devices/{controller_id}/peer-hosts");
+    let member_path =
+        format!("/api/v3/remote/devices/{controller_id}/peer-hosts?includeNickname=true");
     assert_eq!(
         call(&f, Some(2), "GET", &member_path, None).await.0,
         StatusCode::NOT_FOUND
@@ -191,6 +197,13 @@ async fn peer_discovery_tracks_confirmed_grants_revocation_and_expiry() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(members["items"][0]["id"], host);
     assert_eq!(members["items"][0]["clientKind"], "desktop");
+    assert_eq!(members["items"][0]["ownerNickname"], "owner.nickname");
+    let legacy_path = format!("/api/v3/remote/devices/{controller_id}/peer-hosts");
+    let (legacy_status, _, legacy) = call(&f, Some(1), "GET", &legacy_path, None).await;
+    assert_eq!(legacy_status, StatusCode::OK);
+    assert!(legacy["items"][0].get("ownerNickname").is_none());
+    assert!(!members.to_string().contains("@example.test"));
+    assert!(members["items"][0].get("email").is_none());
 
     let (status, _, snapshot) = call(&f, Some(0), "GET", &authority_path, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -481,4 +494,81 @@ async fn private_relay_moves_encrypted_peer_frames_and_disconnects_revoked_devic
         let _ = monitor.await;
         server.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn nickname_search_and_targeted_invites_hide_emails_and_reject_another_account() {
+    let f = fixture(3).await;
+    let (host, _, _) = host(&f).await;
+    let alias = format!("recipient{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("UPDATE \"user\" SET email=$1 WHERE id=$2")
+        .bind(format!("{alias}@example.test"))
+        .bind(&f.users[1].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let path = format!("/api/v3/remote/people?q={alias}");
+    assert_eq!(
+        call(&f, None, "GET", &path, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, _, found) = call(&f, Some(0), "GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["items"][0]["nickname"], alias);
+    assert_eq!(found["items"][0]["ambiguous"], false);
+    assert!(!found.to_string().contains('@'));
+    assert_eq!(
+        call(&f, Some(0), "GET", "/api/v3/remote/people?q=ab", None)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, _, invite) = call(
+        &f,
+        Some(0),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host}/invitations"),
+        Some(json!({"requestedRole":"observer","recipientId":f.users[1].id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{invite}");
+    let controller1 = enroll(&f, 1, "Invited", "controller", None, &key()).await;
+    let controller2 = enroll(&f, 2, "Other", "controller", None, &key()).await;
+    let body = |device: &Value| Some(json!({"token":invite["token"],"deviceId":device["id"]}));
+    assert_eq!(
+        call(
+            &f,
+            Some(2),
+            "POST",
+            "/api/v3/remote/invitations/redeem",
+            body(&controller2)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _, joined) = call(
+        &f,
+        Some(1),
+        "POST",
+        "/api/v3/remote/invitations/redeem",
+        body(&controller1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{joined}");
+    assert_eq!(joined["status"], "pending");
+    sqlx::query("UPDATE \"user\" SET email=$1 WHERE id=$2")
+        .bind(format!("{alias}@other.test"))
+        .bind(&f.users[2].id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (_, _, duplicate) = call(&f, Some(0), "GET", &path, None).await;
+    assert!(duplicate["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["ambiguous"] == true));
+    assert!(!duplicate.to_string().contains('@'));
 }
