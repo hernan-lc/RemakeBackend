@@ -942,6 +942,194 @@ async fn initial_publication_serves_signed_registry_to_tiktools_client() {
     clamserver.abort();
 }
 
+/// The official identifiers are grandfathered under the `tiktools` namespace.
+/// Mirror `trust`, but give the publisher delegation explicit scopes so the
+/// snapshot builder authorizes each legacy id independently.
+fn nine_trust(namespace: &str, publisher: &SigningKey) -> Trust {
+    let dir = tempfile::Builder::new()
+        .prefix("cloud-registry-test-")
+        .tempdir()
+        .unwrap();
+    let seed = dir.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    let root = SigningKey::generate(KeyId::parse("root-one").unwrap(), None).unwrap();
+    let index = SigningKey::generate(KeyId::parse("index-one").unwrap(), None).unwrap();
+    let index_json = index.to_json();
+    let index_pub = index.public_key();
+    let mut delegated =
+        TrustedKey::new(publisher.public_key(), KeyRole::Publisher).publisher(namespace);
+    delegated.scopes.push("tiktools.*".into());
+    delegated.scopes.extend(
+        cloud_verifier::OFFICIAL_LEGACY_IDS
+            .iter()
+            .map(|id| (*id).to_owned()),
+    );
+    let delegations = vec![
+        TrustedKey::new(index_pub.clone(), KeyRole::Index),
+        delegated,
+    ];
+    IndexWriter::open(&seed, "fixture", Some(index))
+        .init(&root, delegations, None, None)
+        .unwrap();
+    Trust {
+        seed,
+        root: TrustedKey::new(root.public_key(), KeyRole::Root),
+        index_json,
+        index_pub,
+        dir,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn nine_official_packages_publish_and_install_through_pinned_client() {
+    let database_url = crate::test_support::migrated_url();
+    let (ctx, pool) = context(&database_url).await;
+    let _guard = lock(&pool).await;
+    let owner = user(&ctx).await;
+    let moderator = user(&ctx).await;
+    sqlx::query("INSERT INTO cloud_account_roles (user_id, role) VALUES ($1, 'moderator')")
+        .bind(&moderator.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (publisher, _) = setup_publisher(&pool, &owner.0, "approved").await;
+    let namespace = "tiktools";
+    sqlx::query("UPDATE cloud_publishers SET namespace = $2 WHERE id = $1")
+        .bind(publisher)
+        .bind(namespace)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let signing = publisher_key(namespace);
+    let key_row = setup_key(&pool, publisher, &signing, &owner.0, "approved").await;
+    let t = nine_trust(namespace, &signing);
+    let work = tempfile::tempdir().unwrap();
+    let (_s3, endpoint, s3server) = fake_s3().await;
+    let store = cloud_storage::QuarantineStore::new(cloud_storage::Config {
+        endpoint: endpoint.clone(),
+        region: "us-east-1".into(),
+        bucket: "cloud-test".into(),
+        access_key: "test".into(),
+        secret_key: "test-secret".into(),
+    })
+    .unwrap();
+    let (_clam, clam_addr, clamserver) = fake_clam().await;
+    let clam = scanner(&clam_addr);
+    let ids = [
+        "audio.play.process",
+        "hotkeys",
+        "l4d2.interactive",
+        "minecraft.server",
+        "peak.game",
+        "repo.game",
+        "sonicboom.server",
+        "textintel",
+        "tiktools.event-gateway",
+    ];
+    for id in ids {
+        let (package_path, digest, size) = package(work.path(), &signing, namespace, id, "1.0.0");
+        verified_release(
+            &pool,
+            &store,
+            publisher,
+            key_row,
+            &owner.0,
+            &moderator.0,
+            id,
+            "1.0.0",
+            &package_path,
+            &digest,
+            size,
+        )
+        .await;
+    }
+    let candidate = ready_candidate(&pool, &store, &clam, &t, "test-operator").await;
+    let published = snapshot_publish::publish(
+        &pool,
+        &store,
+        &clam,
+        &inputs(&t),
+        candidate,
+        "test-operator",
+    )
+    .await
+    .unwrap();
+    assert_eq!(published.release_count, 9);
+    assert!(published.file_count > 0);
+
+    // Serve the API and drive the real pinned TikTools registry client.
+    let (base, server) = serve_app(ctx, pool, store).await;
+    let client_dir = tempfile::tempdir().unwrap();
+    let (client, trust_store, source) =
+        tiktools_client(&base, published.generation, &t.root.key, &client_dir);
+    assert!(client.refresh("fixture").await.unwrap().verified);
+
+    use tiktools_plugin_api::HostCompat;
+    use tiktools_plugin_installer::{
+        CommitOptions, Consent, Installer, InstallerConfig, NoopHooks, NoopReporter, PackageOrigin,
+        SignaturePolicy,
+    };
+    let plugins_dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let installer = Installer::new(
+        InstallerConfig {
+            plugins_dir: plugins_dir.path().to_owned(),
+            store_dir: store_dir.path().to_owned(),
+            host: HostCompat::new(semver::Version::new(0, 4, 0)),
+            retain_versions: 1,
+            provider_endpoints: None,
+        },
+        trust_store,
+    );
+    for id in ids {
+        let (_, document) = client.package(id, Some("fixture")).await.unwrap();
+        let release = document.releases.first().expect("published release");
+        let artifact = release.artifacts.first().expect("published artifact");
+        let download_dir = tempfile::tempdir().unwrap();
+        let downloaded = Downloader::new(download_dir.path())
+            .unwrap()
+            .fetch(
+                DownloadRequest {
+                    url: &join_url(&source.url, &artifact.url).unwrap(),
+                    expected_digest: Some(&artifact.sha256),
+                    expected_size: Some(artifact.size),
+                },
+                &|_, _| {},
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        let prepared = installer
+            .prepare(
+                &downloaded.path,
+                PackageOrigin::Registry {
+                    registry: "fixture".into(),
+                    url: source.url.clone(),
+                },
+                SignaturePolicy::Require,
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        let preview = installer.preview(&prepared);
+        let result = installer
+            .commit(
+                &prepared,
+                &CommitOptions {
+                    consent: Consent::Token(preview.consent_token),
+                    policy: None,
+                },
+                &NoopHooks,
+                &NoopReporter,
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(result.receipt.id, id);
+    }
+
+    server.abort();
+    s3server.abort();
+    clamserver.abort();
+}
+
 /// Shared per-test rig: fresh publisher, key, trust, storage, and scanner.
 /// Each test holds the registry lock for its whole body, so prepared sets and
 /// generations never interleave between tests.

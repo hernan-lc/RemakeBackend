@@ -203,6 +203,42 @@ mod tests {
             );
         }
     }
+    // Hermetic substitute for real_clamav_scans_staging_packages: exercises the
+    // nine-package set entirely through the in-test protocol fixture.
+    #[tokio::test]
+    async fn nine_package_set_scans_clean_through_protocol_fixture() {
+        let ids = [
+            "audio.play.process",
+            "hotkeys",
+            "l4d2.interactive",
+            "minecraft.server",
+            "peak.game",
+            "repo.game",
+            "sonicboom.server",
+            "textintel",
+            "tiktools.event-gateway",
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut scanned = 0;
+        for id in ids {
+            let bytes = Arc::new(id.as_bytes().repeat(4));
+            let path = dir.path().join(format!("{id}.plugin"));
+            std::fs::write(&path, bytes.as_ref()).unwrap();
+            let size = bytes.len() as u64;
+            let digest = format!("{:x}", Sha256::digest(bytes.as_ref()));
+            let (scanner, server) = fixture(b"stream: OK\0", bytes.clone()).await;
+            assert_eq!(
+                scanner.scan(&path, size, &digest).await,
+                Scan::Clean,
+                "scanner rejected {}",
+                path.display()
+            );
+            server.await.unwrap();
+            scanned += 1;
+        }
+        assert_eq!(scanned, 9, "expected exactly nine staging packages");
+    }
+
     #[tokio::test]
     async fn only_exact_clean_or_detected_response_is_accepted() {
         let dir = tempfile::tempdir().unwrap();

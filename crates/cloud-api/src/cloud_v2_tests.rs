@@ -161,7 +161,7 @@ async fn actual_app_sdk_epoch_contract_against_postgres() {
     assert!(matches!(database.scheme(), "postgres" | "postgresql"));
     assert_eq!(database.host_str(), Some("127.0.0.1"));
     assert!(database.port().is_some());
-    assert!(database.path().starts_with("/tiktools_sdk_epoch_"));
+    assert!(database.path().starts_with("/cloud_test_t_"));
     assert!(database.query().is_none() && database.fragment().is_none());
     let f = fixture().await;
     let input = serde_json::to_vec(&json!({
