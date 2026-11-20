@@ -10,7 +10,7 @@ does not prove.
 
 `SNAPSHOT_TRUST_ENV` defaults to `staging`: disposable `fixture-*` keys and a
 local seed directory are accepted for development and rehearsal runs
-(`scripts/build-registry-fixture.sh`, `docs/REGISTRY-OPERATIONS.md`).
+(`scripts/build-registry-fixture.ts`, `docs/REGISTRY-OPERATIONS.md`).
 
 `SNAPSHOT_TRUST_ENV=production` fails closed on every snapshot command
 (`verify-candidate`, `check-promotion-readiness`, `publish-generation`,

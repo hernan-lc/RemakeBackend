@@ -37,7 +37,7 @@ origins. Google OAuth also requires the corresponding callback URL to be
 registered with Google.
 
 To create a disposable administrator for the default local database, while
-the launcher is running, execute `./scripts/create-local-admin.sh` from the
+the launcher is running, execute `node scripts/create-local-admin.ts` from the
 repository root. It creates a new random email and password each time, grants
 the admin role, and saves the credentials in the gitignored `.local-dev`
 directory. Use the printed credentials on the sign-in page.
