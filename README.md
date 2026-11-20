@@ -109,6 +109,12 @@ staging-only until its production gates have been verified.
 
 ## Tests
 
+Local, no Docker and no external services: see [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md).
+
+```sh
+cargo remake test --all           # unit + integration, the default local suite
+```
+
 ```sh
 cargo test --workspace --locked   # no external services needed
 ```
