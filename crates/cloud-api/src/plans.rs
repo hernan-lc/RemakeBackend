@@ -109,22 +109,74 @@ pub async fn limits_for(pool: &PgPool, user_id: &str) -> PlanLimits {
     plan_for(pool, user_id).await.limits()
 }
 
+/// What the caller currently stores, counted exactly as the quota checks count it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanUsage {
+    pub records: i64,
+    pub record_bytes: i64,
+    pub assets: i64,
+    pub asset_bytes: i64,
+    pub overlays: i64,
+    pub overlay_bytes: i64,
+}
+
+/// Current consumption of one account. A database failure is reported, never
+/// shown as zero usage.
+pub async fn usage_for(pool: &PgPool, user_id: &str) -> Result<PlanUsage, sqlx::Error> {
+    let (records, record_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), COALESCE(sum(octet_length(value::text)),0)::bigint \
+         FROM cloud_workspace_records WHERE user_id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    let (assets, asset_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), COALESCE(sum(size),0)::bigint FROM cloud_assets WHERE owner_user_id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    let (overlays, overlay_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT count(DISTINCT d.id), COALESCE(sum(octet_length(v.document::text)),0)::bigint \
+         FROM cloud_library_documents d \
+         LEFT JOIN cloud_library_versions v ON v.document_id=d.id \
+         WHERE d.owner_user_id=$1 AND d.kind='overlay'",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(PlanUsage {
+        records,
+        record_bytes,
+        assets,
+        asset_bytes,
+        overlays,
+        overlay_bytes,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanView {
     pub plan: &'static str,
     pub limits: PlanLimits,
+    pub usage: PlanUsage,
 }
 
-/// Read-only view of the caller's effective plan and limits.
+/// Read-only view of the caller's effective plan, its limits and current usage.
 pub async fn view(
     NativeAuthUser(user): NativeAuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<PlanView>, StatusCode> {
     let plan = plan_for(&state.pool, &user.user.id).await;
+    let usage = usage_for(&state.pool, &user.user.id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(PlanView {
         plan: plan.as_str(),
         limits: plan.limits(),
+        usage,
     }))
 }
 
@@ -203,9 +255,64 @@ mod tests {
         let view = PlanView {
             plan: Plan::Free.as_str(),
             limits: Plan::Free.limits(),
+            usage: PlanUsage {
+                records: 0,
+                record_bytes: 0,
+                assets: 0,
+                asset_bytes: 0,
+                overlays: 0,
+                overlay_bytes: 0,
+            },
         };
         let json = serde_json::to_value(&view).unwrap();
+        assert!(json.get("usage").is_some());
         assert!(json.get("updatedAt").is_none());
         assert!(json.get("userId").is_none());
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    /// Usage counts only what the caller owns, and an unknown account reads as zero.
+    #[tokio::test]
+    #[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+    async fn usage_counts_the_owners_assets_and_ignores_other_accounts() {
+        let _env = crate::test_support::integration_env().await;
+        let database = crate::test_support::migrated_url();
+        let pool = sqlx::PgPool::connect(&database).await.unwrap();
+        let owner = format!("plan-usage-{}", uuid::Uuid::new_v4());
+        let other = format!("plan-usage-other-{}", uuid::Uuid::new_v4());
+        let zero = PlanUsage {
+            records: 0,
+            record_bytes: 0,
+            assets: 0,
+            asset_bytes: 0,
+            overlays: 0,
+            overlay_bytes: 0,
+        };
+        assert_eq!(usage_for(&pool, &owner).await.unwrap(), zero);
+
+        for (user, size) in [(&owner, 5_i32), (&other, 7_i32)] {
+            sqlx::query(
+                "INSERT INTO cloud_assets (id, owner_user_id, sha256, mime, width, height, size, content) \
+                 VALUES ($1, $2, $3, 'image/png', 1, 1, $4, $5)",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(user)
+            .bind(format!("{:064x}", uuid::Uuid::new_v4().as_u128()))
+            .bind(size)
+            .bind(vec![0_u8; size as usize])
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let usage = usage_for(&pool, &owner).await.unwrap();
+        assert_eq!(usage.assets, 1);
+        assert_eq!(usage.asset_bytes, 5);
+        assert_eq!(usage.records, 0);
+        assert_eq!(usage.overlays, 0);
     }
 }
