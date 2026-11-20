@@ -1,7 +1,7 @@
 //! Proven endpoint-key bindings and scoped discovery. Never proxies RPC effects.
 use super::{binding_digest, db, parse_body, proof_message, throttle, verify_proof};
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -159,7 +159,7 @@ fn check_relays(rid: &RequestId, binding: &Binding, config: &PeerConfig) -> Resu
 }
 
 pub async fn configuration(
-    Authenticated(_user): Authenticated,
+    RemoteUser(_user): RemoteUser,
     State(state): State<AppState>,
 ) -> Json<Value> {
     Json(
@@ -170,7 +170,7 @@ pub async fn configuration(
 /// Owner recovery for an expired/lost-ack registration. This does not expose
 /// another account's address and never resets the endpoint key or revision.
 pub async fn own_endpoint(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(device): Path<Uuid>,
@@ -193,7 +193,7 @@ pub struct Publish {
 }
 
 pub async fn publish(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,
@@ -249,7 +249,7 @@ pub async fn publish(
 }
 
 pub async fn discover(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host): Path<Uuid>,

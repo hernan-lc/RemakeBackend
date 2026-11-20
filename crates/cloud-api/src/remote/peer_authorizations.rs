@@ -1,7 +1,7 @@
 //! Complete, owner-only snapshot for the native host's local permission bridge.
 use super::{db, throttle};
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -13,7 +13,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 pub async fn snapshot(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host): Path<Uuid>,

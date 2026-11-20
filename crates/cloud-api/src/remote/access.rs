@@ -10,7 +10,7 @@ use super::{
     INVITATION_MAX_TTL_SECONDS, MAX_LIST, MAX_POLICY_BYTES, OPERATIONS, PRESET_ROLES,
 };
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -122,7 +122,7 @@ fn valid_policy(rid: &RequestId, role: &str, policy: &Value) -> Result<(), V3Err
 }
 
 pub async fn create_invitation(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -185,7 +185,7 @@ pub async fn create_invitation(
 }
 
 pub async fn list_invitations(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -214,7 +214,7 @@ pub async fn list_invitations(
 }
 
 pub async fn revoke_invitation(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, invitation_id)): Path<(String, String)>,
@@ -237,7 +237,7 @@ pub async fn revoke_invitation(
 /// Redeems an invitation into a pending join request. Single use, expiring, and
 /// bound to a controller device owned by the redeeming account.
 pub async fn redeem_invitation(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,
@@ -347,7 +347,7 @@ async fn owned_host_any(
 }
 
 pub async fn list_requests(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -378,7 +378,7 @@ pub async fn list_requests(
 /// Approves or denies a join request. Approval creates a grant awaiting the
 /// host's confirmation; nothing is operational until the host confirms it.
 pub async fn decide_request(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, request_id)): Path<(String, String)>,
@@ -461,7 +461,7 @@ pub async fn decide_request(
 }
 
 pub async fn list_grants(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -494,7 +494,7 @@ fn grant_view(row: &sqlx::postgres::PgRow) -> Value {
 /// Changes a grant with an expected revision. The change needs a fresh host
 /// confirmation, and sessions opened under the previous revision end now.
 pub async fn update_grant(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, grant_id)): Path<(String, String)>,
@@ -560,7 +560,7 @@ pub async fn update_grant(
 }
 
 pub async fn revoke_grant(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, grant_id)): Path<(String, String)>,
@@ -616,7 +616,7 @@ pub async fn revoke_grant(
 }
 
 pub async fn list_sessions(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -645,7 +645,7 @@ pub async fn list_sessions(
 }
 
 pub async fn revoke_session(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, session_id)): Path<(String, String)>,

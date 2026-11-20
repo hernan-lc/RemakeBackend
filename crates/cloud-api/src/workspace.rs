@@ -231,6 +231,7 @@ async fn mutate(
     epoch: Option<i64>,
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
     limit(state, user, "write", 120).await?;
+    let limits = crate::plans::limits_for(&state.pool, user).await;
     let mut tx = state.pool.begin().await.map_err(db)?;
     // JSONB normalizes numeric representations. Validate and acknowledge the
     // exact typed value that subsequent GET/snapshot/feed reads will decode.
@@ -312,8 +313,8 @@ async fn mutate(
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-    if (previous.is_none() && quota.get::<i64, _>("records") >= MAX_RECORDS)
-        || quota.get::<i64, _>("bytes") - previous_bytes + new_bytes > MAX_BYTES
+    if (previous.is_none() && quota.get::<i64, _>("records") >= limits.max_records)
+        || quota.get::<i64, _>("bytes") - previous_bytes + new_bytes > limits.max_bytes
     {
         return Err(StatusCode::INSUFFICIENT_STORAGE);
     }
@@ -327,7 +328,7 @@ async fn mutate(
     let deleted = value.is_none();
     sqlx::query("INSERT INTO cloud_workspace_records(user_id,collection,key,revision,value,deleted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,collection,key) DO UPDATE SET revision=EXCLUDED.revision,value=EXCLUDED.value,deleted=EXCLUDED.deleted").bind(user).bind(&collection).bind(&key).bind(revision).bind(&value).bind(deleted).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO cloud_workspace_changes(user_id,cursor,collection,key,value,deleted) VALUES($1,$2,$3,$4,$5,$6)").bind(user).bind(revision).bind(&collection).bind(&key).bind(&value).bind(deleted).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("DELETE FROM cloud_workspace_changes WHERE user_id=$1 AND cursor IN (SELECT cursor FROM (SELECT cursor, row_number() OVER (ORDER BY cursor DESC) AS n, sum(COALESCE(octet_length(value::text),0)+256) OVER (ORDER BY cursor DESC) AS bytes FROM cloud_workspace_changes WHERE user_id=$1) retained WHERE n>$2 OR bytes>$3)").bind(user).bind(MAX_CHANGES).bind(MAX_CHANGE_BYTES).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("DELETE FROM cloud_workspace_changes WHERE user_id=$1 AND cursor IN (SELECT cursor FROM (SELECT cursor, row_number() OVER (ORDER BY cursor DESC) AS n, sum(COALESCE(octet_length(value::text),0)+256) OVER (ORDER BY cursor DESC) AS bytes FROM cloud_workspace_changes WHERE user_id=$1) retained WHERE n>$2 OR bytes>$3)").bind(user).bind(limits.max_changes).bind(limits.max_change_bytes).execute(&mut *tx).await.map_err(db)?;
     tx.commit().await.map_err(db)?;
     Ok((
         if previous.is_none() {
@@ -495,6 +496,7 @@ pub async fn changes(
     ))
 }
 pub(crate) async fn snapshot(pool: &PgPool, user: &str) -> Result<Value, StatusCode> {
+    let limits = crate::plans::limits_for(pool, user).await;
     let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
@@ -507,9 +509,11 @@ pub(crate) async fn snapshot(pool: &PgPool, user: &str) -> Result<Value, StatusC
     .fetch_one(&mut *tx)
     .await
     .map_err(db)?;
-    let rows = sqlx::query("SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 ORDER BY collection,key LIMIT $2").bind(user).bind(MAX_RECORDS+1).fetch_all(&mut *tx).await.map_err(db)?;
+    let rows = sqlx::query("SELECT collection,key,revision,deleted,value FROM cloud_workspace_records WHERE user_id=$1 ORDER BY collection,key LIMIT $2").bind(user).bind(limits.max_records+1).fetch_all(&mut *tx).await.map_err(db)?;
     let records: Vec<_> = rows.into_iter().map(record).collect();
-    if records.len() > MAX_RECORDS as usize || records.iter().any(|r| !valid_record(r, cursor)) {
+    if records.len() > limits.max_records as usize
+        || records.iter().any(|r| !valid_record(r, cursor))
+    {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     tx.commit().await.map_err(db)?;

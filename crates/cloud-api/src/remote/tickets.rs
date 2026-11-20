@@ -9,7 +9,7 @@ use super::{
     verify_proof, TICKET_TTL,
 };
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{body::Bytes, extract::State, http::StatusCode, Extension, Json};
@@ -133,7 +133,7 @@ async fn authority_for(
 }
 
 pub async fn issue(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,

@@ -129,7 +129,8 @@ pub async fn upload(
         .map_err(db(&rid))?;
     let count: i64 = totals.get("n");
     let bytes: i64 = totals.get("bytes");
-    if count >= MAX_ASSETS_PER_OWNER || bytes + body.len() as i64 > MAX_BYTES_PER_OWNER {
+    let limits = crate::plans::limits_for(&state.pool, owner).await;
+    if count >= limits.max_assets || bytes + body.len() as i64 > limits.max_assets_bytes {
         return Err(V3Error::new(&rid, Kind::QuotaExceeded));
     }
     let id = Uuid::new_v4();

@@ -10,12 +10,89 @@ use better_auth::{
     desktop::{DesktopHandoffService, HandoffRequest, RedeemRequest},
     rate_limit::{RateLimitPolicy, RateLimiter},
 };
-use better_auth_core::error::AuthError;
+use better_auth_core::{error::AuthError, StorageValue};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{net::SocketAddr, time::Duration};
 
 const CLIENT_ID: &str = "tiktools-desktop";
 const TTL: Duration = Duration::from_secs(60);
+/// A per-user generation counter. Signing out bumps it, so every handoff code
+/// issued before the sign-out becomes unusable even though Better Auth keeps
+/// the code itself in its own secondary-storage key space.
+const HANDOFF_GENERATION_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+
+fn handoff_index_key(code: &str) -> String {
+    format!(
+        "cloud:handoff-index:{}",
+        hex::encode(Sha256::digest(code.as_bytes()))
+    )
+}
+
+fn handoff_generation_key(user_id: &str) -> String {
+    format!("cloud:handoff-gen:{user_id}")
+}
+
+fn storage(
+    state: &AppState,
+) -> Result<&std::sync::Arc<dyn better_auth_core::SecondaryStorage>, StatusCode> {
+    state
+        .auth
+        .secondary_storage
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn current_generation(state: &AppState, user_id: &str) -> Result<i64, StatusCode> {
+    stored_generation(storage(state)?.as_ref(), user_id).await
+}
+
+/// Bump the user's handoff generation. Called on browser and native sign-out.
+pub async fn invalidate_handoffs(state: &AppState, user_id: &str) -> Result<(), StatusCode> {
+    bump_generation(storage(state)?.as_ref(), user_id).await
+}
+
+/// Shared accessors for native login-code endpoints. They live here so the
+/// generation counter stays the single invalidation mechanism for both the
+/// PKCE handoff and the device-relayed login code.
+pub(crate) fn kv_storage(
+    state: &AppState,
+) -> Result<&std::sync::Arc<dyn better_auth_core::SecondaryStorage>, StatusCode> {
+    storage(state)
+}
+
+pub(crate) async fn generation_of(state: &AppState, user_id: &str) -> Result<i64, StatusCode> {
+    current_generation(state, user_id).await
+}
+
+pub(crate) fn generation_key(user_id: &str) -> String {
+    handoff_generation_key(user_id)
+}
+
+/// Storage-level helper, kept separate so the generation semantics can be
+/// tested without a database or an AppState.
+async fn bump_generation(
+    storage: &dyn better_auth_core::SecondaryStorage,
+    user_id: &str,
+) -> Result<(), StatusCode> {
+    storage
+        .increment(&handoff_generation_key(user_id), 1, HANDOFF_GENERATION_TTL)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok(())
+}
+
+/// Read a generation from storage; a missing key means generation zero.
+async fn stored_generation(
+    storage: &dyn better_auth_core::SecondaryStorage,
+    user_id: &str,
+) -> Result<i64, StatusCode> {
+    let value = storage
+        .get(&handoff_generation_key(user_id))
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok(value.and_then(|entry| entry.value.as_i64()).unwrap_or(0))
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -98,6 +175,22 @@ pub async fn issue(
         .issue(&user.user.id, &request)
         .await
         .map_err(reject)?;
+    // Index the (hashed) code to its owner and generation so a sign-out can
+    // invalidate it without enumerating Better Auth's private handoff keys.
+    let generation = current_generation(&state, &user.user.id).await?;
+    storage(&state)?
+        .set(
+            &handoff_index_key(&code),
+            StorageValue {
+                value: serde_json::json!({
+                    "userId": user.user.id,
+                    "generation": generation,
+                }),
+                expires_in: Some(TTL),
+            },
+        )
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let callback_url = better_auth::loopback_callback_url(&input.redirect_uri, &code, &input.state)
         .map_err(reject)?;
     Ok(Json(IssueOutput { callback_url }))
@@ -140,6 +233,26 @@ pub async fn redeem(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let index_key = handoff_index_key(&input.code);
+    let index = storage(&state)?
+        .get(&index_key)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user_id = index
+        .value
+        .get("userId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let issued_generation = index
+        .value
+        .get("generation")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if current_generation(&state, user_id).await? != issued_generation {
+        // The user signed out after the code was issued.
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let request = RedeemRequest {
         code: input.code,
         client_id: CLIENT_ID.into(),
@@ -151,6 +264,7 @@ pub async fn redeem(
         .redeem(&request, true)
         .await
         .map_err(reject)?;
+    let _ = storage(&state)?.delete(&index_key).await;
     Ok(Json(RedeemOutput {
         session_token: session.session_token,
         expires_at: session.session.expires_at,
@@ -159,9 +273,30 @@ pub async fn redeem(
 
 #[cfg(test)]
 mod tests {
-    use super::rate_limit_identity;
+    use super::{bump_generation, handoff_index_key, rate_limit_identity, stored_generation};
     use axum::http::HeaderMap;
+    use better_auth_core::adapter::memory::MemorySecondaryStorage;
     use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn sign_out_bumps_only_that_users_handoff_generation() {
+        let storage = MemorySecondaryStorage::default();
+        assert_eq!(stored_generation(&storage, "alice").await.unwrap(), 0);
+        bump_generation(&storage, "alice").await.unwrap();
+        assert_eq!(stored_generation(&storage, "alice").await.unwrap(), 1);
+        bump_generation(&storage, "alice").await.unwrap();
+        assert_eq!(stored_generation(&storage, "alice").await.unwrap(), 2);
+        assert_eq!(stored_generation(&storage, "bob").await.unwrap(), 0);
+    }
+
+    #[test]
+    fn handoff_index_keys_never_contain_the_raw_code() {
+        let key = handoff_index_key("secret-code-123");
+        assert!(key.starts_with("cloud:handoff-index:"));
+        assert!(!key.contains("secret-code-123"));
+        assert_eq!(key, handoff_index_key("secret-code-123"));
+        assert_ne!(key, handoff_index_key("another-code"));
+    }
 
     fn peer() -> SocketAddr {
         "127.0.0.1:43210".parse().unwrap()

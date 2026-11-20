@@ -194,6 +194,10 @@ fn service_state(auth: &AuthContext, pool: &PgPool) -> AppState {
         step_up_oauth: None,
         temporary_log_approvals: false,
         remote: std::sync::Arc::new(crate::remote::relay::Hub::new("schema-test")),
+        sync_credentials: crate::sync_credentials::SyncCredentials::generate(
+            "https://schema-test.example",
+        )
+        .expect("generate test sync credentials"),
     }
 }
 async fn ready(auth: &AuthContext, pool: &PgPool) -> StatusCode {

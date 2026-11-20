@@ -1,7 +1,7 @@
 //! Native controllers discover only hosts approved for their own enrolled key.
 use super::{db, throttle};
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -21,7 +21,7 @@ pub struct MembershipQuery {
 }
 
 pub async fn list(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(device): Path<Uuid>,

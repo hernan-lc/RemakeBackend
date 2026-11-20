@@ -134,7 +134,10 @@ async fn call(
     let mut request = Request::builder()
         .method(method)
         .uri(path)
-        .header(header::CONTENT_TYPE, "application/json");
+        .header(header::CONTENT_TYPE, "application/json")
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:43210".parse::<std::net::SocketAddr>().unwrap(),
+        ));
     if let Some(user) = user {
         request = request
             .header(header::COOKIE, &f.users[user].cookie)
@@ -2596,4 +2599,170 @@ async fn ice_discovery_uses_only_operator_configuration_and_requires_authenticat
     // Existing clients keep the exact earlier peer-config shape.
     let (_, _, legacy) = call(&f, Some(0), "GET", "/api/v3/remote/peer-config", None).await;
     assert!(legacy.get("stunUrls").is_none());
+}
+
+/// Two-device end-to-end coverage for the short-lived login code: a host and a
+/// controller are enrolled, connected over WSS, and the code relayed by the
+/// Cloud is observed on the controller socket before being redeemed for a
+/// native session. Requires the migrated PostgreSQL test database.
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn login_code_is_relayed_to_a_connected_device_and_redeemed_once() {
+    let f = fixture(2).await;
+    let (host_owner, guest) = (0usize, 1usize);
+
+    // Host + device, controller device, invitation, grant.
+    let (_, _, host) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        "/api/v3/remote/hosts",
+        Some(json!({"name": "Desk PC", "protocolVersion": 1})),
+    )
+    .await;
+    let host_id = host["id"].as_str().unwrap().to_owned();
+    let host_key = key();
+    let host_device = enroll(
+        &f,
+        host_owner,
+        "Desk host",
+        "host",
+        Some(&host_id),
+        &host_key,
+    )
+    .await;
+    let host_device_id = host_device["id"].as_str().unwrap().to_owned();
+    let controller_key = key();
+    let controller = enroll(&f, guest, "Phone", "controller", None, &controller_key).await;
+    let controller_id = controller["id"].as_str().unwrap().to_owned();
+
+    let (_, _, invitation) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host_id}/invitations"),
+        Some(json!({"requestedRole": "moderator"})),
+    )
+    .await;
+    let token = invitation["token"].as_str().unwrap().to_owned();
+    call(
+        &f,
+        Some(guest),
+        "POST",
+        "/api/v3/remote/invitations/redeem",
+        Some(json!({"token": token, "deviceId": controller_id})),
+    )
+    .await;
+    let (_, _, requests) = call(
+        &f,
+        Some(host_owner),
+        "GET",
+        &format!("/api/v3/remote/hosts/{host_id}/requests"),
+        None,
+    )
+    .await;
+    let request_id = requests["items"][0]["id"].as_str().unwrap().to_owned();
+    let (_, _, decided) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        &format!("/api/v3/remote/hosts/{host_id}/requests/{request_id}/decision"),
+        Some(json!({"decision": "approve"})),
+    )
+    .await;
+    let grant_id = decided["grant"]["id"].as_str().unwrap().to_owned();
+
+    // Both devices connect over WSS; the host confirms the grant revision.
+    let (status, host_ticket) =
+        ticket(&f, host_owner, &host_id, &host_device_id, "host", &host_key).await;
+    assert_eq!(status, StatusCode::CREATED, "{host_ticket}");
+    let (mut host_ws, _) = connect(&f, host_ticket["ticket"].as_str().unwrap()).await;
+    send(
+        &mut host_ws,
+        json!({"type": "grant.confirmed", "grantId": grant_id, "revision": 1}),
+    )
+    .await;
+    next_frame(&mut host_ws, "ack").await;
+
+    let (status, control_ticket) = ticket(
+        &f,
+        guest,
+        &host_id,
+        &controller_id,
+        "controller",
+        &controller_key,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{control_ticket}");
+    let (mut controller_ws, ready) = connect(&f, control_ticket["ticket"].as_str().unwrap()).await;
+    assert_eq!(ready["role"], "controller");
+
+    // Reserve a code for the host owner's account (email read from the DB).
+    let email: String = sqlx::query_scalar("SELECT email FROM \"user\" WHERE id = $1")
+        .bind(&f.users[host_owner].id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let nonce = "device-e2e-nonce";
+    let (status, _, reservation) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        "/api/v1/native/login-code/reserve",
+        Some(json!({"email": email, "deviceNonce": nonce})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reservation}");
+    assert_eq!(reservation["requiresOauth"], false);
+    let reservation_id = reservation["reservationId"].as_str().unwrap().to_owned();
+
+    // Relay: the code must arrive on the connected controller's socket.
+    let (status, _, relayed) = call(
+        &f,
+        Some(host_owner),
+        "POST",
+        "/api/v1/native/login-code/relay",
+        Some(json!({"reservationId": reservation_id, "deviceNonce": nonce})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{relayed}");
+    assert_eq!(relayed["delivered"], 1);
+
+    let frame = next_frame(&mut controller_ws, "login.code").await;
+    assert_eq!(frame["reservationId"], reservation_id);
+    let code = frame["code"].as_str().unwrap().to_owned();
+    assert_eq!(code.len(), 6);
+    assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+
+    // Redeem on a fresh native call: no bearer, no cookie, just the code.
+    let (status, _, redeemed) = call(
+        &f,
+        None,
+        "POST",
+        "/api/v1/native/login-code/redeem",
+        Some(json!({
+            "reservationId": reservation_id,
+            "deviceNonce": nonce,
+            "code": code,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{redeemed}");
+    let session_token = redeemed["sessionToken"].as_str().unwrap().to_owned();
+    assert!(!session_token.is_empty());
+
+    // Replay must fail: the code is single-use.
+    let (status, _, replay) = call(
+        &f,
+        None,
+        "POST",
+        "/api/v1/native/login-code/redeem",
+        Some(json!({
+            "reservationId": reservation_id,
+            "deviceNonce": nonce,
+            "code": code,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{replay}");
 }

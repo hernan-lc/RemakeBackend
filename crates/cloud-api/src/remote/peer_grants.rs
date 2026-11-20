@@ -2,7 +2,7 @@
 //! Native P2P hosts do not need a legacy command-relay socket just for approval.
 use super::{binding_digest, db, parse_body, proof_message, throttle, verify_proof};
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{body::Bytes, extract::State, Extension, Json};
@@ -54,7 +54,7 @@ pub struct Confirm {
 }
 
 pub async fn confirm(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,

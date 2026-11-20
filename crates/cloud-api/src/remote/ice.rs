@@ -1,6 +1,6 @@
 //! ICE discovery configuration on the existing authenticated HTTP API.
 //! STUN only discovers an address; it does not relay application traffic.
-use crate::api_error::Authenticated;
+use crate::api_error::RemoteUser;
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
 
@@ -42,7 +42,7 @@ pub(super) fn parse(raw: Option<String>) -> Result<Vec<String>, String> {
     Ok(urls)
 }
 pub async fn configuration(
-    Authenticated(_): Authenticated,
+    RemoteUser(_): RemoteUser,
     State(state): State<crate::AppState>,
 ) -> Json<Value> {
     Json(json!({"protocolVersion":1,"stunUrls":state.peer.stun_urls}))

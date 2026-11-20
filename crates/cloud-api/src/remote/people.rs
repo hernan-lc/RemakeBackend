@@ -1,7 +1,7 @@
 //! Bounded nickname discovery for targeted invitations. Emails are never returned.
 use super::{db, throttle};
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -19,7 +19,7 @@ pub struct Search {
 }
 
 pub async fn search(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Query(query): Query<Search>,

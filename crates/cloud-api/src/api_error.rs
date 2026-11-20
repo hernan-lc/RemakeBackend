@@ -217,6 +217,49 @@ where
     }
 }
 
+/// Authenticated principal for v3 remote-control routes.
+///
+/// Identical to [`Authenticated`] for ordinary Browser Cookie / native Bearer
+/// sessions, but also accepts a short-lived scoped native credential carrying
+/// `remote.control`. Every route keeps its database ownership and grant checks:
+/// the credential only replaces the full-session bearer at the boundary.
+pub struct RemoteUser(pub better_auth::session::AuthPrincipal);
+
+impl<S> axum::extract::FromRequestParts<S> for RemoteUser
+where
+    S: Send + Sync,
+    crate::AppState: axum::extract::FromRef<S>,
+    better_auth::AuthContext: axum::extract::FromRef<S>,
+{
+    type Rejection = V3Error;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let request_id = parts
+            .extensions
+            .get::<RequestId>()
+            .cloned()
+            .unwrap_or_else(RequestId::fresh);
+        match crate::sync_credentials::authenticate_credential(
+            parts,
+            state,
+            crate::sync_credentials::SCOPE_REMOTE,
+        )
+        .await
+        {
+            Ok(Some(principal)) => Ok(Self(principal)),
+            Ok(None) => crate::dual_auth::DualUser::from_request_parts(parts, state)
+                .await
+                .map(|user| Self(user.0))
+                .map_err(|_| V3Error::new(&request_id, Kind::Unauthorized)),
+            Err(StatusCode::FORBIDDEN) => Err(V3Error::new(&request_id, Kind::Forbidden)),
+            Err(_) => Err(V3Error::new(&request_id, Kind::Unauthorized)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

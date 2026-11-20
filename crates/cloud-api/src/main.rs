@@ -14,11 +14,13 @@ mod library;
 mod library_digest_repair;
 mod local_backup;
 mod local_objects;
+mod login_code;
 mod media;
 mod moderation;
 mod overlays;
 mod packages;
 mod paging;
+mod plans;
 mod portable;
 mod publication;
 mod publication_worker;
@@ -39,6 +41,7 @@ mod snapshot_verify;
 mod snapshot_worker;
 mod step_up;
 mod sync;
+mod sync_credentials;
 mod temporary_log_approval;
 mod uploads;
 mod web;
@@ -47,8 +50,10 @@ mod worker_daemon;
 mod workspace;
 
 use axum::{
-    extract::{FromRef, State},
-    http::StatusCode,
+    extract::{FromRef, FromRequestParts, State},
+    http::{Method, Request, StatusCode},
+    middleware::Next,
+    response::Response,
     routing::get,
     Json, Router,
 };
@@ -80,6 +85,8 @@ struct AppState {
     temporary_log_approvals: bool,
     /// Live relay routing for remote control. Single-process by design.
     remote: std::sync::Arc<remote::relay::Hub>,
+    /// Short-lived, scope-limited native credentials for the sync API.
+    sync_credentials: sync_credentials::SyncCredentials,
 }
 
 fn proxy_auth_options(enabled: bool) -> better_auth_core::options::AdvancedOptions {
@@ -135,13 +142,46 @@ async fn native_logout(
     NativeAuthUser(principal): NativeAuthUser,
     State(state): State<AppState>,
 ) -> Result<StatusCode, StatusCode> {
-    let sessions = better_auth::session::SessionService::new(state.auth)
+    let sessions = better_auth::session::SessionService::new(state.auth.clone())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sessions
         .discard(&principal.session.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Invalidate desktop handoff codes issued by this account.
+    desktop::invalidate_handoffs(&state, &principal.user.id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Browser sign-out goes through the Better Auth router, which we do not own.
+/// Observing its successful response lets us bump the same handoff generation
+/// that native logout bumps, so a code issued on this account cannot be redeemed
+/// after the user signs out in the dashboard.
+async fn sign_out_invalidates_handoffs(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let is_sign_out =
+        request.uri().path() == "/api/auth/sign-out" && request.method() == Method::POST;
+    let (mut parts, body) = request.into_parts();
+    let user_id = if is_sign_out {
+        AuthUser::from_request_parts(&mut parts, &state)
+            .await
+            .ok()
+            .map(|user| user.0.user.id)
+    } else {
+        None
+    };
+    let response = next.run(Request::from_parts(parts, body)).await;
+    if let (Some(user_id), true) = (user_id, response.status().is_success()) {
+        // Best effort: the session is already gone; a storage failure must not
+        // turn a successful sign-out into an error response.
+        let _ = desktop::invalidate_handoffs(&state, &user_id).await;
+    }
+    response
 }
 
 fn truncate_utf8(value: &mut String, max_bytes: usize) {
@@ -839,10 +879,24 @@ fn app_inner(
     // One hub per app instance; the sweeper and the relay share it so expiries reach live controllers.
     let remote_hub = std::sync::Arc::new(remote::relay::Hub::new(relay_node_id()));
     remote::relay::spawn_background(pool.clone(), remote_hub.clone());
+    let sync_credentials =
+        sync_credentials::SyncCredentials::from_environment(|key| std::env::var(key).ok()).expect(
+            "configure REMAKE_SYNC_SIGNING_KEY_FILE with a valid owner-only PKCS#8 DER key",
+        );
     let social_limiter = context
         .secondary_storage
         .clone()
         .map(|storage| better_auth::rate_limit::RateLimiter::new(storage, "cloud:auth-social-get"));
+    let app_state = AppState {
+        peer: flags.peer,
+        auth: context,
+        pool,
+        object_storage,
+        step_up_oauth: flags.step_up_oauth,
+        temporary_log_approvals: flags.temporary_log_approvals,
+        remote: remote_hub,
+        sync_credentials,
+    };
     let router = Router::new()
         .route(
             "/api/v1/local-objects/quarantine/{publisher}/{upload}",
@@ -905,6 +959,12 @@ fn app_inner(
         .route(
             "/api/v1/admin/overview",
             get(admin::overview).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/admin/account-plan",
+            axum::routing::post(plans::set_plan)
+                .layer(axum::extract::DefaultBodyLimit::max(1024))
+                .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
             "/api/v1/admin/publishers",
@@ -1090,6 +1150,24 @@ fn app_inner(
                 .layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
+            "/api/v1/native/login-code/reserve",
+            axum::routing::post(login_code::reserve)
+                .layer(axum::extract::DefaultBodyLimit::max(1024))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/login-code/relay",
+            axum::routing::post(login_code::relay)
+                .layer(axum::extract::DefaultBodyLimit::max(1024))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/login-code/redeem",
+            axum::routing::post(login_code::redeem)
+                .layer(axum::extract::DefaultBodyLimit::max(1024))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
             "/api/v1/native/logout",
             axum::routing::post(native_logout)
                 .layer(axum::middleware::map_response(sync::no_store)),
@@ -1097,6 +1175,10 @@ fn app_inner(
         .route(
             "/api/v1/native/me",
             get(native_me).layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/plan",
+            get(plans::view).layer(axum::middleware::map_response(sync::no_store)),
         )
         .route(
             "/api/v1/native/sync/collections/{name}",
@@ -1120,6 +1202,21 @@ fn app_inner(
         .route(
             "/api/v1/native/sync/head",
             get(sync::native_head).layer(axum::middleware::map_response(sync::sync_response)),
+        )
+        .route(
+            "/api/v1/native/sync-credentials",
+            axum::routing::post(sync_credentials::issue)
+                .layer(axum::extract::DefaultBodyLimit::max(1024))
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/sync-credentials/revoke",
+            axum::routing::post(sync_credentials::revoke)
+                .layer(axum::middleware::map_response(sync::no_store)),
+        )
+        .route(
+            "/api/v1/native/sync-credentials/jwks.json",
+            get(sync_credentials::jwks),
         )
         .route(
             "/api/v1/step-up/password",
@@ -1152,16 +1249,13 @@ fn app_inner(
         )
         .merge(cloud_v2::routes())
         .merge(v3_routes())
-        .with_state(AppState {
-            peer: flags.peer,
-            auth: context,
-            pool,
-            object_storage,
-            step_up_oauth: flags.step_up_oauth,
-            temporary_log_approvals: flags.temporary_log_approvals,
-            remote: remote_hub,
-        })
-        .merge(auth_routes(auth));
+        .with_state(app_state.clone())
+        .merge(
+            auth_routes(auth).layer(axum::middleware::from_fn_with_state(
+                app_state,
+                sign_out_invalidates_handoffs,
+            )),
+        );
     let router = if flags.social_limit_enabled {
         router.layer(axum::middleware::from_fn_with_state(
             social_limiter,

@@ -5,7 +5,7 @@ use super::{
     verify_proof, CHALLENGE_TTL, MAX_LIST, PROTOCOL_VERSION,
 };
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -112,7 +112,7 @@ async fn check_enroll_binding(
 /// Issues a single-use challenge. The signed message is rebuilt server-side from
 /// the stored nonce and binding digest; the client only signs what it receives.
 pub async fn create_challenge(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,
@@ -162,7 +162,7 @@ pub async fn create_challenge(
 
 /// Registers a device after the caller proves possession of the new key.
 pub async fn enroll_device(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,
@@ -256,7 +256,7 @@ pub async fn enroll_device(
 }
 
 pub async fn list_devices(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, V3Error> {
@@ -285,7 +285,7 @@ fn device_view(row: &sqlx::postgres::PgRow) -> Value {
 
 /// Revokes a device and everything it authorizes, then disconnects its links.
 pub async fn revoke_device(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -339,7 +339,7 @@ pub async fn revoke_device(
 }
 
 pub async fn create_host(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     body: Bytes,
@@ -374,7 +374,7 @@ pub async fn create_host(
 }
 
 pub async fn list_hosts(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, V3Error> {
@@ -400,7 +400,7 @@ pub async fn list_hosts(
 }
 
 pub async fn get_host(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -425,7 +425,7 @@ pub async fn get_host(
 
 /// Updates a team with an expected revision. Disabling a team closes its links.
 pub async fn update_host(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path(host_id): Path<String>,

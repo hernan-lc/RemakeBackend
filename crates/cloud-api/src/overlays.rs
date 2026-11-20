@@ -346,12 +346,13 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await
     .map_err(db(&rid))?;
-    if count >= MAX_OVERLAYS_PER_OWNER
+    let limits = crate::plans::limits_for(&state.pool, owner).await;
+    if count >= limits.max_overlays
         || stored_bytes(&mut tx, owner).await.map_err(db(&rid))?
             + document_bytes(&mut tx, &request.document)
                 .await
                 .map_err(db(&rid))?
-            > MAX_BYTES_PER_OWNER
+            > limits.max_overlay_bytes
     {
         return Err(V3Error::new(&rid, Kind::QuotaExceeded));
     }
@@ -431,12 +432,13 @@ pub async fn revise(
     if current != request.expected_revision {
         return Err(V3Error::new(&rid, Kind::Conflict));
     }
-    if current >= MAX_REVISIONS_PER_OVERLAY
+    let limits = crate::plans::limits_for(&state.pool, owner).await;
+    if current >= limits.max_revisions_per_overlay
         || stored_bytes(&mut tx, owner).await.map_err(db(&rid))?
             + document_bytes(&mut tx, &request.document)
                 .await
                 .map_err(db(&rid))?
-            > MAX_BYTES_PER_OWNER
+            > limits.max_overlay_bytes
     {
         return Err(V3Error::new(&rid, Kind::QuotaExceeded));
     }

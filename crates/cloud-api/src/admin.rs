@@ -17,7 +17,10 @@ fn internal(_: sqlx::Error) -> StatusCode {
 
 /// Shared Cloud-admin gate. Route guards in the web app are UX only; every
 /// administrative call is authorized here against the live role table.
-async fn require_admin(tx: &mut Transaction<'_, Postgres>, user: &str) -> Result<(), StatusCode> {
+pub(crate) async fn require_admin(
+    tx: &mut Transaction<'_, Postgres>,
+    user: &str,
+) -> Result<(), StatusCode> {
     // Locking the role row serializes administrative reads with a concurrent
     // out-of-band role revocation.
     let role: Option<String> = sqlx::query_scalar(

@@ -11,7 +11,7 @@ use super::{
     MAX_COMMAND_ARGS_BYTES, MAX_COMMAND_LIFETIME_MS, MAX_RESULT_BYTES,
 };
 use crate::{
-    api_error::{Authenticated, Kind, RequestId, V3Error},
+    api_error::{Kind, RemoteUser, RequestId, V3Error},
     AppState,
 };
 use axum::{
@@ -1141,7 +1141,7 @@ async fn insert_receipt(
 
 /// Owners of a team, and the controller's own account, may read a receipt.
 pub async fn command_status(
-    Authenticated(user): Authenticated,
+    RemoteUser(user): RemoteUser,
     Extension(rid): Extension<RequestId>,
     State(state): State<AppState>,
     Path((host_id, command_id)): Path<(String, String)>,

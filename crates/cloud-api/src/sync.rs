@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 use better_auth::{
-    axum_integration::{AuthUser, NativeAuthUser},
+    axum_integration::AuthUser,
     rate_limit::{RateLimitPolicy, RateLimiter},
 };
 use serde::{Deserialize, Serialize};
@@ -171,7 +171,7 @@ pub async fn export(
 }
 
 pub async fn native_export(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncReadUser(user): crate::sync_credentials::SyncReadUser,
     state: State<AppState>,
 ) -> Result<Json<SyncExport>, StatusCode> {
     export(AuthUser(user), state).await
@@ -504,7 +504,7 @@ async fn mutate(
 // Native routes opt in explicitly to bearer-only authentication. These adapters
 // share authorization and storage logic with the cookie routes; they never read cookies.
 pub async fn native_list(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncReadUser(user): crate::sync_credentials::SyncReadUser,
     state: State<AppState>,
     path: Path<String>,
     query: Query<ListQuery>,
@@ -512,20 +512,20 @@ pub async fn native_list(
     list(AuthUser(user), state, path, query).await
 }
 pub async fn native_head(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncReadUser(user): crate::sync_credentials::SyncReadUser,
     state: State<AppState>,
 ) -> Result<Json<SyncHead>, StatusCode> {
     head(AuthUser(user), state).await
 }
 pub async fn native_changes(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncReadUser(user): crate::sync_credentials::SyncReadUser,
     state: State<AppState>,
     query: Query<ChangesQuery>,
 ) -> Result<Json<ChangesResponse>, StatusCode> {
     changes(AuthUser(user), state, query).await
 }
 pub async fn native_put(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncWriteUser(user): crate::sync_credentials::SyncWriteUser,
     state: State<AppState>,
     path: Path<(String, String)>,
     headers: HeaderMap,
@@ -534,7 +534,7 @@ pub async fn native_put(
     put(AuthUser(user), state, path, headers, body).await
 }
 pub async fn native_delete(
-    NativeAuthUser(user): NativeAuthUser,
+    crate::sync_credentials::SyncWriteUser(user): crate::sync_credentials::SyncWriteUser,
     state: State<AppState>,
     path: Path<(String, String)>,
     headers: HeaderMap,
