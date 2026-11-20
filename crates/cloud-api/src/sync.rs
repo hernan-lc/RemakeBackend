@@ -34,10 +34,21 @@ pub async fn sync_response(response: axum::response::Response) -> axum::response
     response
 }
 
-const COLLECTION: &str = "plugin-selections";
+const PLUGIN_SELECTIONS: &str = "plugin-selections";
+const AUTOMATION_PROFILES: &str = "automation-profiles";
+const ALLOWED_COLLECTIONS: [&str; 2] = [PLUGIN_SELECTIONS, AUTOMATION_PROFILES];
 const PAGE_LIMIT: i64 = 100;
 const MAX_RECORDS: i64 = 1000;
 const MAX_CHANGES: i64 = 10_000;
+// 1 MiB, not the previous 512 KiB.
+const MAX_AUTOMATION_PROFILE_VALUE_BYTES: usize = 1024 * 1024;
+const AUTOMATION_PROFILE_KEYS: [&str; 5] = [
+    "schemaVersion",
+    "origin",
+    "revision",
+    "snapshot",
+    "updatedAt",
+];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -58,18 +69,88 @@ pub(crate) fn valid_plugin_id(id: &str) -> bool {
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
         })
 }
-pub(crate) fn validate(name: &str, key: &str, value: &Value) -> bool {
-    if name != COLLECTION || !valid_plugin_id(key) {
-        return false;
+
+fn allowed_collection(name: &str) -> bool {
+    ALLOWED_COLLECTIONS.contains(&name)
+}
+
+/// The key rule is collection-specific: plugin-selections keeps its legacy
+/// dotted plugin id rule, automation-profiles holds exactly one `library` record.
+fn valid_collection_key(collection: &str, key: &str) -> bool {
+    match collection {
+        PLUGIN_SELECTIONS => valid_plugin_id(key),
+        AUTOMATION_PROFILES => valid_automation_profile_key(key),
+        _ => false,
     }
-    let Ok(input) = serde_json::from_value::<PluginSelection>(value.clone()) else {
+}
+
+fn valid_automation_profile_key(key: &str) -> bool {
+    key == "library"
+}
+
+fn serialized_len(value: &Value) -> usize {
+    serde_json::to_string(value).map_or(usize::MAX, |s| s.len())
+}
+
+fn valid_automation_profiles_value(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
         return false;
     };
-    let _ = input.enabled;
-    input.schema_version == 1
-        && input.plugin_id == key
-        && input.version.len() <= 64
-        && semver::Version::parse(&input.version).is_ok()
+    if object
+        .keys()
+        .any(|key| !AUTOMATION_PROFILE_KEYS.contains(&key.as_str()))
+    {
+        return false;
+    }
+    if !matches!(object.get("schemaVersion"), Some(Value::Number(n)) if n.as_u64() == Some(1)) {
+        return false;
+    }
+    if !object
+        .get("origin")
+        .and_then(Value::as_str)
+        .is_some_and(|origin| origin == "ui" || origin == "agent")
+    {
+        return false;
+    }
+    if !object
+        .get("revision")
+        .and_then(Value::as_str)
+        .is_some_and(|revision| !revision.is_empty() && revision.chars().count() <= 64)
+    {
+        return false;
+    }
+    if !object.get("snapshot").is_some_and(Value::is_object) {
+        return false;
+    }
+    if object
+        .get("updatedAt")
+        .is_some_and(|updated_at| !updated_at.is_number())
+    {
+        return false;
+    }
+    serialized_len(value) <= MAX_AUTOMATION_PROFILE_VALUE_BYTES
+}
+
+pub(crate) fn validate(name: &str, key: &str, value: &Value) -> bool {
+    match name {
+        PLUGIN_SELECTIONS => {
+            if !valid_plugin_id(key) {
+                return false;
+            }
+            let Ok(input) = serde_json::from_value::<PluginSelection>(value.clone()) else {
+                return false;
+            };
+            let _ = input.enabled;
+            input.schema_version == 1
+                && input.plugin_id == key
+                && input.version.len() <= 64
+                && semver::Version::parse(&input.version).is_ok()
+        }
+        AUTOMATION_PROFILES => {
+            valid_automation_profile_key(key) && valid_automation_profiles_value(value)
+        }
+        _ => false,
+    }
 }
 fn internal(_: sqlx::Error) -> StatusCode {
     tracing::error!("sync database operation failed");
@@ -113,8 +194,8 @@ fn record(row: sqlx::postgres::PgRow) -> Record {
 }
 
 fn valid_record(record: &Record, cursor: i64) -> bool {
-    record.collection == COLLECTION
-        && valid_plugin_id(&record.key)
+    allowed_collection(&record.collection)
+        && valid_collection_key(&record.collection, &record.key)
         && record.revision > 0
         && record.revision <= cursor
         && if record.deleted {
@@ -194,7 +275,12 @@ pub async fn list(
     Path(name): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ListResponse>, StatusCode> {
-    if name != COLLECTION || query.after.as_ref().is_some_and(|s| !valid_plugin_id(s)) {
+    if !allowed_collection(&name)
+        || query
+            .after
+            .as_ref()
+            .is_some_and(|s| !valid_collection_key(&name, s))
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     limit(&state, &user.user.id, "read", 300).await?;
@@ -393,7 +479,7 @@ pub async fn delete(
     Path((name, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
-    if name != COLLECTION || !valid_plugin_id(&key) {
+    if !allowed_collection(&name) || !valid_collection_key(&name, &key) {
         return Err(StatusCode::BAD_REQUEST);
     }
     let condition = precondition(&headers)?;
@@ -410,6 +496,9 @@ async fn mutate(
     value: Option<Value>,
     condition: Precondition,
 ) -> Result<(StatusCode, HeaderMap, Json<Record>), StatusCode> {
+    if !allowed_collection(&collection) || !valid_collection_key(&collection, &key) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     limit(state, user, "write", 120).await?;
     let mut tx: Transaction<'_, Postgres> = state.pool.begin().await.map_err(internal)?;
     sqlx::query("INSERT INTO cloud_sync_cursors (user_id) VALUES ($1) ON CONFLICT DO NOTHING")
@@ -545,6 +634,7 @@ pub async fn native_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn retained_feed_page_rejects_missing_middle_and_tail_without_overflow() {
         assert!(complete_feed_page(0, 3, [1, 2, 3], false));
@@ -556,14 +646,192 @@ mod tests {
         assert!(!complete_feed_page(i64::MAX, i64::MAX, [i64::MAX], false));
     }
 
+    fn plugin_value() -> Value {
+        serde_json::json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.2.3","enabled":true})
+    }
+
+    fn library_value() -> Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "origin": "ui",
+            "revision": "rev-1",
+            "snapshot": {"flows": [{"id": "a", "enabled": true}]},
+            "updatedAt": 1_767_225_600
+        })
+    }
+
     #[test]
     fn rejects_credentials_and_unreviewed_fields() {
-        let good = serde_json::json!({"schemaVersion":1,"pluginId":"acme.plugin","version":"1.2.3","enabled":true});
-        assert!(validate(COLLECTION, "acme.plugin", &good));
+        let good = plugin_value();
+        assert!(validate(PLUGIN_SELECTIONS, "acme.plugin", &good));
         let mut bad = good.clone();
         bad["token"] = serde_json::json!("secret");
-        assert!(!validate(COLLECTION, "acme.plugin", &bad));
+        assert!(!validate(PLUGIN_SELECTIONS, "acme.plugin", &bad));
         assert!(!validate("profiles", "acme.plugin", &good));
-        assert!(!validate(COLLECTION, "other.plugin", &good));
+        assert!(!validate(PLUGIN_SELECTIONS, "other.plugin", &good));
+        // The plugin-selections schema never accepts an automation-profiles value.
+        assert!(!validate(
+            PLUGIN_SELECTIONS,
+            "acme.plugin",
+            &library_value()
+        ));
+    }
+
+    #[test]
+    fn automation_profiles_accepts_valid_library_record() {
+        let value = library_value();
+        assert!(validate(AUTOMATION_PROFILES, "library", &value));
+
+        // Both allowed origins are accepted.
+        let mut agent = value.clone();
+        agent["origin"] = serde_json::json!("agent");
+        assert!(validate(AUTOMATION_PROFILES, "library", &agent));
+
+        // updatedAt is allowed but not required.
+        let mut no_updated = value.clone();
+        no_updated.as_object_mut().unwrap().remove("updatedAt");
+        assert!(validate(AUTOMATION_PROFILES, "library", &no_updated));
+    }
+
+    #[test]
+    fn automation_profiles_rejects_keys_other_than_library() {
+        let value = library_value();
+        for bad_key in [
+            "",
+            "Library",
+            "library ",
+            "library-x",
+            "default",
+            "acme.plugin",
+            "a.b-c_123",
+        ] {
+            assert!(!validate(AUTOMATION_PROFILES, bad_key, &value));
+        }
+    }
+
+    #[test]
+    fn automation_profiles_rejects_invalid_library_records() {
+        let value = library_value();
+
+        let mut wrong_version = value.clone();
+        wrong_version["schemaVersion"] = serde_json::json!(2);
+        assert!(!validate(AUTOMATION_PROFILES, "library", &wrong_version));
+        let mut string_version = value.clone();
+        string_version["schemaVersion"] = serde_json::json!("1");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &string_version));
+
+        let mut bad_origin = value.clone();
+        bad_origin["origin"] = serde_json::json!("cli");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &bad_origin));
+
+        let mut missing_snapshot = value.clone();
+        missing_snapshot.as_object_mut().unwrap().remove("snapshot");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &missing_snapshot));
+        let mut bad_snapshot = value.clone();
+        bad_snapshot["snapshot"] = serde_json::json!([]);
+        assert!(!validate(AUTOMATION_PROFILES, "library", &bad_snapshot));
+
+        let mut empty_revision = value.clone();
+        empty_revision["revision"] = serde_json::json!("");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &empty_revision));
+        let mut long_revision = value.clone();
+        long_revision["revision"] = serde_json::json!("x".repeat(65));
+        assert!(!validate(AUTOMATION_PROFILES, "library", &long_revision));
+        let mut non_string_revision = value.clone();
+        non_string_revision["revision"] = serde_json::json!(1);
+        assert!(!validate(
+            AUTOMATION_PROFILES,
+            "library",
+            &non_string_revision
+        ));
+
+        let mut string_updated = value.clone();
+        string_updated["updatedAt"] = serde_json::json!("1767225600");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &string_updated));
+
+        let mut unknown_key = value.clone();
+        unknown_key["token"] = serde_json::json!("secret");
+        assert!(!validate(AUTOMATION_PROFILES, "library", &unknown_key));
+
+        // The retired per-profile fields are no longer top-level keys.
+        for legacy_key in ["profile", "automations"] {
+            let mut legacy_value = value.clone();
+            legacy_value[legacy_key] = serde_json::json!({"name": "default"});
+            assert!(!validate(AUTOMATION_PROFILES, "library", &legacy_value));
+        }
+
+        // Values for the other collection are not accepted here.
+        assert!(!validate(AUTOMATION_PROFILES, "library", &plugin_value()));
+    }
+
+    #[test]
+    fn automation_profiles_rejects_value_over_one_mib() {
+        let mut oversize = library_value();
+        oversize["snapshot"] =
+            serde_json::json!({"blob": "x".repeat(MAX_AUTOMATION_PROFILE_VALUE_BYTES)});
+        assert!(!validate(AUTOMATION_PROFILES, "library", &oversize));
+
+        // A value above the old 512 KiB cap but below 1 MiB is now accepted.
+        let mut near_limit = library_value();
+        near_limit["snapshot"] =
+            serde_json::json!({"blob": "x".repeat(MAX_AUTOMATION_PROFILE_VALUE_BYTES - 1024)});
+        assert!(validate(AUTOMATION_PROFILES, "library", &near_limit));
+    }
+
+    #[test]
+    fn valid_record_accepts_both_allowed_collections() {
+        let plugin_record = Record {
+            collection: PLUGIN_SELECTIONS.into(),
+            key: "acme.plugin".into(),
+            revision: 1,
+            deleted: false,
+            value: Some(plugin_value()),
+        };
+        assert!(valid_record(&plugin_record, 1));
+
+        let library_record = Record {
+            collection: AUTOMATION_PROFILES.into(),
+            key: "library".into(),
+            revision: 1,
+            deleted: false,
+            value: Some(library_value()),
+        };
+        assert!(valid_record(&library_record, 1));
+
+        let deleted = Record {
+            collection: AUTOMATION_PROFILES.into(),
+            key: "library".into(),
+            revision: 2,
+            deleted: true,
+            value: None,
+        };
+        assert!(valid_record(&deleted, 2));
+
+        let wrong_key = Record {
+            collection: AUTOMATION_PROFILES.into(),
+            key: "default".into(),
+            revision: 1,
+            deleted: true,
+            value: None,
+        };
+        assert!(!valid_record(&wrong_key, 1));
+
+        let unknown = Record {
+            collection: "secrets".into(),
+            key: "default".into(),
+            revision: 1,
+            deleted: true,
+            value: None,
+        };
+        assert!(!valid_record(&unknown, 1));
+    }
+
+    #[test]
+    fn allowlist_rejects_unknown_collections() {
+        assert!(allowed_collection(PLUGIN_SELECTIONS));
+        assert!(allowed_collection(AUTOMATION_PROFILES));
+        assert!(!allowed_collection("secrets"));
+        assert!(!allowed_collection("profiles"));
+        assert!(!allowed_collection("plugin-selections "));
     }
 }

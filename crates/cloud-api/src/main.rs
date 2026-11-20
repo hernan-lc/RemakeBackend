@@ -1188,7 +1188,9 @@ fn app_inner(
             "/api/v1/native/sync/collections/{name}/{key}",
             axum::routing::put(sync::native_put)
                 .delete(sync::native_delete)
-                .layer(axum::extract::DefaultBodyLimit::max(4096))
+                // The automation library record is up to 1 MiB; the value rule in
+                // sync.rs enforces the exact cap. 64 KiB covers the JSON envelope.
+                .layer(axum::extract::DefaultBodyLimit::max(1_048_576 + 65_536))
                 .layer(axum::middleware::map_response(sync::sync_response)),
         )
         .route(
