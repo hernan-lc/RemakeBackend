@@ -29,7 +29,7 @@ enum RestoreMode {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestoreRequest {
     manifest: Value,
     #[serde(default = "default_mode")]
@@ -183,10 +183,15 @@ pub async fn restore(
     workspace::limit(&state, &user.user.id, "write", 30).await?;
     let owner = user.user.id.clone();
     let manifest = &request.manifest;
-    if manifest.get("schemaVersion").and_then(Value::as_u64) != Some(BACKUP_SCHEMA_VERSION as u64) {
+    if manifest
+        .get("schemaVersion")
+        .and_then(|value| value.as_u64())
+        != Some(BACKUP_SCHEMA_VERSION as u64)
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let legacy = array(manifest, "legacySync")?;
+    let legacy_snapshot = manifest.get("legacySync").ok_or(StatusCode::BAD_REQUEST)?;
+    let legacy = array(legacy_snapshot, "records")?;
     let workspace_snapshot = manifest
         .get("workspaceSync")
         .ok_or(StatusCode::BAD_REQUEST)?;
