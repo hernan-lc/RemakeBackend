@@ -33,6 +33,10 @@ const MAX_DEVICES: i64 = 8;
 const MAX_EMAIL: usize = 256;
 const MAX_NONCE: usize = 128;
 
+/// Columns selected by `load_user`: id, email, name, email_verified, image,
+/// additional_fields.
+type UserRow = (String, String, String, bool, Option<String>, Option<String>);
+
 fn hash(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -349,15 +353,14 @@ pub async fn relay(
 }
 
 async fn load_user(pool: &PgPool, user_id: &str) -> Result<AuthUserRecord, StatusCode> {
-    let row: Option<(String, String, String, bool, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT id, email, name, email_verified, image, additional_fields \
+    let row: Option<UserRow> = sqlx::query_as(
+        "SELECT id, email, name, email_verified, image, additional_fields \
              FROM \"user\" WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let (id, email, name, email_verified, image, additional) =
         row.ok_or(StatusCode::UNAUTHORIZED)?;
     let additional_fields = additional

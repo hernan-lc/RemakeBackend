@@ -162,7 +162,7 @@ async fn native_logout(
 /// after the user signs out in the dashboard.
 async fn sign_out_invalidates_handoffs(
     State(state): State<AppState>,
-    mut request: Request<axum::body::Body>,
+    request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
     let is_sign_out =

@@ -187,18 +187,37 @@ pub async fn restore(
         return Err(StatusCode::BAD_REQUEST);
     }
     let legacy = array(manifest, "legacySync")?;
-    let workspace_snapshot = manifest.get("workspaceSync").ok_or(StatusCode::BAD_REQUEST)?;
+    let workspace_snapshot = manifest
+        .get("workspaceSync")
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let workspace_records = array(workspace_snapshot, "records")?;
-    let library_items = array(manifest.get("library").ok_or(StatusCode::BAD_REQUEST)?, "items")?;
-    let media_items = array(manifest.get("mediaLibrary").ok_or(StatusCode::BAD_REQUEST)?, "documents")?;
-    let assets = array(manifest.get("assets").ok_or(StatusCode::BAD_REQUEST)?, "items")?;
-    if workspace_records.len() + legacy.len() + library_items.len() + media_items.len() + assets.len()
+    let library_items = array(
+        manifest.get("library").ok_or(StatusCode::BAD_REQUEST)?,
+        "items",
+    )?;
+    let media_items = array(
+        manifest
+            .get("mediaLibrary")
+            .ok_or(StatusCode::BAD_REQUEST)?,
+        "documents",
+    )?;
+    let assets = array(
+        manifest.get("assets").ok_or(StatusCode::BAD_REQUEST)?,
+        "items",
+    )?;
+    if workspace_records.len()
+        + legacy.len()
+        + library_items.len()
+        + media_items.len()
+        + assets.len()
         > MAX_BACKUP_RECORDS as usize * 2
     {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
     let limits = crate::plans::limits_for(&state.pool, &owner).await;
-    if assets.len() as i64 > limits.max_assets || workspace_records.len() as i64 > limits.max_records {
+    if assets.len() as i64 > limits.max_assets
+        || workspace_records.len() as i64 > limits.max_records
+    {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -235,12 +254,25 @@ pub async fn restore(
             .map_err(db)?;
     }
     for record in workspace_records {
-        let collection = record.get("collection").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let key = record.get("key").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let revision = record.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
-        let deleted = record.get("deleted").and_then(Value::as_bool).ok_or(StatusCode::BAD_REQUEST)?;
+        let collection = record
+            .get("collection")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let key = record
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let revision = record
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let deleted = record
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         let value = record.get("value").cloned();
-        if !portable::validate(collection, key, value.as_ref().unwrap_or(&Value::Null)) && !deleted {
+        if !portable::validate(collection, key, value.as_ref().unwrap_or(&Value::Null)) && !deleted
+        {
             return Err(StatusCode::BAD_REQUEST);
         }
         sqlx::query("INSERT INTO cloud_workspace_records(user_id,collection,key,revision,value,deleted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,collection,key) DO UPDATE SET revision=EXCLUDED.revision,value=EXCLUDED.value,deleted=EXCLUDED.deleted")
@@ -248,35 +280,81 @@ pub async fn restore(
             .execute(&mut *tx).await.map_err(db)?;
     }
     for record in legacy {
-        let collection = record.get("collection").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let key = record.get("key").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let revision = record.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
-        let deleted = record.get("deleted").and_then(Value::as_bool).ok_or(StatusCode::BAD_REQUEST)?;
+        let collection = record
+            .get("collection")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let key = record
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let revision = record
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let deleted = record
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         let value = record.get("value").cloned();
         sqlx::query("INSERT INTO cloud_sync_records(user_id,collection,key,revision,value,deleted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,collection,key) DO UPDATE SET revision=EXCLUDED.revision,value=EXCLUDED.value,deleted=EXCLUDED.deleted")
             .bind(&owner).bind(collection).bind(key).bind(revision).bind(value).bind(deleted)
             .execute(&mut *tx).await.map_err(db)?;
     }
-    let cursor = workspace_snapshot.get("cursor").and_then(Value::as_i64).unwrap_or(0);
+    let cursor = workspace_snapshot
+        .get("cursor")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     sqlx::query("UPDATE cloud_workspace_cursors SET cursor=GREATEST(cursor,$2) WHERE user_id=$1")
-        .bind(&owner).bind(cursor).execute(&mut *tx).await.map_err(db)?;
+        .bind(&owner)
+        .bind(cursor)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
 
     for item in library_items {
-        let id = item.get("id").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         let id = uuid::Uuid::parse_str(id).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let kind = item.get("kind").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let slug = item.get("slug").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let revision = item.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
+        let kind = item
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let slug = item
+            .get("slug")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let revision = item
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING")
             .bind(id).bind(&owner).bind(kind).bind(slug).bind(revision)
             .execute(&mut *tx).await.map_err(db)?;
         if let Some(versions) = item.get("versions").and_then(Value::as_array) {
             for version in versions {
-                let v_revision = version.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
-                let title = version.get("title").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-                let document = version.get("document").cloned().ok_or(StatusCode::BAD_REQUEST)?;
-                let sha256 = version.get("sha256").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-                let status = version.get("status").and_then(Value::as_str).unwrap_or("draft");
+                let v_revision = version
+                    .get("revision")
+                    .and_then(Value::as_i64)
+                    .ok_or(StatusCode::BAD_REQUEST)?;
+                let title = version
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .ok_or(StatusCode::BAD_REQUEST)?;
+                let document = version
+                    .get("document")
+                    .cloned()
+                    .ok_or(StatusCode::BAD_REQUEST)?;
+                let sha256 = version
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .ok_or(StatusCode::BAD_REQUEST)?;
+                let status = version
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("draft");
                 sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(document_id,revision) DO NOTHING")
                     .bind(id).bind(v_revision).bind(title).bind(document).bind(sha256).bind(status)
                     .execute(&mut *tx).await.map_err(db)?;
@@ -284,34 +362,84 @@ pub async fn restore(
         }
     }
     for item in media_items {
-        let id = uuid::Uuid::parse_str(item.get("id").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let kind = item.get("kind").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let slug = item.get("slug").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let revision = item.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
+        let id = uuid::Uuid::parse_str(
+            item.get("id")
+                .and_then(Value::as_str)
+                .ok_or(StatusCode::BAD_REQUEST)?,
+        )
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let kind = item
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let slug = item
+            .get("slug")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let revision = item
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING")
             .bind(id).bind(&owner).bind(kind).bind(slug).bind(revision)
             .execute(&mut *tx).await.map_err(db)?;
         let version = item.get("version").ok_or(StatusCode::BAD_REQUEST)?;
-        let v_revision = version.get("revision").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)?;
-        let title = version.get("title").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let document = version.get("document").cloned().ok_or(StatusCode::BAD_REQUEST)?;
-        let sha256 = version.get("sha256").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
+        let v_revision = version
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let title = version
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let document = version
+            .get("document")
+            .cloned()
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let sha256 = version
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         sqlx::query("INSERT INTO cloud_library_versions(document_id,revision,title,document,sha256,status) VALUES($1,$2,$3,$4,$5,'draft') ON CONFLICT(document_id,revision) DO NOTHING")
             .bind(id).bind(v_revision).bind(title).bind(document).bind(sha256)
             .execute(&mut *tx).await.map_err(db)?;
     }
     for item in assets {
-        let id = uuid::Uuid::parse_str(item.get("id").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let encoded = item.get("contentBase64").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let content = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let sha256 = item.get("sha256").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
+        let id = uuid::Uuid::parse_str(
+            item.get("id")
+                .and_then(Value::as_str)
+                .ok_or(StatusCode::BAD_REQUEST)?,
+        )
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let encoded = item
+            .get("contentBase64")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let sha256 = item
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
         let digest = hex::encode(Sha256::digest(&content));
-        if digest != sha256 || content.len() != item.get("size").and_then(Value::as_i64).unwrap_or(-1) as usize {
+        if digest != sha256
+            || content.len() != item.get("size").and_then(Value::as_i64).unwrap_or(-1) as usize
+        {
             return Err(StatusCode::BAD_REQUEST);
         }
-        let mime = item.get("mime").and_then(Value::as_str).ok_or(StatusCode::BAD_REQUEST)?;
-        let width = item.get("width").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)? as i32;
-        let height = item.get("height").and_then(Value::as_i64).ok_or(StatusCode::BAD_REQUEST)? as i32;
+        let mime = item
+            .get("mime")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        let width = item
+            .get("width")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)? as i32;
+        let height = item
+            .get("height")
+            .and_then(Value::as_i64)
+            .ok_or(StatusCode::BAD_REQUEST)? as i32;
         let size = content.len() as i32;
         let label = item.get("label").and_then(Value::as_str);
         sqlx::query("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content,label) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING")

@@ -12,8 +12,6 @@ use sqlx::{PgPool, Row};
 
 pub const MAX_RECORDS: i64 = 1000;
 pub const MAX_BYTES: i64 = 8 * 1024 * 1024;
-const MAX_CHANGES: i64 = 10_000;
-const MAX_CHANGE_BYTES: i64 = 16 * 1024 * 1024;
 const PAGE: i64 = 50;
 const WRITE_EPOCH_HEADER: &str = "x-workspace-write-epoch";
 

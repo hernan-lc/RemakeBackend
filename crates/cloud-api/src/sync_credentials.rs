@@ -57,6 +57,10 @@ pub const SCOPE_REMOTE: &str = "remote.control";
 const KEY_ID: &str = "sync-v1";
 const ALLOWED_SCOPES: [&str; 3] = [SCOPE_READ, SCOPE_WRITE, SCOPE_REMOTE];
 
+/// Columns selected by `load_principal`: id, email, name, email_verified,
+/// image, additional_fields.
+type UserRow = (String, String, String, bool, Option<String>, Option<String>);
+
 fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -276,15 +280,14 @@ async fn load_principal(
     user_id: &str,
     session: Session,
 ) -> Result<AuthPrincipal, StatusCode> {
-    let row: Option<(String, String, String, bool, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT id, email, name, email_verified, image, additional_fields \
+    let row: Option<UserRow> = sqlx::query_as(
+        "SELECT id, email, name, email_verified, image, additional_fields \
              FROM \"user\" WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let (id, email, name, email_verified, image, additional) =
         row.ok_or(StatusCode::UNAUTHORIZED)?;
     let additional_fields = additional

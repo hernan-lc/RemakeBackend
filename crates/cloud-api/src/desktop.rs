@@ -65,10 +65,6 @@ pub(crate) async fn generation_of(state: &AppState, user_id: &str) -> Result<i64
     current_generation(state, user_id).await
 }
 
-pub(crate) fn generation_key(user_id: &str) -> String {
-    handoff_generation_key(user_id)
-}
-
 /// Storage-level helper, kept separate so the generation semantics can be
 /// tested without a database or an AppState.
 async fn bump_generation(
