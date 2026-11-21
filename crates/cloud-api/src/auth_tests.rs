@@ -1538,7 +1538,12 @@ async fn oidc_callback_rejects_missing_forged_and_expired_claims() {
         } else {
             TEST_KEY
         };
-        let id_token = encode(&header, &claims, &EncodingKey::from_secret(signing_key)).unwrap();
+        let id_token = encode(
+            &header,
+            &claims,
+            &EncodingKey::from_secret(signing_key).unwrap(),
+        )
+        .unwrap();
         Json(json!({"access_token":"fixture-token", "token_type":"Bearer", "id_token":id_token}))
     }
     async fn userinfo() -> Json<serde_json::Value> {
