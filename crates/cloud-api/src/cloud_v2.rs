@@ -97,7 +97,9 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/v2/me/backups",
-            get(crate::backup::backup_list).post(crate::backup::backup_create_named),
+            get(crate::backup::backup_list)
+                .post(crate::backup::backup_create_named)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route(
             "/api/v2/me/backups/{id}",

@@ -485,6 +485,54 @@ pub async fn restore(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateBackupRequest {
     name: String,
+    /// A manifest exported on the client. When absent the server snapshots the
+    /// account's current cloud data instead.
+    #[serde(default)]
+    manifest: Option<Value>,
+}
+
+/// Keep only the sections a restore understands and check every asset digest,
+/// so an uploaded file cannot smuggle arbitrary data into storage or fail
+/// later, at restore time.
+fn normalize_uploaded(manifest: &Value) -> Result<Value, StatusCode> {
+    let object = manifest.as_object().ok_or(StatusCode::BAD_REQUEST)?;
+    let assets = array(
+        manifest.get("assets").ok_or(StatusCode::BAD_REQUEST)?,
+        "items",
+    )?;
+    for item in assets {
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(
+                item.get("contentBase64")
+                    .and_then(Value::as_str)
+                    .ok_or(StatusCode::BAD_REQUEST)?,
+            )
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let sha256 = item
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        if hex::encode(Sha256::digest(&content)) != sha256
+            || item.get("size").and_then(Value::as_u64) != Some(content.len() as u64)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let mut kept = serde_json::Map::new();
+    for key in [
+        "schemaVersion",
+        "createdAt",
+        "legacySync",
+        "workspaceSync",
+        "library",
+        "mediaLibrary",
+        "assets",
+    ] {
+        if let Some(value) = object.get(key) {
+            kept.insert(key.to_owned(), value.clone());
+        }
+    }
+    Ok(Value::Object(kept))
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,7 +576,8 @@ pub async fn backup_list(
     ))
 }
 
-/// Build a manifest, store it on the server and return its metadata.
+/// Store a backup under a name and return its metadata. The manifest is either
+/// uploaded by the client (a local file) or snapshotted from the account.
 pub async fn backup_create_named(
     DualUser(user): DualUser,
     State(state): State<AppState>,
@@ -539,9 +588,23 @@ pub async fn backup_create_named(
     if name.is_empty() || name.chars().count() > 120 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let manifest = build_manifest(&state.pool, &user.user.id).await?;
-    let bytes = serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let limits = crate::plans::limits_for(&state.pool, &user.user.id).await;
+    let manifest = match input.manifest.as_ref() {
+        Some(uploaded) => {
+            // Validates the schema version, structure and plan record limits.
+            apply_restore(
+                &state.pool,
+                &user.user.id,
+                uploaded,
+                RestoreMode::Replace,
+                true,
+            )
+            .await?;
+            normalize_uploaded(uploaded)?
+        }
+        None => build_manifest(&state.pool, &user.user.id).await?,
+    };
+    let bytes = serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let existing: i64 =
         sqlx::query_scalar("SELECT count(*) FROM cloud_backups WHERE owner_user_id=$1")
             .bind(&user.user.id)

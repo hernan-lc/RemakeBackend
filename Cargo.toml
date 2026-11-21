@@ -2,6 +2,23 @@
 resolver = "2"
 members = ["crates/cloud-api", "crates/cloud-contracts", "crates/cloud-verifier", "crates/cloud-client", "crates/cloud-storage", "crates/cloud-snapshot", "crates/devtools-core", "crates/devtools", "crates/cloud-peer-relay"]
 
+# Release binaries: optimize for size (the service is I/O bound), fat LTO with
+# one codegen unit so unused dependency code is dropped, and no symbols.
+# Unwinding stays on so a panicking request handler cannot take the process
+# down. Password hashing and digests stay at full speed.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# Debug info for dependencies is the bulk of target/ (12 GB) and is never
+# stepped through; keep line tables for our own crates only.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
 # Password hashing (better-auth uses scrypt with a 32 MiB work factor) dominates
 # the database test suite when compiled without optimizations: every sign-up
 # and sign-in costs seconds in a debug build. Optimizing only these crates keeps
@@ -18,4 +35,17 @@ opt-level = 3
 [profile.dev.package.hmac]
 opt-level = 3
 [profile.dev.package.password-hash]
+opt-level = 3
+
+[profile.release.package.scrypt]
+opt-level = 3
+[profile.release.package.salsa20]
+opt-level = 3
+[profile.release.package.pbkdf2]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.hmac]
+opt-level = 3
+[profile.release.package.password-hash]
 opt-level = 3

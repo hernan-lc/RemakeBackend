@@ -78,12 +78,12 @@ pub fn published_providers() -> Vec<&'static str> {
 }
 
 fn seal(key: &[u8; 32], connection: Uuid, plaintext: &[u8]) -> Vec<u8> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::try_from(key.as_slice()).unwrap());
     let nonce_bytes: [u8; 12] = rand::random();
     let aad = connection.as_bytes().to_vec();
     let ciphertext = cipher
         .encrypt(
-            Nonce::from_slice(&nonce_bytes),
+            &Nonce::try_from(nonce_bytes.as_slice()).unwrap(),
             Payload {
                 msg: plaintext,
                 aad: &aad,
@@ -100,11 +100,11 @@ fn open(key: &[u8; 32], connection: Uuid, sealed: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let (nonce, ciphertext) = sealed.split_at(12);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::try_from(key.as_slice()).unwrap());
     let aad = connection.as_bytes().to_vec();
     cipher
         .decrypt(
-            Nonce::from_slice(nonce),
+            &Nonce::try_from(nonce).unwrap(),
             Payload {
                 msg: ciphertext,
                 aad: &aad,
@@ -334,7 +334,7 @@ async fn deliver(
         .strip_prefix("sha256=")
         .and_then(|hex_value| hex::decode(hex_value).ok())
         .ok_or_else(|| V3Error::new(&rid, Kind::Unauthorized))?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret)
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(&secret)
         .map_err(|_| V3Error::new(&rid, Kind::TemporaryFailure))?;
     mac.update(timestamp.as_bytes());
     mac.update(b".");

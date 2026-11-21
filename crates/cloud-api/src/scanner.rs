@@ -63,7 +63,7 @@ impl ClamAv {
             socket.write_all(&(n as u32).to_be_bytes()).await.ok()?;
             socket.write_all(&buf[..n]).await.ok()?;
         }
-        if count != expected_size || format!("{:x}", hash.finalize()) != expected_digest {
+        if count != expected_size || hex::encode(hash.finalize().as_slice()) != expected_digest {
             return None;
         }
         socket.write_all(&0_u32.to_be_bytes()).await.ok()?;
@@ -145,7 +145,7 @@ mod tests {
             ),
         ] {
             std::fs::write(&path, data).unwrap();
-            let digest = format!("{:x}", Sha256::digest(data));
+            let digest = hex::encode(Sha256::digest(data).as_slice());
             assert_eq!(
                 scanner.scan(&path, data.len() as u64, &digest).await,
                 expected
@@ -171,7 +171,7 @@ mod tests {
             let data = archive.finish().unwrap().into_inner();
             assert!(!data.windows(payload.len()).any(|window| window == payload));
             std::fs::write(&path, &data).unwrap();
-            let digest = format!("{:x}", Sha256::digest(&data));
+            let digest = hex::encode(Sha256::digest(&data).as_slice());
             assert_eq!(
                 scanner.scan(&path, data.len() as u64, &digest).await,
                 expected
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(paths.len(), 9, "expected exactly nine staging packages");
         for path in paths {
             let bytes = std::fs::read(&path).unwrap();
-            let digest = format!("{:x}", Sha256::digest(&bytes));
+            let digest = hex::encode(Sha256::digest(&bytes).as_slice());
             assert_eq!(
                 scanner.scan(&path, bytes.len() as u64, &digest).await,
                 Scan::Clean,
@@ -225,7 +225,7 @@ mod tests {
             let path = dir.path().join(format!("{id}.plugin"));
             std::fs::write(&path, bytes.as_ref()).unwrap();
             let size = bytes.len() as u64;
-            let digest = format!("{:x}", Sha256::digest(bytes.as_ref()));
+            let digest = hex::encode(Sha256::digest(bytes.as_ref()).as_slice());
             let (scanner, server) = fixture(b"stream: OK\0", bytes.clone()).await;
             assert_eq!(
                 scanner.scan(&path, size, &digest).await,
@@ -245,7 +245,7 @@ mod tests {
         let path = dir.path().join("artifact");
         let bytes = Arc::new(vec![42u8; 70000]);
         std::fs::write(&path, bytes.as_ref()).unwrap();
-        let digest = format!("{:x}", Sha256::digest(bytes.as_ref()));
+        let digest = hex::encode(Sha256::digest(bytes.as_ref()).as_slice());
         for (reply, expected) in [
             (b"stream: OK\0".as_slice(), Scan::Clean),
             (b"stream: test FOUND\0", Scan::Detected),
@@ -290,7 +290,7 @@ mod tests {
         });
         assert_eq!(
             scanner
-                .scan(&path, 5, &format!("{:x}", Sha256::digest(b"hello")))
+                .scan(&path, 5, &hex::encode(Sha256::digest(b"hello").as_slice()))
                 .await,
             Scan::Unavailable
         );

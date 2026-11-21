@@ -15,8 +15,8 @@ cloud-storage = { path = "../cloud-storage" }
 cloud-verifier = { path = "../cloud-verifier" }
 cloud-snapshot = { path = "../cloud-snapshot" }
 tempfile = "3"
-base64 = "0.22"
-sha2 = "0.10"
+base64 = "0.23"
+sha2 = "0.11"
 tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
@@ -24,10 +24,10 @@ axum = { version = "0.8", features = ["ws"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 rand = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }
-jsonwebtoken = "9"
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
-better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "d4bb1ff17400d424813fc0bd8800204faf088238", default-features = false, features = ["axum", "sqlx"] }
-better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "d4bb1ff17400d424813fc0bd8800204faf088238" }
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "aadd81d630aed4bd950d4e5581a5efbb304ca3e7", default-features = false, features = ["axum", "sqlx"] }
+better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "aadd81d630aed4bd950d4e5581a5efbb304ca3e7" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -38,22 +38,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 ipnet = "2"
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.7", features = ["fs"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 hex = "0.4"
-hmac = "0.12"
-aes-gcm = "0.10"
+hmac = "0.13"
+aes-gcm = "0.11"
 percent-encoding = "2"
 
 [dev-dependencies]
-iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring", "test-utils"] }
+iroh = { version = "=1.5.0", default-features = false, features = ["tls-ring", "test-utils"] }
 cloud-peer-relay = { path = "../cloud-peer-relay" }
-tokio-tungstenite = "0.28"
-zip = { version = "9.1.2", default-features = false, features = ["deflate"] }
+tokio-tungstenite = "0.30"
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 cloud-client = { path = "../cloud-client" }
-jsonwebtoken = "9"
-better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "d4bb1ff17400d424813fc0bd8800204faf088238", default-features = false, features = ["axum", "sqlx", "test-utils"] }
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "aadd81d630aed4bd950d4e5581a5efbb304ca3e7", default-features = false, features = ["axum", "sqlx", "test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tiktools-plugin-installer = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
-semver = "1.0.28"

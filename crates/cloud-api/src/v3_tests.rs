@@ -1501,7 +1501,7 @@ async fn deliver(
     secret: &str,
 ) -> (StatusCode, Value) {
     use hmac::{Hmac, Mac};
-    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(secret.as_bytes()).unwrap();
+    let mut mac = <Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(timestamp.to_string().as_bytes());
     mac.update(b".");
     mac.update(body);

@@ -3265,3 +3265,62 @@ async fn named_backups_are_listed_and_counted_in_plan_usage() {
     assert_eq!(usage.backups, 1);
     assert!(usage.backup_bytes > 0);
 }
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn uploaded_manifest_is_stored_validated_and_stripped() {
+    let f = fixture().await;
+    let user = &f.users[0].id;
+    let response = request(&f, Some(0), "GET", "/api/v2/me/backup", Value::Null, None).await;
+    let mut manifest = json_body(response).await;
+    manifest["unexpected"] = json!("dropped");
+
+    let stored = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/me/backups",
+        json!({"name": "From my PC", "manifest": manifest}),
+        None,
+    )
+    .await;
+    assert_eq!(stored.status(), StatusCode::OK);
+    let id = json_body(stored).await["id"].as_str().unwrap().to_owned();
+
+    let fetched = request(
+        &f,
+        Some(0),
+        "GET",
+        &format!("/api/v2/me/backups/{id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let fetched = json_body(fetched).await;
+    assert_eq!(fetched["schemaVersion"], 1);
+    assert!(fetched.get("unexpected").is_none());
+
+    // A file that is not a backup, or has a corrupted asset, is rejected.
+    for bad in [
+        json!({"schemaVersion": 2}),
+        json!({"schemaVersion": 1, "legacySync": {"records": []}}),
+    ] {
+        let rejected = request(
+            &f,
+            Some(0),
+            "POST",
+            "/api/v2/me/backups",
+            json!({"name": "Bad", "manifest": bad}),
+            None,
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        crate::plans::usage_for(&f.pool, user)
+            .await
+            .unwrap()
+            .backups,
+        1
+    );
+}
