@@ -2,7 +2,7 @@
 //!
 //! One library behind the `remake-dev` CLI, usable from tests and other tools:
 //!
-//! ```ignore
+//! ```text
 //! let tools = DevEnvironment::load()?;
 //! tools.database().up().await?;                 // reuses pgrust; never compiles it
 //! let run = tools.tests().run_integration().await?;
