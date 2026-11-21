@@ -139,7 +139,7 @@ jobs:
           cargo test --locked -p tiktools-plugin-registry tampered_documents_and_unknown_roots_are_rejected
           cargo test --locked -p tiktools-plugin-devkit scaffold_pack_sign_and_publish_to_a_static_registry
       - name: Set up Node for the fixture scripts
-        uses: actions/setup-node
+        uses: actions/setup-node@v6
         with:
           node-version: '22.23.4'
       - name: Build disposable registry fixture
