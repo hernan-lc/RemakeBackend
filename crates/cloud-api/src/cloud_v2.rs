@@ -95,6 +95,18 @@ pub fn routes() -> Router<AppState> {
             post(crate::backup::restore)
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        .route(
+            "/api/v2/me/backups",
+            get(crate::backup::backup_list).post(crate::backup::backup_create_named),
+        )
+        .route(
+            "/api/v2/me/backups/{id}",
+            get(crate::backup::backup_get).delete(crate::backup::backup_delete),
+        )
+        .route(
+            "/api/v2/me/backups/{id}/restore",
+            post(crate::backup::backup_restore_stored),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(
             portable::MAX_DOCUMENT_BYTES + 1024,
         ))

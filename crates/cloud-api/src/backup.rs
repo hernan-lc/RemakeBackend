@@ -5,7 +5,11 @@
 //! caller's plan and always reported as a summary before it is applied.
 
 use crate::{dual_auth::DualUser, library, portable, workspace, AppState};
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,14 +53,9 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, StatusCode> 
         .ok_or(StatusCode::BAD_REQUEST)
 }
 
-/// Build a portable, versioned manifest for the authenticated user.
-pub async fn backup(
-    DualUser(user): DualUser,
-    State(state): State<AppState>,
-) -> Result<Json<Value>, StatusCode> {
-    workspace::limit(&state, &user.user.id, "export", 10).await?;
-    let owner = &user.user.id;
-    let mut tx = state.pool.begin().await.map_err(db)?;
+/// Build a portable, versioned manifest for one account.
+async fn build_manifest(pool: &sqlx::PgPool, owner: &str) -> Result<Value, StatusCode> {
+    let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await
@@ -86,8 +85,8 @@ pub async fn backup(
         })
         .collect();
 
-    let workspace = workspace::snapshot(&state.pool, owner).await?;
-    let library = library::export(&state.pool, owner).await?;
+    let workspace = workspace::snapshot(pool, owner).await?;
+    let library = library::export(pool, owner).await?;
 
     // Overlays and packages are stored in the library tables but excluded from
     // library::export, so back them up explicitly with all their versions.
@@ -170,19 +169,27 @@ pub async fn backup(
     {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    Ok(Json(manifest))
+    Ok(manifest)
+}
+
+/// Build and return a manifest without storing it on the server.
+pub async fn backup(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "export", 10).await?;
+    Ok(Json(build_manifest(&state.pool, &user.user.id).await?))
 }
 
 /// Report (and optionally apply) a restore. `dryRun` powers the one-click
 /// summary shown on a fresh device; `replace` skips conflict review there.
-pub async fn restore(
-    DualUser(user): DualUser,
-    State(state): State<AppState>,
-    Json(request): Json<RestoreRequest>,
-) -> Result<Json<Value>, StatusCode> {
-    workspace::limit(&state, &user.user.id, "write", 30).await?;
-    let owner = user.user.id.clone();
-    let manifest = &request.manifest;
+async fn apply_restore(
+    pool: &sqlx::PgPool,
+    owner: &str,
+    manifest: &Value,
+    mode: RestoreMode,
+    dry_run: bool,
+) -> Result<Value, StatusCode> {
     if manifest
         .get("schemaVersion")
         .and_then(|value| value.as_u64())
@@ -219,7 +226,7 @@ pub async fn restore(
     {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    let limits = crate::plans::limits_for(&state.pool, &owner).await;
+    let limits = crate::plans::limits_for(pool, owner).await;
     if assets.len() as i64 > limits.max_assets
         || workspace_records.len() as i64 > limits.max_records
     {
@@ -227,33 +234,33 @@ pub async fn restore(
     }
 
     let summary = json!({
-        "mode": request.mode,
-        "dryRun": request.dry_run,
+        "mode": mode,
+        "dryRun": dry_run,
         "legacySync": legacy.len(),
         "workspaceSync": workspace_records.len(),
         "library": library_items.len(),
         "mediaLibrary": media_items.len(),
         "assets": assets.len(),
-        "applied": !request.dry_run,
+        "applied": !dry_run,
     });
-    if request.dry_run {
-        return Ok(Json(summary));
+    if dry_run {
+        return Ok(summary);
     }
 
-    let mut tx = state.pool.begin().await.map_err(db)?;
+    let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("INSERT INTO cloud_workspace_cursors(user_id) VALUES($1) ON CONFLICT DO NOTHING")
-        .bind(&owner)
+        .bind(owner)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    if request.mode == RestoreMode::Replace {
+    if mode == RestoreMode::Replace {
         sqlx::query("DELETE FROM cloud_workspace_records WHERE user_id=$1")
-            .bind(&owner)
+            .bind(owner)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
         sqlx::query("DELETE FROM cloud_sync_records WHERE user_id=$1")
-            .bind(&owner)
+            .bind(owner)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -281,7 +288,7 @@ pub async fn restore(
             return Err(StatusCode::BAD_REQUEST);
         }
         sqlx::query("INSERT INTO cloud_workspace_records(user_id,collection,key,revision,value,deleted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,collection,key) DO UPDATE SET revision=EXCLUDED.revision,value=EXCLUDED.value,deleted=EXCLUDED.deleted")
-            .bind(&owner).bind(collection).bind(key).bind(revision).bind(value).bind(deleted)
+            .bind(owner).bind(collection).bind(key).bind(revision).bind(value).bind(deleted)
             .execute(&mut *tx).await.map_err(db)?;
     }
     for record in legacy {
@@ -303,7 +310,7 @@ pub async fn restore(
             .ok_or(StatusCode::BAD_REQUEST)?;
         let value = record.get("value").cloned();
         sqlx::query("INSERT INTO cloud_sync_records(user_id,collection,key,revision,value,deleted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id,collection,key) DO UPDATE SET revision=EXCLUDED.revision,value=EXCLUDED.value,deleted=EXCLUDED.deleted")
-            .bind(&owner).bind(collection).bind(key).bind(revision).bind(value).bind(deleted)
+            .bind(owner).bind(collection).bind(key).bind(revision).bind(value).bind(deleted)
             .execute(&mut *tx).await.map_err(db)?;
     }
     let cursor = workspace_snapshot
@@ -311,7 +318,7 @@ pub async fn restore(
         .and_then(Value::as_i64)
         .unwrap_or(0);
     sqlx::query("UPDATE cloud_workspace_cursors SET cursor=GREATEST(cursor,$2) WHERE user_id=$1")
-        .bind(&owner)
+        .bind(owner)
         .bind(cursor)
         .execute(&mut *tx)
         .await
@@ -336,7 +343,7 @@ pub async fn restore(
             .and_then(Value::as_i64)
             .ok_or(StatusCode::BAD_REQUEST)?;
         sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING")
-            .bind(id).bind(&owner).bind(kind).bind(slug).bind(revision)
+            .bind(id).bind(owner).bind(kind).bind(slug).bind(revision)
             .execute(&mut *tx).await.map_err(db)?;
         if let Some(versions) = item.get("versions").and_then(Value::as_array) {
             for version in versions {
@@ -386,7 +393,7 @@ pub async fn restore(
             .and_then(Value::as_i64)
             .ok_or(StatusCode::BAD_REQUEST)?;
         sqlx::query("INSERT INTO cloud_library_documents(id,owner_user_id,kind,slug,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING")
-            .bind(id).bind(&owner).bind(kind).bind(slug).bind(revision)
+            .bind(id).bind(owner).bind(kind).bind(slug).bind(revision)
             .execute(&mut *tx).await.map_err(db)?;
         let version = item.get("version").ok_or(StatusCode::BAD_REQUEST)?;
         let v_revision = version
@@ -448,9 +455,195 @@ pub async fn restore(
         let size = content.len() as i32;
         let label = item.get("label").and_then(Value::as_str);
         sqlx::query("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content,label) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING")
-            .bind(id).bind(&owner).bind(sha256).bind(mime).bind(width).bind(height).bind(size).bind(content).bind(label)
+            .bind(id).bind(owner).bind(sha256).bind(mime).bind(width).bind(height).bind(size).bind(content).bind(label)
             .execute(&mut *tx).await.map_err(db)?;
     }
     tx.commit().await.map_err(db)?;
-    Ok(Json(summary))
+    Ok(summary)
+}
+
+/// Public restore entry point: accepts an uploaded manifest.
+pub async fn restore(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Json(request): Json<RestoreRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "write", 30).await?;
+    Ok(Json(
+        apply_restore(
+            &state.pool,
+            &user.user.id,
+            &request.manifest,
+            request.mode,
+            request.dry_run,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateBackupRequest {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StoredRestoreRequest {
+    #[serde(default = "default_mode")]
+    mode: RestoreMode,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn backup_metadata(row: &sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<uuid::Uuid, _>("id").to_string(),
+        "name": row.get::<String, _>("name"),
+        "createdAt": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+        "sizeBytes": row.get::<i64, _>("size_bytes"),
+        "workspaceSync": row.get::<i32, _>("workspace_records"),
+        "library": row.get::<i32, _>("library_documents"),
+        "mediaLibrary": row.get::<i32, _>("media_documents"),
+        "assets": row.get::<i32, _>("assets"),
+    })
+}
+
+/// List stored backups for the signed-in account, newest first.
+pub async fn backup_list(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "read", 60).await?;
+    let rows = sqlx::query(
+        "SELECT id,name,created_at,size_bytes,workspace_records,library_documents,media_documents,assets \
+         FROM cloud_backups WHERE owner_user_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100",
+    )
+    .bind(&user.user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db)?;
+    Ok(Json(
+        json!({"items": rows.iter().map(backup_metadata).collect::<Vec<_>>()}),
+    ))
+}
+
+/// Build a manifest, store it on the server and return its metadata.
+pub async fn backup_create_named(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Json(input): Json<CreateBackupRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "write", 10).await?;
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let manifest = build_manifest(&state.pool, &user.user.id).await?;
+    let bytes = serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if bytes.len() > MAX_BACKUP_BYTES {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let count = |value: Option<&Value>, key: &str| -> i32 {
+        value
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .map_or(0, |items| items.len() as i32)
+    };
+    let workspace = manifest.get("workspaceSync");
+    let library = manifest.get("library");
+    let media = manifest.get("mediaLibrary");
+    let assets = manifest.get("assets");
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cloud_backups(id,owner_user_id,name,manifest,size_bytes,workspace_records,library_documents,media_documents,assets) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    )
+    .bind(id)
+    .bind(&user.user.id)
+    .bind(name)
+    .bind(&manifest)
+    .bind(bytes.len() as i64)
+    .bind(count(workspace, "records"))
+    .bind(count(library, "items"))
+    .bind(count(media, "documents"))
+    .bind(count(assets, "items"))
+    .execute(&state.pool)
+    .await
+    .map_err(db)?;
+    let row = sqlx::query(
+        "SELECT id,name,created_at,size_bytes,workspace_records,library_documents,media_documents,assets FROM cloud_backups WHERE id=$1 AND owner_user_id=$2",
+    )
+    .bind(id)
+    .bind(&user.user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(db)?;
+    Ok(Json(backup_metadata(&row)))
+}
+
+/// Download one stored manifest (no metadata-only listing payload).
+pub async fn backup_get(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let row = sqlx::query("SELECT manifest FROM cloud_backups WHERE id=$1 AND owner_user_id=$2")
+        .bind(id)
+        .bind(&user.user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(row.get::<Value, _>("manifest")))
+}
+
+/// Delete one stored backup.
+pub async fn backup_delete(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "write", 30).await?;
+    let id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let result = sqlx::query("DELETE FROM cloud_backups WHERE id=$1 AND owner_user_id=$2")
+        .bind(id)
+        .bind(&user.user.id)
+        .execute(&state.pool)
+        .await
+        .map_err(db)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(Json(json!({"deleted": true})))
+}
+
+/// Preview or apply a stored backup by id.
+pub async fn backup_restore_stored(
+    DualUser(user): DualUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<StoredRestoreRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    workspace::limit(&state, &user.user.id, "write", 30).await?;
+    let id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let row = sqlx::query("SELECT manifest FROM cloud_backups WHERE id=$1 AND owner_user_id=$2")
+        .bind(id)
+        .bind(&user.user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let manifest = row.get::<Value, _>("manifest");
+    Ok(Json(
+        apply_restore(
+            &state.pool,
+            &user.user.id,
+            &manifest,
+            input.mode,
+            input.dry_run,
+        )
+        .await?,
+    ))
 }
