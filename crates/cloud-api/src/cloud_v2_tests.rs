@@ -756,22 +756,22 @@ async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
             "/api/v2/sync/changes",
         ),
     ] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO {cursors}(user_id,cursor) VALUES($1,3)"
-        ))
+        )))
         .bind(user)
         .execute(&f.pool)
         .await
         .unwrap();
-        sqlx::query(&format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) SELECT $1,n,'plugin-selections','acme.p'||n,NULL,true FROM generate_series(1,3) n"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) SELECT $1,n,'plugin-selections','acme.p'||n,NULL,true FROM generate_series(1,3) n")))
             .bind(user).execute(&f.pool).await.unwrap();
         let path = format!("{endpoint}?cursor=0");
         let original = request(&f, Some(0), "GET", &path, Value::Null, None).await;
         assert_eq!(original.status(), StatusCode::OK);
         assert_eq!(json_body(original).await["cursor"], 3);
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {changes} WHERE user_id=$1 AND cursor=2"
-        ))
+        )))
         .bind(user)
         .execute(&f.pool)
         .await
@@ -789,9 +789,9 @@ async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
                 .status(),
             StatusCode::OK
         );
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {changes} WHERE user_id=$1 AND cursor=3"
-        ))
+        )))
         .bind(user)
         .execute(&f.pool)
         .await
@@ -802,12 +802,13 @@ async fn sync_feeds_refuse_missing_retained_changes_without_advancing_cursor() {
                 .status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
-        let saved: i64 =
-            sqlx::query_scalar(&format!("SELECT cursor FROM {cursors} WHERE user_id=$1"))
-                .bind(user)
-                .fetch_one(&f.pool)
-                .await
-                .unwrap();
+        let saved: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT cursor FROM {cursors} WHERE user_id=$1"
+        )))
+        .bind(user)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
         assert_eq!(saved, 3);
     }
 }
@@ -832,16 +833,16 @@ async fn sync_reads_refuse_corrupt_records_without_disclosing_their_contents() {
             "/api/v2/sync",
         ),
     ] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO {cursors}(user_id,cursor) VALUES($1,1)"
-        ))
+        )))
         .bind(user)
         .execute(&f.pool)
         .await
         .unwrap();
-        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.bad',1,$2,false)"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.bad',1,$2,false)")))
             .bind(user).bind(&invalid).execute(&f.pool).await.unwrap();
-        sqlx::query(&format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) VALUES($1,1,'plugin-selections','acme.bad',$2,false)"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {changes}(user_id,cursor,collection,key,value,deleted) VALUES($1,1,'plugin-selections','acme.bad',$2,false)")))
             .bind(user).bind(&invalid).execute(&f.pool).await.unwrap();
         for path in [
             format!("{prefix}/changes?cursor=0"),
@@ -876,9 +877,9 @@ async fn sync_reads_refuse_corrupt_records_without_disclosing_their_contents() {
         )
         .await;
         assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let retained: Value = sqlx::query_scalar(&format!(
+        let retained: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT value FROM {records} WHERE user_id=$1 AND key='acme.bad'"
-        ))
+        )))
         .bind(user)
         .fetch_one(&f.pool)
         .await
@@ -888,9 +889,9 @@ async fn sync_reads_refuse_corrupt_records_without_disclosing_their_contents() {
         // the account head observed in the same database statement.
         let valid =
             json!({"schemaVersion":1,"pluginId":"acme.bad","version":"1.0.0","enabled":true});
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE {records} SET value=$2, revision=2 WHERE user_id=$1 AND key='acme.bad'"
-        ))
+        )))
         .bind(user)
         .bind(&valid)
         .execute(&f.pool)
@@ -928,29 +929,30 @@ async fn sync_reads_refuse_corrupt_records_without_disclosing_their_contents() {
         )
         .await;
         assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let cursor: i64 =
-            sqlx::query_scalar(&format!("SELECT cursor FROM {cursors} WHERE user_id=$1"))
-                .bind(user)
-                .fetch_one(&f.pool)
-                .await
-                .unwrap();
+        let cursor: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT cursor FROM {cursors} WHERE user_id=$1"
+        )))
+        .bind(user)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
         assert_eq!(cursor, 1);
 
         // The extra row used to decide whether another page exists is also
         // validated; a corrupt sentinel must not be returned or concealed.
         let sentinel_user = &f.users[2].id;
         let page_size: i32 = if prefix == "/api/v1/sync" { 100 } else { 50 };
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO {cursors}(user_id,cursor) VALUES($1,$2)"
-        ))
+        )))
         .bind(sentinel_user)
         .bind(i64::from(page_size + 1))
         .execute(&f.pool)
         .await
         .unwrap();
-        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) SELECT $1,'plugin-selections','acme.a'||lpad(n::text,4,'0'),n,NULL,true FROM generate_series(1,$2::integer) n"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) SELECT $1,'plugin-selections','acme.a'||lpad(n::text,4,'0'),n,NULL,true FROM generate_series(1,$2::integer) n")))
             .bind(sentinel_user).bind(page_size).execute(&f.pool).await.unwrap();
-        sqlx::query(&format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.z',$2,$3,false)"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {records}(user_id,collection,key,revision,value,deleted) VALUES($1,'plugin-selections','acme.z',$2,$3,false)")))
             .bind(sentinel_user).bind(i64::from(page_size + 1)).bind(&invalid).execute(&f.pool).await.unwrap();
         let response = request(&f, Some(2), "GET", &listing, Value::Null, None).await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -2036,7 +2038,7 @@ async fn ascii_punctuation_key_and_plugin_pages_use_locale_independent_exclusive
             let query = format!(
                 r#"SELECT id FROM unnest($1::text[]) AS id ORDER BY id COLLATE pg_catalog."{locale}""#
             );
-            let localized: Vec<String> = sqlx::query_scalar(&query)
+            let localized: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
                 .bind(&ids)
                 .fetch_all(&f.pool)
                 .await

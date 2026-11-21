@@ -618,7 +618,7 @@ async fn oauth_email_collision_requires_both_accounts_verified() {
         .await
         .unwrap();
     let schema = format!("link_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&control)
         .await
         .unwrap();
@@ -672,7 +672,7 @@ async fn oauth_email_collision_requires_both_accounts_verified() {
     assert_eq!(linked_user, local.user.id);
     fixture_handle.abort();
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&control)
         .await
         .unwrap();
@@ -2181,12 +2181,12 @@ async fn sync_conflicts_tombstones_and_user_isolation() {
         "cloud_sync_changes",
     ] {
         let query = format!("SELECT count(*) FROM {table} WHERE user_id=$1");
-        let gone: i64 = sqlx::query_scalar(&query)
+        let gone: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&user_ids[0])
             .fetch_one(&pool)
             .await
             .unwrap();
-        let kept: i64 = sqlx::query_scalar(&query)
+        let kept: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&user_ids[1])
             .fetch_one(&pool)
             .await
@@ -2526,7 +2526,7 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
     let (ctx, pool) = context(&database_url, false).await;
     readiness::MIGRATOR.run(&pool).await.unwrap();
     let schema = format!("health_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&pool)
         .await
         .unwrap();
@@ -2535,10 +2535,12 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
         .connect(&database_url)
         .await
         .unwrap();
-    sqlx::query(&format!("SET search_path TO {schema}, public"))
-        .execute(&isolated)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET search_path TO {schema}, public"
+    )))
+    .execute(&isolated)
+    .await
+    .unwrap();
     // Shadow the real migration table, while reading real auth and Cloud tables.
     sqlx::query(
         "CREATE TABLE _sqlx_migrations AS SELECT * FROM public._sqlx_migrations WHERE false",
@@ -2682,7 +2684,7 @@ async fn readiness_refuses_missing_or_incompatible_schema() {
             .status(),
         StatusCode::OK
     );
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&pool)
         .await
         .unwrap();
@@ -2698,11 +2700,11 @@ async fn role_bootstrap_protects_last_admin_and_audits_changes() {
         .await
         .unwrap();
     let schema = format!("role_test_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(&format!("SET search_path TO {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}")))
         .execute(&pool)
         .await
         .unwrap();
@@ -2739,7 +2741,7 @@ async fn role_bootstrap_protects_last_admin_and_audits_changes() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&pool)
         .await
         .unwrap();
@@ -2757,7 +2759,7 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
         .await
         .unwrap();
     let schema = format!("upgrade_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&control)
         .await
         .unwrap();
@@ -2802,6 +2804,8 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
         ignore_missing: false,
         locking: false,
         no_tx: false,
+        table_name: Cow::Borrowed("_sqlx_migrations"),
+        create_schemas: Cow::Borrowed(&[]),
     };
     migrations(20261102000014).run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx).unwrap();
@@ -2884,7 +2888,7 @@ async fn upgrade_guards_preserve_existing_data_and_reject_inconsistent_state() {
         .await
         .is_err());
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&control)
         .await
         .unwrap();
@@ -2902,7 +2906,7 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         .await
         .unwrap();
     let schema = format!("drill_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&control)
         .await
         .unwrap();
@@ -2947,6 +2951,8 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         ignore_missing: false,
         locking: false,
         no_tx: false,
+        table_name: Cow::Borrowed("_sqlx_migrations"),
+        create_schemas: Cow::Borrowed(&[]),
     };
     migrations(20261102000016).run(&pool).await.unwrap();
     let service = EmailPasswordService::new(ctx).unwrap();
@@ -3045,10 +3051,11 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         // decision recorded below brings the total to two.
         ("cloud_snapshot_promotion_checks", 1),
     ] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, expected, "upgrade must preserve {table}");
     }
     // The new tables reference the preserved rows.
@@ -3070,10 +3077,11 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
         .unwrap();
     assert_eq!(checks, 2, "legacy check plus the new decision");
     for table in ["cloud_release_yanks", "cloud_release_advisories"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, 1, "missing row in {table}");
     }
     let count: i64 = sqlx::query_scalar(
@@ -3084,7 +3092,7 @@ async fn migration_upgrade_preserves_data_through_revocation_tables() {
     .unwrap();
     assert_eq!(count, 1, "missing promotion-check audit event");
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&control)
         .await
         .unwrap();
@@ -3100,7 +3108,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
         .await
         .unwrap();
     let schema = format!("promotion_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&control)
         .await
         .unwrap();
@@ -3301,7 +3309,7 @@ async fn promotion_checks_record_audited_verified_and_blocked_decisions() {
             .is_err()
     );
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&control)
         .await
         .unwrap();
@@ -3319,7 +3327,7 @@ async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
         .await
         .unwrap();
     let schema = format!("yankcap_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&control)
         .await
         .unwrap();
@@ -3446,7 +3454,7 @@ async fn snapshot_capture_blocks_yanks_and_carries_advisories() {
         "a yanked release blocks candidacy instead of being silently omitted"
     );
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&control)
         .await
         .unwrap();

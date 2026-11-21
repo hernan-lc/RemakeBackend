@@ -147,7 +147,7 @@ pub async fn submit(
         return Err(StatusCode::BAD_REQUEST);
     }
     let query = format!("SELECT {FIELDS} FROM cloud_plugin_releases WHERE upload_id=$1");
-    if let Some(row) = sqlx::query(&query)
+    if let Some(row) = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(input.upload_id)
         .fetch_optional(&mut *tx)
         .await
@@ -232,7 +232,7 @@ pub async fn get(
 ) -> Result<Json<Release>, StatusCode> {
     let mut tx = state.pool.begin().await.map_err(db)?;
     let query = format!("SELECT {FIELDS} FROM cloud_plugin_releases WHERE id=$1");
-    let row = sqlx::query(&query)
+    let row = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(id)
         .fetch_optional(&mut *tx)
         .await

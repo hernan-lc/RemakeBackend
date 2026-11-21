@@ -632,9 +632,9 @@ pub(crate) async fn pinned_by_package(
     overlay: Uuid,
 ) -> Result<bool, V3Error> {
     let key = sql_uuid_key("i->>'id'");
-    sqlx::query_scalar(&format!(
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS (SELECT 1 FROM cloud_library_documents p JOIN cloud_library_versions pv ON pv.document_id=p.id CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(pv.document->'items')='array' THEN pv.document->'items' ELSE '[]'::jsonb END) i WHERE p.owner_user_id=$1 AND p.kind='package' AND i->>'kind'='overlay' AND {key}=$2)"
-    ))
+    )))
     .bind(owner)
     .bind(overlay.simple().to_string())
     .fetch_one(&mut **tx)

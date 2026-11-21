@@ -11,7 +11,7 @@ futures-util = "0.3"
 iroh-relay = { version = "=1.5.0", default-features = false, features = ["server", "tls-ring", "metrics"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pemfile = "2"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

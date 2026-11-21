@@ -510,7 +510,7 @@ async fn lock(pool: &PgPool) -> tokio::sync::OwnedMutexGuard<()> {
         "cloud_registry_generation_releases",
         "cloud_registry_generations",
     ] {
-        sqlx::query(&format!("DELETE FROM {table}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(pool)
             .await
             .unwrap();

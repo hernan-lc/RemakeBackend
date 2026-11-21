@@ -110,7 +110,7 @@ impl Fixture {
                 && !matches!(
                     tokio::time::timeout(
                         std::time::Duration::from_secs(15),
-                        sqlx::query(&sql).execute(&self.control)
+                        sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).execute(&self.control)
                     )
                     .await,
                     Ok(Ok(_))
@@ -134,6 +134,8 @@ fn migrations_through(last: i64) -> sqlx::migrate::Migrator {
         ignore_missing: false,
         locking: false,
         no_tx: false,
+        table_name: Cow::Borrowed("_sqlx_migrations"),
+        create_schemas: Cow::Borrowed(&[]),
     }
 }
 fn identifier(name: &str) -> String {
@@ -147,7 +149,7 @@ async fn table_snapshot(pool: &PgPool) -> TestResult<BTreeMap<String, Value>> {
     .await?;
     let mut snapshot = BTreeMap::new();
     for name in names {
-        let rows: Value = sqlx::query_scalar(&format!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM {} t", identifier(&name))).fetch_one(pool).await?;
+        let rows: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM {} t", identifier(&name)))).fetch_one(pool).await?;
         snapshot.insert(name, rows);
     }
     Ok(snapshot)
@@ -350,9 +352,12 @@ async fn prove_restored_guards(pool: &PgPool, owner: &str, document: uuid::Uuid)
 }
 
 async fn run_drill(fixture: &mut Fixture) -> TestResult<()> {
-    sqlx::query(&format!("CREATE SCHEMA {}", fixture.schema))
-        .execute(&fixture.control)
-        .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE SCHEMA {}",
+        fixture.schema
+    )))
+    .execute(&fixture.control)
+    .await?;
     fixture.created_schema = true;
     let source_url = fixture.schema_url(None);
     let adapter = Arc::new(SqlxDbAdapter::postgres(&source_url).await?);
@@ -559,9 +564,12 @@ async fn run_drill(fixture: &mut Fixture) -> TestResult<()> {
         dumped.success(),
         "fixture pg_dump failed; check matching PostgreSQL client tools"
     );
-    sqlx::query(&format!("CREATE DATABASE {}", fixture.restore_database))
-        .execute(&fixture.control)
-        .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE DATABASE {}",
+        fixture.restore_database
+    )))
+    .execute(&fixture.control)
+    .await?;
     fixture.created_database = true;
     let restore_url = fixture.schema_url(Some(&fixture.restore_database));
     let mut command = tokio::process::Command::new("pg_restore");

@@ -57,10 +57,10 @@ impl Drop for Lease {
         // A failed drop is harmless: the next run sweeps stale clones.
         let _ = run(async move {
             let mut conn = PgConnection::connect(&admin).await?;
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DROP DATABASE IF EXISTS {} WITH (FORCE)",
                 quote(&name)
-            ))
+            )))
             .execute(&mut conn)
             .await?;
             Ok::<_, sqlx::Error>(())
@@ -158,7 +158,7 @@ async fn create(admin: String, template: Option<Template>) -> Lease {
         ),
         None => format!("CREATE DATABASE {}", quote(&name)),
     };
-    sqlx::query(&statement)
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
         .execute(&mut conn)
         .await
         .unwrap_or_else(|error| {
@@ -185,10 +185,10 @@ async fn sweep_stale_clones(conn: &mut PgConnection) {
             .and_then(|secs| secs.parse::<u64>().ok());
         if created.is_some_and(|created| now_secs().saturating_sub(created) > STALE_AFTER.as_secs())
         {
-            let _ = sqlx::query(&format!(
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DROP DATABASE IF EXISTS {} WITH (FORCE)",
                 quote(&name)
-            ))
+            )))
             .execute(&mut *conn)
             .await;
         }
@@ -222,18 +222,21 @@ async fn ensure_template(conn: &mut PgConnection, admin: &str, template: Templat
         .await
         .unwrap_or_default();
         for other in others {
-            let _ = sqlx::query(&format!(
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DROP DATABASE IF EXISTS {} WITH (FORCE)",
                 quote(&other)
-            ))
+            )))
             .execute(&mut *conn)
             .await;
         }
         let building = format!("{TEMPLATE_PREFIX}build_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE {}", quote(&building)))
-            .execute(&mut *conn)
-            .await
-            .expect("create template build database");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE {}",
+            quote(&building)
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("create template build database");
         (template.prepare)(with_database(admin, &building)).await;
         // Pools the builder dropped may still be closing; nothing may stay
         // connected to a database that is renamed and then cloned.
@@ -242,11 +245,11 @@ async fn ensure_template(conn: &mut PgConnection, admin: &str, template: Templat
             .execute(&mut *conn)
             .await
             .expect("disconnect template builder");
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "ALTER DATABASE {} RENAME TO {}",
             quote(&building),
             quote(&name)
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .expect("publish template");

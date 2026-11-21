@@ -299,7 +299,7 @@ async fn plugin_items_for(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query(&format!("{PLUGIN_ROWS} WHERE g.generation=$1 AND g.plugin_id = ANY($2) AND ($3::text IS NULL OR g.target=$3 OR g.target='any') ORDER BY g.plugin_id COLLATE \"C\", g.version, g.target"))
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("{PLUGIN_ROWS} WHERE g.generation=$1 AND g.plugin_id = ANY($2) AND ($3::text IS NULL OR g.target=$3 OR g.target='any') ORDER BY g.plugin_id COLLATE \"C\", g.version, g.target")))
         .bind(generation)
         .bind(ids)
         .bind(target)

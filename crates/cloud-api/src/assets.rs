@@ -110,9 +110,9 @@ pub async fn upload(
     lock_owner(&mut tx, &rid, owner).await?;
     // Identical bytes keep their id and their existing label: a repeated upload
     // never renames silently. Use PATCH to change the label.
-    if let Some(existing) = sqlx::query(&format!(
+    if let Some(existing) = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM cloud_assets WHERE owner_user_id=$1 AND sha256=$2"
-    ))
+    )))
     .bind(owner)
     .bind(&digest)
     .fetch_optional(&mut *tx)
@@ -134,7 +134,7 @@ pub async fn upload(
         return Err(V3Error::new(&rid, Kind::QuotaExceeded));
     }
     let id = Uuid::new_v4();
-    let created = sqlx::query(&format!("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content,label) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLUMNS}"))
+    let created = sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO cloud_assets(id,owner_user_id,sha256,mime,width,height,size,content,label) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLUMNS}")))
         .bind(id)
         .bind(owner)
         .bind(&digest)
@@ -167,7 +167,7 @@ pub async fn list(
             Position::Number(_) => return Err(V3Error::new(&rid, Kind::InvalidRequest)),
         },
     };
-    let rows = sqlx::query(&format!("SELECT {COLUMNS} FROM cloud_assets WHERE owner_user_id=$1 AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz OR (created_at = $2::timestamptz AND id < $3::uuid)) ORDER BY created_at DESC, id DESC LIMIT $4"))
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT {COLUMNS} FROM cloud_assets WHERE owner_user_id=$1 AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz OR (created_at = $2::timestamptz AND id < $3::uuid)) ORDER BY created_at DESC, id DESC LIMIT $4")))
         .bind(owner)
         .bind(after_at)
         .bind(after_id)
@@ -251,9 +251,9 @@ pub async fn rename(
         }
         _ => return Err(V3Error::new(&rid, Kind::InvalidRequest)),
     };
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE cloud_assets SET label=$3 WHERE id=$1 AND owner_user_id=$2 RETURNING {COLUMNS}"
-    ))
+    )))
     .bind(asset)
     .bind(owner)
     .bind(&label)
@@ -278,9 +278,9 @@ async fn referenced(
     asset: Uuid,
 ) -> Result<bool, V3Error> {
     let key = sql_uuid_key("e->>'assetId'");
-    sqlx::query_scalar(&format!(
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS (SELECT 1 FROM cloud_library_documents d JOIN cloud_library_versions v ON v.document_id=d.id CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(v.document->'elements')='array' THEN v.document->'elements' ELSE '[]'::jsonb END) e WHERE d.owner_user_id=$1 AND d.kind='overlay' AND {key}=$2)"
-    ))
+    )))
     .bind(owner)
     .bind(asset.simple().to_string())
     .fetch_one(&mut **tx)

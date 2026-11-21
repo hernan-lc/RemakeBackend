@@ -129,7 +129,7 @@ async fn bounded_rows(
     query: &str,
     user_id: &str,
 ) -> Result<Vec<Value>, StatusCode> {
-    let rows = sqlx::query_scalar::<_, Value>(query)
+    let rows = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(query))
         .bind(user_id)
         .fetch_all(&mut **tx)
         .await

@@ -416,14 +416,14 @@ impl DatabaseManager {
             bail!("`{name}` is not a safe database name");
         }
         let mut c = health::connect(self.conn(), "postgres").await?;
-        let exists = sqlx::query(&format!(
-            "SELECT 1 FROM pg_database WHERE datname = '{name}'"
-        ))
-        .fetch_optional(&mut c)
-        .await?
-        .is_some();
+        let exists = sqlx::query("SELECT 1 FROM pg_database WHERE datname::text = $1")
+            .bind(name)
+            .fetch_optional(&mut c)
+            .await?
+            .is_some();
         if !exists {
-            sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+            // Database names cannot be bind parameters; `name` passed `is_identifier`.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
                 .execute(&mut c)
                 .await?;
         }
@@ -440,10 +440,13 @@ impl DatabaseManager {
             bail!("the managed pgrust is not running; start it with `remake-dev db up`");
         }
         let mut c = health::connect(self.conn(), "postgres").await?;
-        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{name}\""))
-            .execute(&mut c)
-            .await?;
-        sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        // Database names cannot be bind parameters; `name` passed `is_identifier`.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS \"{name}\""
+        )))
+        .execute(&mut c)
+        .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
             .execute(&mut c)
             .await?;
         let _ = c.close().await;
