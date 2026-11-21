@@ -51,6 +51,8 @@ impl Plan {
                 max_overlays: 50,
                 max_revisions_per_overlay: 100,
                 max_overlay_bytes: 16 * 1024 * 1024,
+                max_backups: 3,
+                max_backup_bytes: 16 * 1024 * 1024,
             },
             Self::Pro => PlanLimits {
                 max_records: 10_000,
@@ -62,6 +64,8 @@ impl Plan {
                 max_overlays: 250,
                 max_revisions_per_overlay: 500,
                 max_overlay_bytes: 64 * 1024 * 1024,
+                max_backups: 20,
+                max_backup_bytes: 128 * 1024 * 1024,
             },
             Self::Max => PlanLimits {
                 max_records: 50_000,
@@ -73,6 +77,8 @@ impl Plan {
                 max_overlays: 1_000,
                 max_revisions_per_overlay: 2_000,
                 max_overlay_bytes: 256 * 1024 * 1024,
+                max_backups: 100,
+                max_backup_bytes: 1_024 * 1024 * 1024,
             },
         }
     }
@@ -90,6 +96,8 @@ pub struct PlanLimits {
     pub max_overlays: i64,
     pub max_revisions_per_overlay: i64,
     pub max_overlay_bytes: i64,
+    pub max_backups: i64,
+    pub max_backup_bytes: i64,
 }
 
 /// Missing row or database failure falls back to Free: fail closed, and never
@@ -119,6 +127,8 @@ pub struct PlanUsage {
     pub asset_bytes: i64,
     pub overlays: i64,
     pub overlay_bytes: i64,
+    pub backups: i64,
+    pub backup_bytes: i64,
 }
 
 /// Current consumption of one account. A database failure is reported, never
@@ -146,6 +156,12 @@ pub async fn usage_for(pool: &PgPool, user_id: &str) -> Result<PlanUsage, sqlx::
     .bind(user_id)
     .fetch_one(pool)
     .await?;
+    let (backups, backup_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), COALESCE(sum(size_bytes),0)::bigint FROM cloud_backups WHERE owner_user_id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
     Ok(PlanUsage {
         records,
         record_bytes,
@@ -153,6 +169,8 @@ pub async fn usage_for(pool: &PgPool, user_id: &str) -> Result<PlanUsage, sqlx::
         asset_bytes,
         overlays,
         overlay_bytes,
+        backups,
+        backup_bytes,
     })
 }
 
@@ -262,6 +280,8 @@ mod tests {
                 asset_bytes: 0,
                 overlays: 0,
                 overlay_bytes: 0,
+                backups: 0,
+                backup_bytes: 0,
             },
         };
         let json = serde_json::to_value(&view).unwrap();
@@ -291,6 +311,8 @@ mod usage_tests {
             asset_bytes: 0,
             overlays: 0,
             overlay_bytes: 0,
+            backups: 0,
+            backup_bytes: 0,
         };
         assert_eq!(usage_for(&pool, &owner).await.unwrap(), zero);
 
@@ -314,5 +336,7 @@ mod usage_tests {
         assert_eq!(usage.asset_bytes, 5);
         assert_eq!(usage.records, 0);
         assert_eq!(usage.overlays, 0);
+        assert_eq!(usage.backups, 0);
+        assert_eq!(usage.backup_bytes, 0);
     }
 }

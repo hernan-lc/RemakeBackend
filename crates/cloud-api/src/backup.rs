@@ -541,6 +541,26 @@ pub async fn backup_create_named(
     }
     let manifest = build_manifest(&state.pool, &user.user.id).await?;
     let bytes = serde_json::to_vec(&manifest).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let limits = crate::plans::limits_for(&state.pool, &user.user.id).await;
+    let existing: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cloud_backups WHERE owner_user_id=$1")
+            .bind(&user.user.id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(db)?;
+    if existing >= limits.max_backups {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let total_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(sum(size_bytes),0)::bigint FROM cloud_backups WHERE owner_user_id=$1",
+    )
+    .bind(&user.user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(db)?;
+    if total_bytes + bytes.len() as i64 > limits.max_backup_bytes {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     if bytes.len() > MAX_BACKUP_BYTES {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }

@@ -3228,3 +3228,40 @@ async fn me_backup_and_restore_dry_run_report_a_versioned_summary() {
     assert_eq!(summary["dryRun"], true);
     assert!(summary["workspaceSync"].is_number());
 }
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn named_backups_are_listed_and_counted_in_plan_usage() {
+    let f = fixture().await;
+    let user = &f.users[0].id;
+
+    let empty = request(&f, Some(0), "GET", "/api/v2/me/backups", Value::Null, None).await;
+    assert_eq!(empty.status(), StatusCode::OK);
+    assert_eq!(json_body(empty).await["items"].as_array().unwrap().len(), 0);
+
+    let created = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/me/backups",
+        json!({"name": "Before update"}),
+        None,
+    )
+    .await;
+    let created_status = created.status();
+    let created_body = json_body(created).await;
+    assert_eq!(created_status, StatusCode::OK, "body: {created_body}");
+    let backup = created_body;
+    assert_eq!(backup["name"], "Before update");
+    assert!(backup["id"].as_str().is_some());
+
+    let listed = request(&f, Some(0), "GET", "/api/v2/me/backups", Value::Null, None).await;
+    assert_eq!(
+        json_body(listed).await["items"].as_array().unwrap().len(),
+        1
+    );
+
+    let usage = crate::plans::usage_for(&f.pool, user).await.unwrap();
+    assert_eq!(usage.backups, 1);
+    assert!(usage.backup_bytes > 0);
+}
