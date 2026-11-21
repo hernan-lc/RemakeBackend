@@ -78,12 +78,12 @@ pub fn published_providers() -> Vec<&'static str> {
 }
 
 fn seal(key: &[u8; 32], connection: Uuid, plaintext: &[u8]) -> Vec<u8> {
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::try_from(key.as_slice()).unwrap());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce_bytes: [u8; 12] = rand::random();
     let aad = connection.as_bytes().to_vec();
     let ciphertext = cipher
         .encrypt(
-            &Nonce::try_from(nonce_bytes.as_slice()).unwrap(),
+            Nonce::from_slice(&nonce_bytes),
             Payload {
                 msg: plaintext,
                 aad: &aad,
@@ -100,11 +100,11 @@ fn open(key: &[u8; 32], connection: Uuid, sealed: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let (nonce, ciphertext) = sealed.split_at(12);
-    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::try_from(key.as_slice()).unwrap());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let aad = connection.as_bytes().to_vec();
     cipher
         .decrypt(
-            &Nonce::try_from(nonce).unwrap(),
+            Nonce::from_slice(nonce),
             Payload {
                 msg: ciphertext,
                 aad: &aad,
