@@ -13,6 +13,10 @@ jobs:
       - run: cargo check -p cloud-client --all-features --locked
   test:
     runs-on: ubuntu-24.04
+    env:
+      # Same setting as `remake-dev test`: negligible scrypt parameters in test
+      # auth contexts. Hashes still verify with production parameters.
+      CLOUD_TEST_FAST_HASH: "1"
     services:
       postgres:
         image: malisper/pgrust:v0.4-beta
