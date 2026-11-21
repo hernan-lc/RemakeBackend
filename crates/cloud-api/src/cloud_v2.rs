@@ -89,6 +89,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v2/sync/changes", get(workspace::changes))
         .route("/api/v2/sync/export", get(workspace::export))
         .route("/api/v2/me/export", get(export))
+        .route("/api/v2/me/backup", get(crate::backup::backup))
+        .route(
+            "/api/v2/me/restore",
+            post(crate::backup::restore)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(
             portable::MAX_DOCUMENT_BYTES + 1024,
         ))

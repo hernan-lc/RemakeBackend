@@ -3,6 +3,7 @@ mod admin;
 mod admin_static;
 mod api_error;
 mod assets;
+mod backup;
 mod catalog_pages;
 mod catalog_v3;
 mod cloud_v2;

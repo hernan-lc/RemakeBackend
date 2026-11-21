@@ -3197,3 +3197,34 @@ async fn fork_respects_library_quotas_and_the_write_rate_limit() {
     }
     assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database in CLOUD_TEST_DATABASE_URL"]
+async fn me_backup_and_restore_dry_run_report_a_versioned_summary() {
+    let f = fixture().await;
+    assert_eq!(
+        request(&f, None, "GET", "/api/v2/me/backup", Value::Null, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = request(&f, Some(0), "GET", "/api/v2/me/backup", Value::Null, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let manifest = json_body(response).await;
+    assert_eq!(manifest["schemaVersion"], 1);
+
+    let response = request(
+        &f,
+        Some(0),
+        "POST",
+        "/api/v2/me/restore",
+        json!({"manifest": manifest, "mode": "replace", "dryRun": true}),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let summary = json_body(response).await;
+    assert_eq!(summary["applied"], false);
+    assert_eq!(summary["dryRun"], true);
+    assert!(summary["workspaceSync"].is_number());
+}
