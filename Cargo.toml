@@ -49,3 +49,6 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.password-hash]
 opt-level = 3
+
+[patch.crates-io]
+crypto-glue = { git = "https://github.com/nglmercer/crypto-glue", rev = "eb80ef9adfee042c68939e79665e160649a1cc4b" }

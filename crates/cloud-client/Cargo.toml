@@ -12,7 +12,7 @@ os-keychain = ["dep:keyring-core", "dep:dbus-secret-service-keyring-store", "dep
 
 [dependencies]
 cloud-contracts = { path = "../cloud-contracts" }
-better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6", default-features = false }
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "a2bfb5d", default-features = false }
 base64 = "0.23"
 getrandom = "0.4"
 sha2 = "0.11"

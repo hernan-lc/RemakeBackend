@@ -24,12 +24,12 @@ axum = "0.8"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-tungstenite = "0.30"
-ed25519-dalek = { version = "3", features = ["pkcs8", "rand_core"] }
+ed25519-dalek = { version = "3", features = ["pkcs8", "rand_core", "pem"] }
 rand = "0.10"
 jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
-better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6", default-features = false, features = ["axum", "sqlx"] }
-better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6" }
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "a2bfb5d", default-features = false, features = ["axum", "sqlx"] }
+better-auth-core = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "a2bfb5d" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -54,6 +54,6 @@ cloud-peer-relay = { path = "../cloud-peer-relay" }
 tokio-tungstenite = "0.30"
 zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 cloud-client = { path = "../cloud-client" }
-better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6", default-features = false, features = ["axum", "sqlx", "test-utils"] }
+better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "a2bfb5d", default-features = false, features = ["axum", "sqlx", "test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tiktools-plugin-installer = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
