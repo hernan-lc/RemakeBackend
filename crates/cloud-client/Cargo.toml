@@ -8,7 +8,7 @@ license = "MIT"
 [features]
 default = []
 system-browser = ["dep:open"]
-os-keychain = ["dep:keyring"]
+os-keychain = ["dep:keyring-core", "dep:dbus-secret-service-keyring-store", "dep:apple-native-keyring-store", "dep:windows-native-keyring-store"]
 
 [dependencies]
 cloud-contracts = { path = "../cloud-contracts" }
@@ -34,10 +34,13 @@ uuid = { version = "1", features = ["serde"] }
 tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"], optional = true }
+keyring-core = { version = "1", optional = true }
+dbus-secret-service-keyring-store = { version = "1", default-features = false, features = ["crypto-rust", "vendored"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["apple-native"], optional = true }
+keyring-core = { version = "1", optional = true }
+apple-native-keyring-store = { version = "1", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["windows-native"], optional = true }
+keyring-core = { version = "1", optional = true }
+windows-native-keyring-store = { version = "1", optional = true }
