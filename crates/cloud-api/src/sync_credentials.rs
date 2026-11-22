@@ -40,7 +40,6 @@ use ed25519_dalek::{
     SigningKey,
 };
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
 use crate::{dual_auth::DualUser, AppState};
@@ -76,9 +75,9 @@ fn now_ms() -> u64 {
 }
 
 fn random_id() -> String {
-    use rand_core::RngCore;
+    use rand::Rng;
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -111,7 +110,7 @@ pub struct CredentialBridge {
 
 impl CredentialBridge {
     pub fn generate(origin: &str) -> Result<Self, String> {
-        let signing = SigningKey::generate(&mut OsRng);
+        let signing = SigningKey::generate(&mut rand::rng());
         let der = signing
             .to_pkcs8_der()
             .map_err(|e| format!("serialize sync signing key: {e}"))?;
@@ -566,7 +565,7 @@ mod tests {
 
     #[test]
     fn credentials_are_bound_to_the_issuing_origin() {
-        let signing = SigningKey::generate(&mut OsRng);
+        let signing = SigningKey::generate(&mut rand::rng());
         let der = signing.to_pkcs8_der().unwrap();
         let issuer =
             CredentialBridge::from_pkcs8_der(der.as_bytes(), TEST_ORIGIN, ISSUER, AUDIENCE)

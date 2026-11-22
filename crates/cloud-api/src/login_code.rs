@@ -18,7 +18,7 @@ use better_auth::{
     session::SessionService,
 };
 use better_auth_core::{options::BaseUrl, StorageValue};
-use rand_core::{OsRng, RngCore};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -193,7 +193,7 @@ fn now() -> u64 {
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    OsRng.fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
@@ -296,7 +296,7 @@ pub async fn relay(
     }
 
     let mut code_bytes = [0u8; 4];
-    OsRng.fill_bytes(&mut code_bytes);
+    rand::rng().fill_bytes(&mut code_bytes);
     let number = u32::from_be_bytes(code_bytes) % 1_000_000;
     let code = format!("{number:06}");
     let expires_at = now() + CODE_TTL.as_secs();

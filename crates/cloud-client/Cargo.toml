@@ -14,14 +14,14 @@ os-keychain = ["dep:keyring-core", "dep:dbus-secret-service-keyring-store", "dep
 cloud-contracts = { path = "../cloud-contracts" }
 better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6", default-features = false }
 base64 = "0.23"
-getrandom = "0.2"
+getrandom = "0.4"
 sha2 = "0.11"
 zeroize = "1"
 tokio = { version = "1", features = ["sync", "time"] }
 open = { version = "5", optional = true }
 fs2 = "0.4"
 tempfile = "3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -21,9 +21,8 @@ tiktools-plugin-registry = { git = "https://github.com/nglmercer/TikTools-app.gi
 tiktools-plugin-api = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 tiktools-plugin-package = { git = "https://github.com/nglmercer/TikTools-app.git", rev = "b24ddbe7c6dbf5c42b875c25f1c7cc5725e9f677" }
 axum = { version = "0.8", features = ["ws"] }
-ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
-rand = "0.9"
-rand_core = { version = "0.6", features = ["getrandom"] }
+ed25519-dalek = { version = "3", features = ["pkcs8", "rand_core"] }
+rand = "0.10"
 jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 better-auth = { git = "https://github.com/nglmercer/better-auth-rs.git", rev = "655a1132e8921b4776f52514015cefc3c407e6a6", default-features = false, features = ["axum", "sqlx"] }
