@@ -15,15 +15,14 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
-    },
-    http::{header, HeaderMap},
-    response::{IntoResponse, Response},
+    body::Body,
+    extract::{Path, State},
+    http::{header, Request},
+    response::Response,
     Extension, Json,
 };
 use futures_util::{SinkExt, StreamExt};
+use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::{
@@ -35,6 +34,14 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
+use tokio_tungstenite::{
+    tungstenite::{
+        handshake::server::{create_response, Request as HandshakeRequest},
+        protocol::{Role as WsRole, WebSocketConfig},
+        Message,
+    },
+    WebSocketStream,
+};
 use uuid::Uuid;
 pub(crate) mod signaling;
 mod tunnel;
@@ -431,13 +438,12 @@ impl Hub {
 }
 
 pub async fn upgrade(
-    ws: WebSocketUpgrade,
-    headers: HeaderMap,
     State(state): State<AppState>,
     Extension(rid): Extension<RequestId>,
+    mut request: Request<Body>,
 ) -> Result<Response, V3Error> {
     // Browsers always send Origin; native clients may omit it. A present Origin must be trusted.
-    if let Some(origin) = headers.get(header::ORIGIN) {
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
         let trusted = origin.to_str().ok().is_some_and(|value| {
             state
                 .auth
@@ -450,11 +456,44 @@ pub async fn upgrade(
             return Err(V3Error::new(&rid, Kind::Forbidden));
         }
     }
-    Ok(ws
-        .max_message_size(MAX_FRAME_BYTES)
-        .max_frame_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| run(state, socket))
-        .into_response())
+
+    // Take the upgrade before consuming the request, then build tungstenite's
+    // server handshake request from the incoming method/uri/version/headers.
+    let upgrade = hyper::upgrade::on(&mut request);
+    let mut handshake = HandshakeRequest::builder()
+        .method(request.method())
+        .uri(request.uri())
+        .version(request.version())
+        .body(())
+        .map_err(|_| V3Error::new(&rid, Kind::InvalidRequest))?;
+    *handshake.headers_mut() = request.headers().clone();
+    let handshake_response =
+        create_response(&handshake).map_err(|_| V3Error::new(&rid, Kind::InvalidRequest))?;
+
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(MAX_FRAME_BYTES);
+    config.max_frame_size = Some(MAX_FRAME_BYTES);
+
+    tokio::spawn(async move {
+        let upgraded = match upgrade.await {
+            Ok(upgraded) => upgraded,
+            Err(_) => return,
+        };
+        let socket = WebSocketStream::from_raw_socket(
+            TokioIo::new(upgraded),
+            WsRole::Server,
+            Some(config),
+        )
+        .await;
+        run(state, socket).await;
+    });
+
+    let mut response = Response::builder()
+        .status(handshake_response.status())
+        .body(Body::empty())
+        .map_err(|_| V3Error::new(&rid, Kind::TemporaryFailure))?;
+    *response.headers_mut() = handshake_response.headers().clone();
+    Ok(response)
 }
 
 #[derive(Clone, Copy)]
@@ -573,7 +612,10 @@ fn frame(kind: &str, fields: Value) -> String {
     Value::Object(object).to_string()
 }
 
-async fn run(state: AppState, socket: WebSocket) {
+async fn run(
+    state: AppState,
+    socket: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+) {
     let (mut sink, mut stream) = socket.split();
     let first = tokio::time::timeout(FIRST_FRAME_TIMEOUT, stream.next()).await;
     let ticket = match first {
@@ -710,6 +752,8 @@ async fn run(state: AppState, socket: WebSocket) {
                 Ok(Some(Ok(Message::Binary(_)))) => {
                     let _ = sink.send(Message::Text(frame("error", json!({"code": "binaryUnsupported"})).into())).await;
                 }
+                // Raw frames are internal writes, never peer messages; drop them.
+                Ok(Some(Ok(Message::Frame(_)))) => {}
                 _ => break,
             },
         }
